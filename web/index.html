@@ -416,6 +416,65 @@
   .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
   .token-val { font-family: var(--font-mono); font-weight: 700; color: var(--text-primary); }
 
+  /* Key Table & Cell Layout */
+  .cell-nowrap {
+    white-space: nowrap;
+  }
+  .key-cell {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+    flex-wrap: nowrap;
+  }
+  .key-code {
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-weight: 600;
+    font-size: 12.5px;
+    padding: 3px 8px;
+    border-radius: 6px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    vertical-align: middle;
+  }
+  .key-code.revealed {
+    max-width: 320px;
+    user-select: all;
+  }
+  .icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    min-height: 28px;
+    padding: 0;
+    border-radius: 6px;
+    flex-shrink: 0;
+    font-size: 13px;
+    line-height: 1;
+  }
+  .tag-group {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+    max-width: 260px;
+  }
+  .row-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+    flex-wrap: nowrap;
+  }
+
   /* Progress Bar */
   .bar {
     width: 100%;
@@ -829,11 +888,6 @@
       <div class="kpi-value" id="kpiTotalRequests">0</div>
       <div class="kpi-sub" id="kpiReqSub">成功: 0 · 失败: 0 (100.0%)</div>
     </div>
-    <div class="kpi-card">
-      <div class="kpi-label">实时活跃并发 / Key 总数</div>
-      <div class="kpi-value" id="kpiActiveConc">0</div>
-      <div class="kpi-sub" id="kpiKeyCountSub">API Key: 0 个</div>
-    </div>
   </div>
 
   <!-- TAB 1: UNIFIED API KEYS & GOVERNANCE CRUD -->
@@ -888,7 +942,6 @@
           <thead>
             <tr>
               <th>API Key / 备注</th>
-              <th>实时并发</th>
               <th>请求数</th>
               <th>Input Tokens</th>
               <th>Output Tokens</th>
@@ -899,7 +952,7 @@
             </tr>
           </thead>
           <tbody id="dashKeyTableBody">
-            <tr><td colspan="9" style="text-align:center;color:var(--text-tertiary)">加载中...</td></tr>
+            <tr><td colspan="8" style="text-align:center;color:var(--text-tertiary)">加载中...</td></tr>
           </tbody>
         </table>
       </div>
@@ -1570,9 +1623,6 @@
     const rate = s.total_requests > 0 ? ((s.success_requests / s.total_requests) * 100).toFixed(1) : "100.0";
     document.getElementById("kpiReqSub").textContent =
       `成功: ${fmtInt(s.success_requests)} · 失败: ${fmtInt(s.failed_requests)} (${rate}%)`;
-    document.getElementById("kpiActiveConc").textContent = fmtInt(s.active_concurrency || 0);
-    document.getElementById("kpiKeyCountSub").textContent =
-      `API Key: ${fmtInt((data.keys || []).length)} 个`;
   }
 
   // ==================== PURE CHECKBOX SELECTORS (MODELS & CREDENTIALS) ====================
@@ -1844,49 +1894,58 @@
       const enabled = kr.enabled !== false;
       const isRevealed = !!revealedKeys[k];
       const dispKey = isRevealed ? k : maskKeyStr(k);
-      const activeC = ks.active_concurrency || 0;
       const maxC = kr.max_concurrency || 0;
 
       const existingModelIDs = new Set(getAvailableModels().map(m => m.id));
       const rawModels = (kr.allowed_models && kr.allowed_models.length) ? kr.allowed_models : ["*"];
       const existingSelected = rawModels.filter(m => m !== "*" && !m.includes("*") && !m.includes("?") && existingModelIDs.has(m));
       const isAllModels = rawModels.includes("*") || existingSelected.length === 0;
-      const modelsHtml = isAllModels
-        ? `<span class="tag ok">全部已有模型</span>`
-        : existingSelected.map(m => `<span class="tag plain mono">${escapeHtml(m)}</span>`).join(" ");
+      let modelsHtml = `<span class="tag ok">全部已有模型</span>`;
+      if (!isAllModels) {
+        const shownModels = existingSelected.slice(0, 3).map(m => `<span class="tag plain mono">${escapeHtml(m)}</span>`).join("");
+        const moreCount = existingSelected.length - 3;
+        const moreTag = moreCount > 0 ? `<span class="tag plain" title="${escapeHtml(existingSelected.join(", "))}">+${moreCount}</span>` : "";
+        modelsHtml = `<div class="tag-group">${shownModels}${moreTag}</div>`;
+      }
 
       const ub = kr.upstream_binding || {};
       const creds = Array.from(new Set([].concat(ub.auth_ids || [], ub.credentials || [])));
       let bindHtml = `<span class="tag ok">全部可用凭证</span>`;
       if (creds.length > 0) {
-        bindHtml = `<span class="tag warn">${escapeHtml(ub.strategy || "round-robin")}</span> ` +
-          creds.map(c => `<span class="tag plain mono">${escapeHtml(c)}</span>`).join(" ");
+        const shownCreds = creds.slice(0, 2).map(c => `<span class="tag plain mono">${escapeHtml(c)}</span>`).join("");
+        const moreCreds = creds.length - 2;
+        const moreCredTag = moreCreds > 0 ? `<span class="tag plain" title="${escapeHtml(creds.join(", "))}">+${moreCreds}</span>` : "";
+        bindHtml = `<div class="tag-group"><span class="tag warn">${escapeHtml(ub.strategy || "round-robin")}</span>${shownCreds}${moreCredTag}</div>`;
       }
 
       return `<tr>
-        <td>
+        <td class="cell-nowrap">
           <span class="tag ${enabled ? "ok" : "bad"}" style="cursor:pointer" onclick="quickToggleKeyEnabled('${escapeHtml(k)}')" title="点击切换启用/禁用">
             ${enabled ? "● 启用" : "⛔ 禁用"}
           </span>
         </td>
-        <td>
-          <span class="mono" style="font-weight:600">${escapeHtml(dispKey)}</span>
-          <button type="button" class="btn btn-sm" style="padding:2px 6px;margin-left:4px" onclick="toggleRevealKey('${escapeHtml(k)}')">${isRevealed ? "🙈" : "👁️"}</button>
-          <button type="button" class="btn btn-sm" style="padding:2px 6px" onclick="copyText('${escapeHtml(k)}')">📋</button>
+        <td class="cell-nowrap">
+          <div class="key-cell">
+            <span class="key-code ${isRevealed ? "revealed" : ""}" title="${escapeHtml(dispKey)}">${escapeHtml(dispKey)}</span>
+            <button type="button" class="btn btn-sm icon-btn" title="${isRevealed ? "隐藏 Key" : "显示 Key"}" onclick="toggleRevealKey('${escapeHtml(k)}')">${isRevealed ? "🙈" : "👁️"}</button>
+            <button type="button" class="btn btn-sm icon-btn" title="复制 Key" onclick="copyText('${escapeHtml(k)}')">📋</button>
+          </div>
         </td>
-        <td style="font-weight:600">${escapeHtml(kr.name || "-")}</td>
-        <td class="mono">${activeC} / ${maxC > 0 ? maxC : "∞"}</td>
-        <td class="mono">${fmtInt(ks.total_requests)} <span style="color:var(--text-tertiary)">(${fmtInt(ks.success_requests)}/${fmtInt(ks.failed_requests)})</span></td>
-        <td>
+        <td class="cell-nowrap" style="font-weight:600;max-width:160px;overflow:hidden;text-overflow:ellipsis">${escapeHtml(kr.name || "-")}</td>
+        <td class="cell-nowrap mono">${maxC > 0 ? maxC : "不限"}</td>
+        <td class="cell-nowrap mono">${fmtInt(ks.total_requests)} <span style="color:var(--text-tertiary)">(${fmtInt(ks.success_requests)}/${fmtInt(ks.failed_requests)})</span></td>
+        <td class="cell-nowrap">
           <span class="token-val">${fmtInt(ks.total_tokens)}</span>
           <span class="mono" style="font-size:12px;color:var(--text-secondary)"> (${fmtInt(ks.input_tokens)} / ${fmtInt(ks.output_tokens)})</span>
         </td>
         <td>${modelsHtml}</td>
         <td>${bindHtml}</td>
-        <td style="white-space:nowrap">
-          <button type="button" class="btn btn-sm" onclick="openKeyModalByKey('${escapeHtml(k)}')">编辑规则</button>
-          <button type="button" class="btn btn-sm" onclick="resetUsageStats('${escapeHtml(k)}')">清零用量</button>
-          <button type="button" class="btn btn-sm btn-danger" onclick="deleteKeyRule('${escapeHtml(k)}')">删除</button>
+        <td class="cell-nowrap">
+          <div class="row-actions">
+            <button type="button" class="btn btn-sm" onclick="openKeyModalByKey('${escapeHtml(k)}')">编辑规则</button>
+            <button type="button" class="btn btn-sm" onclick="resetUsageStats('${escapeHtml(k)}')">清零用量</button>
+            <button type="button" class="btn btn-sm btn-danger" onclick="deleteKeyRule('${escapeHtml(k)}')">删除</button>
+          </div>
         </td>
       </tr>`;
     }).join("");
@@ -2062,14 +2121,12 @@
 
     const tbody = document.getElementById("dashKeyTableBody");
     if (rows.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;color:var(--text-tertiary)">暂无调用统计数据</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--text-tertiary)">暂无调用统计数据</td></tr>`;
     } else {
       let html = "";
       for (const ks of rows) {
         const rawKey = ks.api_key || ks.masked_key;
         const rule = rulesMap[rawKey] || {};
-        const maxConc = ks.max_concurrency || rule.max_concurrency || 0;
-        const concText = maxConc > 0 ? `${ks.active_concurrency || 0} / ${maxConc}` : `${ks.active_concurrency || 0} / ∞`;
         const share = grandTotalTokens > 0 ? (((ks.total_tokens || 0) / grandTotalTokens) * 100).toFixed(1) : "0.0";
         const validModels = ks.models ? Object.values(ks.models).filter(ms => ms && ms.model && ms.model.toLowerCase() !== "unknown") : [];
         const modelCount = validModels.length;
@@ -2077,23 +2134,24 @@
         const keyNote = ks.key_name || rule.name || "";
 
         html += `<tr>
-          <td>
+          <td class="cell-nowrap">
             <div class="mono" style="font-weight:600">${escapeHtml(ks.masked_key || maskKeyStr(rawKey))}</div>
             ${keyNote ? `<div style="font-size:12px;color:var(--text-secondary)">${escapeHtml(keyNote)}</div>` : ""}
           </td>
-          <td><span class="tag ${ks.active_concurrency > 0 ? "ok" : "plain"} mono">${escapeHtml(concText)}</span></td>
-          <td class="mono">${fmtInt(ks.total_requests)} <span style="color:var(--text-tertiary)">(${fmtInt(ks.success_requests)}/${fmtInt(ks.failed_requests)})</span></td>
-          <td class="mono">${fmtInt(ks.input_tokens)}</td>
-          <td class="mono">${fmtInt(ks.output_tokens)} <span style="color:var(--text-tertiary)">(推理 ${fmtInt(ks.reasoning_tokens)})</span></td>
-          <td class="mono">${fmtInt(ks.cache_read_tokens)} / ${fmtInt(ks.cache_write_tokens)}</td>
-          <td class="token-val">${fmtInt(ks.total_tokens)}</td>
+          <td class="cell-nowrap mono">${fmtInt(ks.total_requests)} <span style="color:var(--text-tertiary)">(${fmtInt(ks.success_requests)}/${fmtInt(ks.failed_requests)})</span></td>
+          <td class="cell-nowrap mono">${fmtInt(ks.input_tokens)}</td>
+          <td class="cell-nowrap mono">${fmtInt(ks.output_tokens)} <span style="color:var(--text-tertiary)">(推理 ${fmtInt(ks.reasoning_tokens)})</span></td>
+          <td class="cell-nowrap mono">${fmtInt(ks.cache_read_tokens)} / ${fmtInt(ks.cache_write_tokens)}</td>
+          <td class="cell-nowrap token-val">${fmtInt(ks.total_tokens)}</td>
           <td style="min-width:120px">
             <div style="font-size:12px" class="mono">${share}%</div>
             <div class="bar"><div class="bar-fill" style="width:${share}%"></div></div>
           </td>
-          <td>
-            <button type="button" class="btn btn-sm" onclick="toggleDashKeyExpand('${escapeHtml(rawKey)}')">${isExpanded ? "收起" : "展开明细 (" + modelCount + ")"}</button>
-            <button type="button" class="btn btn-sm btn-danger" onclick="resetUsageStats('${escapeHtml(rawKey)}')">清零</button>
+          <td class="cell-nowrap">
+            <div class="row-actions">
+              <button type="button" class="btn btn-sm" onclick="toggleDashKeyExpand('${escapeHtml(rawKey)}')">${isExpanded ? "收起" : "展开明细 (" + modelCount + ")"}</button>
+              <button type="button" class="btn btn-sm btn-danger" onclick="resetUsageStats('${escapeHtml(rawKey)}')">清零</button>
+            </div>
           </td>
         </tr>`;
 
@@ -2101,12 +2159,12 @@
           const mList = validModels.slice().sort((a, b) => (b.total_tokens || 0) - (a.total_tokens || 0));
           for (const ms of mList) {
             html += `<tr class="sub-row">
-              <td colspan="2">↳ <span class="mono" style="color:var(--text-primary);font-weight:600">${escapeHtml(ms.model)}</span></td>
-              <td class="mono">${fmtInt(ms.requests)} (${fmtInt(ms.success_requests)}/${fmtInt(ms.failed_requests)})</td>
-              <td class="mono">${fmtInt(ms.input_tokens)}</td>
-              <td class="mono">${fmtInt(ms.output_tokens)} (推理 ${fmtInt(ms.reasoning_tokens)})</td>
-              <td class="mono">${fmtInt(ms.cache_read_tokens)} / ${fmtInt(ms.cache_write_tokens)}</td>
-              <td class="token-val">${fmtInt(ms.total_tokens)}</td>
+              <td class="cell-nowrap">↳ <span class="mono" style="color:var(--text-primary);font-weight:600">${escapeHtml(ms.model)}</span></td>
+              <td class="cell-nowrap mono">${fmtInt(ms.requests)} (${fmtInt(ms.success_requests)}/${fmtInt(ms.failed_requests)})</td>
+              <td class="cell-nowrap mono">${fmtInt(ms.input_tokens)}</td>
+              <td class="cell-nowrap mono">${fmtInt(ms.output_tokens)} (推理 ${fmtInt(ms.reasoning_tokens)})</td>
+              <td class="cell-nowrap mono">${fmtInt(ms.cache_read_tokens)} / ${fmtInt(ms.cache_write_tokens)}</td>
+              <td class="cell-nowrap token-val">${fmtInt(ms.total_tokens)}</td>
               <td colspan="2" style="font-size:11px;color:var(--text-tertiary)">最后调用: ${escapeHtml(ms.last_used_at || "-")}</td>
             </tr>`;
           }

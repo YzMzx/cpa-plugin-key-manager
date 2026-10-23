@@ -21,7 +21,7 @@ import (
 
 const (
 	PluginID      = "cpa-plugin-key"
-	PluginVersion = "0.4.3"
+	PluginVersion = "0.4.4"
 	PluginAuthor  = "YzMzx"
 	PluginRepo    = "https://github.com/YzMzx/cpa-plugin-key"
 	PluginLogoSVG = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%238b8680'/><path d='M24 22a10 10 0 1 0 9.5 13H42v5h6v-5h4v-6H33.5A10 10 0 0 0 24 22zm0 6a4 4 0 1 1 0 8 4 4 0 0 1 0-8z' fill='%23fff'/></svg>"
@@ -919,7 +919,6 @@ func (m *Manager) BuildAdminOverview(hostCallbackID string) map[string]any {
 	var totalCostNano int64
 	var totalTokens, inTokens, outTokens, reasonTokens, readTokens, writeTokens int64
 	var totalReq, okReq, errReq int64
-	var activeConc int
 
 	for _, ks := range snap.Keys {
 		if ks == nil {
@@ -935,7 +934,6 @@ func (m *Manager) BuildAdminOverview(hostCallbackID string) map[string]any {
 		totalReq += ks.TotalRequests
 		okReq += ks.SuccessRequests
 		errReq += ks.FailedRequests
-		activeConc += ks.ActiveConcurrency
 	}
 
 	summary := map[string]any{
@@ -950,8 +948,6 @@ func (m *Manager) BuildAdminOverview(hostCallbackID string) map[string]any {
 		"total_requests":       totalReq,
 		"success_requests":     okReq,
 		"failed_requests":      errReq,
-		"active_concurrency":   activeConc,
-		"configured_keys":      len(keysCopy),
 	}
 
 	return map[string]any{

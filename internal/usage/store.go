@@ -39,7 +39,7 @@ type KeyStats struct {
 	MaskedKey          string                 `json:"masked_key"`
 	KeyName            string                 `json:"key_name,omitempty"`
 	Enabled            *bool                  `json:"enabled,omitempty"`
-	ActiveConcurrency  int                    `json:"active_concurrency"`
+	ActiveConcurrency  int                    `json:"-"`
 	MaxConcurrency     int                    `json:"max_concurrency"`
 	QuotaLimitUSD      float64                `json:"quota_limit_usd,omitempty"`
 	AllowedModels      []string               `json:"allowed_models,omitempty"`
