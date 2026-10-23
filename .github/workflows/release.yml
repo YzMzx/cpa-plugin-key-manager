@@ -37,7 +37,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: cpa-plugin-key/go.mod
+          go-version-file: CLIProxyAPI/go.mod
           cache: true
           cache-dependency-path: cpa-plugin-key/go.sum
 
@@ -112,7 +112,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: cpa-plugin-key/go.mod
+          go-version-file: CLIProxyAPI/go.mod
           cache: true
           cache-dependency-path: cpa-plugin-key/go.sum
 
