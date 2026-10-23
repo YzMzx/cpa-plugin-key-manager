@@ -106,10 +106,6 @@ func RegisterManagementEndpoints() ([]pluginapi.ManagementRoute, []pluginapi.Res
 			Menu:        "API Key 管控与用量",
 			Description: "统一管理 CPA 全局 API Key、并发限流、模型白名单、上游凭证绑定及 Token 用量统计。",
 		},
-		{
-			Path:        ResourcePathUsage,
-			Description: "API Key 实时并发与 Token 用量统计接口。",
-		},
 	}
 	return routes, resources
 }
@@ -141,89 +137,21 @@ func HandleManagementRequest(ctx context.Context, provider SnapshotProvider, req
 	path := strings.TrimSpace(req.Path)
 	method := strings.ToUpper(strings.TrimSpace(req.Method))
 
-	switch {
-	case strings.HasSuffix(path, ResourcePathUI):
-		if method != http.MethodGet {
+	if strings.HasSuffix(path, ResourcePathUI) {
+		if method != http.MethodGet && method != http.MethodHead {
 			return jsonError(http.StatusMethodNotAllowed, "method not allowed")
 		}
-		switch strings.ToLower(queryValue(req, "op")) {
-		case "overview":
-			return jsonResponse(http.StatusOK, provider.BuildAdminOverview(hostCallbackID))
-		case "sync-keys":
-			payload := queryValue(req, "payload")
-			var body struct {
-				Keys []string `json:"keys"`
-			}
-			if payload != "" {
-				if err := json.Unmarshal([]byte(payload), &body); err != nil {
-					return jsonError(http.StatusBadRequest, "invalid payload: "+err.Error())
-				}
-			}
-			if err := provider.SyncHostAPIKeys(body.Keys); err != nil {
-				return jsonError(http.StatusInternalServerError, err.Error())
-			}
-			return jsonResponse(http.StatusOK, provider.BuildAdminOverview(hostCallbackID))
-		case "save-key":
-			origKey := queryValue(req, "orig_key")
-			payload := queryValue(req, "payload")
-			if payload == "" {
-				return jsonError(http.StatusBadRequest, "payload is required")
-			}
-			if origKey != "" {
-				var tmp struct {
-					APIKey string `json:"api_key"`
-				}
-				_ = json.Unmarshal([]byte(payload), &tmp)
-				if strings.TrimSpace(tmp.APIKey) != "" && strings.TrimSpace(tmp.APIKey) != origKey {
-					_ = provider.DeleteKeyRule(origKey)
-				}
-			}
-			rule, err := provider.UpsertKeyRuleFromJSON([]byte(payload))
-			if err != nil {
-				return jsonError(http.StatusBadRequest, err.Error())
-			}
-			return jsonResponse(http.StatusOK, map[string]any{
-				"ok":   true,
-				"rule": rule,
-			})
-		case "delete-key":
-			targetKey := queryValue(req, "api_key")
-			if targetKey == "" {
-				return jsonError(http.StatusBadRequest, "api_key is required")
-			}
-			if err := provider.DeleteKeyRule(targetKey); err != nil {
-				return jsonError(http.StatusInternalServerError, err.Error())
-			}
-			return jsonResponse(http.StatusOK, map[string]any{
-				"ok":      true,
-				"deleted": usage.MaskAPIKey(targetKey),
-			})
-		case "save-default-policy":
-			payload := queryValue(req, "payload")
-			if payload == "" {
-				return jsonError(http.StatusBadRequest, "payload is required")
-			}
-			dp, err := provider.SaveDefaultPolicyFromJSON([]byte(payload))
-			if err != nil {
-				return jsonError(http.StatusBadRequest, err.Error())
-			}
-			return jsonResponse(http.StatusOK, map[string]any{
-				"ok":             true,
-				"default_policy": dp,
-			})
-		case "reset-usage":
-			targetKey := queryValue(req, "api_key")
-			if err := provider.ResetUsage(targetKey); err != nil {
-				return jsonError(http.StatusInternalServerError, err.Error())
-			}
-			return jsonResponse(http.StatusOK, map[string]any{
-				"ok":    true,
-				"reset": targetKey,
-			})
-		default:
-			return textResponse(http.StatusOK, "text/html; charset=utf-8", web.DashboardHTML())
+		if queryValue(req, "op") != "" {
+			return jsonError(http.StatusUnauthorized, "unauthorized: management authentication required via /v0/management/key-guard/*")
 		}
+		return htmlShellResponse(web.DashboardHTML())
+	}
 
+	if !hasManagementCredential(req) {
+		return jsonError(http.StatusUnauthorized, "unauthorized: valid CLIProxyAPI Management Key is required")
+	}
+
+	switch {
 	case strings.HasSuffix(path, RouteManagementOverview):
 		if method != http.MethodGet {
 			return jsonError(http.StatusMethodNotAllowed, "method not allowed")
@@ -252,6 +180,18 @@ func HandleManagementRequest(ctx context.Context, provider SnapshotProvider, req
 		case http.MethodGet:
 			return jsonResponse(http.StatusOK, provider.ListKeyRulesAndDefaultPolicy())
 		case http.MethodPost, http.MethodPut:
+			origKey := queryValue(req, "orig_key")
+			var tmp struct {
+				OrigKey string `json:"orig_key"`
+				APIKey  string `json:"api_key"`
+			}
+			_ = json.Unmarshal(req.Body, &tmp)
+			if origKey == "" {
+				origKey = strings.TrimSpace(tmp.OrigKey)
+			}
+			if origKey != "" && strings.TrimSpace(tmp.APIKey) != "" && strings.TrimSpace(tmp.APIKey) != origKey {
+				_ = provider.DeleteKeyRule(origKey)
+			}
 			rule, err := provider.UpsertKeyRuleFromJSON(req.Body)
 			if err != nil {
 				return jsonError(http.StatusBadRequest, err.Error())
@@ -443,50 +383,26 @@ func HandleManagementRequest(ctx context.Context, provider SnapshotProvider, req
 			"status":        provider.PricingStatus(),
 		})
 
-	case strings.HasSuffix(path, ResourcePathUsage):
-		callerKey, isAdmin := provider.ExtractCallerAPIKey(req)
-		mode := strings.ToLower(queryValue(req, "mode"))
-		if mode == "account" && strings.TrimSpace(callerKey) == "" {
-			return jsonError(http.StatusUnauthorized, "请输入有效的下游 API Key")
-		}
-		if mode == "account" {
-			selfView, status, err := provider.BuildSelfAccountView(callerKey)
-			if err != nil {
-				return jsonError(status, err.Error())
-			}
-			return jsonResponse(http.StatusOK, selfView)
-		}
-
-		filterModel := queryValue(req, "model")
-		filterKey := callerKey
-		if isAdmin {
-			filterKey = queryValue(req, "api_key")
-		}
-		snap := provider.BuildSnapshot(filterKey, filterModel, true)
-		format := strings.ToLower(queryValue(req, "format"))
-		accept := ""
-		if req.Headers != nil {
-			accept = strings.ToLower(req.Headers.Get("Accept"))
-		}
-		if format == "json" || strings.Contains(accept, "application/json") {
-			if callerKey != "" && !isAdmin {
-				if selfView, status, err := provider.BuildSelfAccountView(callerKey); err == nil && status == http.StatusOK {
-					selfView["version"] = snap.Version
-					selfView["updated_at"] = snap.UpdatedAt
-					selfView["keys"] = snap.Keys
-					return jsonResponse(http.StatusOK, selfView)
-				}
-			}
-			return jsonResponse(http.StatusOK, snap)
-		}
-		if format == "table" || format == "text" {
-			return textResponse(http.StatusOK, "text/plain; charset=utf-8", RenderUsageTable(snap))
-		}
-		return textResponse(http.StatusOK, "text/html; charset=utf-8", web.DashboardHTML())
-
 	default:
 		return jsonError(http.StatusNotFound, "unknown endpoint: "+path)
 	}
+}
+
+func hasManagementCredential(req pluginapi.ManagementRequest) bool {
+	if strings.HasPrefix(strings.TrimSpace(req.Path), "/v0/resource/") {
+		return false
+	}
+	if req.Headers == nil {
+		return false
+	}
+	auth := strings.TrimSpace(req.Headers.Get("Authorization"))
+	if strings.HasPrefix(strings.ToLower(auth), "bearer ") {
+		auth = strings.TrimSpace(auth[7:])
+	}
+	if auth != "" {
+		return true
+	}
+	return strings.TrimSpace(req.Headers.Get("X-Management-Key")) != ""
 }
 
 func queryValue(req pluginapi.ManagementRequest, key string) string {
@@ -505,7 +421,8 @@ func jsonResponse(statusCode int, payload any) pluginapi.ManagementResponse {
 	return pluginapi.ManagementResponse{
 		StatusCode: statusCode,
 		Headers: http.Header{
-			"Content-Type": {"application/json; charset=utf-8"},
+			"Content-Type":  {"application/json; charset=utf-8"},
+			"Cache-Control": {"no-store"},
 		},
 		Body: raw,
 	}
@@ -524,7 +441,23 @@ func textResponse(statusCode int, contentType, body string) pluginapi.Management
 	return pluginapi.ManagementResponse{
 		StatusCode: statusCode,
 		Headers: http.Header{
-			"Content-Type": {contentType},
+			"Content-Type":  {contentType},
+			"Cache-Control": {"no-store"},
+		},
+		Body: []byte(body),
+	}
+}
+
+func htmlShellResponse(body string) pluginapi.ManagementResponse {
+	return pluginapi.ManagementResponse{
+		StatusCode: http.StatusOK,
+		Headers: http.Header{
+			"Content-Type":            {"text/html; charset=utf-8"},
+			"Cache-Control":           {"no-store, no-cache, must-revalidate"},
+			"Pragma":                  {"no-cache"},
+			"X-Content-Type-Options":  {"nosniff"},
+			"X-Frame-Options":         {"SAMEORIGIN"},
+			"Content-Security-Policy": {"frame-ancestors 'self'"},
 		},
 		Body: []byte(body),
 	}

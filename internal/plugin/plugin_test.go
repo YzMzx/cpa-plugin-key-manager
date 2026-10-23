@@ -221,9 +221,10 @@ keys:
 
 	// 7. Query Management API to verify usage and USD cost
 	mgmtReq, _ := json.Marshal(pluginapi.ManagementRequest{
-		Method: http.MethodGet,
-		Path:   "/v0/management/key-guard/usage",
-		Query:  url.Values{"unmask": {"true"}},
+		Method:  http.MethodGet,
+		Path:    "/v0/management/key-guard/usage",
+		Headers: http.Header{"Authorization": {"Bearer mgmt-secret"}},
+		Query:   url.Values{"unmask": {"true"}},
 	})
 	rawMgmt, err := mgr.HandleRPC(pluginabi.MethodManagementHandle, mgmtReq)
 	if err != nil {
@@ -335,47 +336,75 @@ storage:
 		t.Fatalf("unexpected /ui HTML response: status=%d", uiResp.StatusCode)
 	}
 
-	// 2b. Verify zero-prompt GET /v0/resource/plugins/cpa-plugin-key/ui?op=sync-keys unifies CPA global api-keys with plugin
-	syncKeysReq, _ := json.Marshal(pluginapi.ManagementRequest{
+	// 2a. Verify unauthenticated access to /v0/resource/plugins/cpa-plugin-key/ui?op=overview or /v0/management/key-guard/overview is rejected with 401
+	unauthResReq, _ := json.Marshal(pluginapi.ManagementRequest{
 		Method: http.MethodGet,
 		Path:   "/v0/resource/plugins/cpa-plugin-key/ui",
-		Query:  url.Values{"op": {"sync-keys"}, "payload": {`{"keys":["sk-cpa-global-1","sk-cpa-global-2"]}`}},
+		Query:  url.Values{"op": {"overview"}},
+	})
+	rawUnauthRes, err := mgr.HandleRPC(pluginabi.MethodManagementHandle, unauthResReq)
+	if err != nil {
+		t.Fatalf("GET /ui?op=overview failed: %v", err)
+	}
+	unauthResResp := decodeEnvelope[pluginapi.ManagementResponse](t, rawUnauthRes)
+	if unauthResResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized for /ui?op=overview, got %d: %s", unauthResResp.StatusCode, string(unauthResResp.Body))
+	}
+
+	unauthMgmtReq, _ := json.Marshal(pluginapi.ManagementRequest{
+		Method: http.MethodGet,
+		Path:   "/v0/management/key-guard/overview",
+	})
+	rawUnauthMgmt, err := mgr.HandleRPC(pluginabi.MethodManagementHandle, unauthMgmtReq)
+	if err != nil {
+		t.Fatalf("GET /v0/management/key-guard/overview failed: %v", err)
+	}
+	unauthMgmtResp := decodeEnvelope[pluginapi.ManagementResponse](t, rawUnauthMgmt)
+	if unauthMgmtResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized for unauthenticated management overview, got %d", unauthMgmtResp.StatusCode)
+	}
+
+	// 2b. Verify authenticated POST /v0/management/key-guard/keys/sync unifies CPA global api-keys with plugin
+	authHeaders := http.Header{"Authorization": {"Bearer mgmt-secret"}}
+	syncKeysReq, _ := json.Marshal(pluginapi.ManagementRequest{
+		Method:  http.MethodPost,
+		Path:    "/v0/management/key-guard/keys/sync",
+		Headers: authHeaders,
+		Body:    []byte(`{"keys":["sk-cpa-global-1","sk-cpa-global-2"]}`),
 	})
 	rawSyncKeys, err := mgr.HandleRPC(pluginabi.MethodManagementHandle, syncKeysReq)
 	if err != nil {
-		t.Fatalf("GET /ui?op=sync-keys failed: %v", err)
+		t.Fatalf("POST /v0/management/key-guard/keys/sync failed: %v", err)
 	}
 	syncKeysResp := decodeEnvelope[pluginapi.ManagementResponse](t, rawSyncKeys)
 	if syncKeysResp.StatusCode != http.StatusOK || !strings.Contains(string(syncKeysResp.Body), "sk-cpa-global-1") || !strings.Contains(string(syncKeysResp.Body), "claude-sonnet-4-20250514") {
-		t.Fatalf("unexpected /ui?op=sync-keys response: status=%d body=%s", syncKeysResp.StatusCode, string(syncKeysResp.Body))
+		t.Fatalf("unexpected /v0/management/key-guard/keys/sync response: status=%d body=%s", syncKeysResp.StatusCode, string(syncKeysResp.Body))
 	}
 
-	// 3. Dynamically create a new API Key rule via zero-prompt GET /v0/resource/plugins/cpa-plugin-key/ui?op=save-key
+	// 3. Dynamically create a new API Key rule via authenticated POST /v0/management/key-guard/keys
 	keyCreateReq, _ := json.Marshal(pluginapi.ManagementRequest{
-		Method: http.MethodGet,
-		Path:   "/v0/resource/plugins/cpa-plugin-key/ui",
-		Query: url.Values{
-			"op": {"save-key"},
-			"payload": {`{
-				"api_key": "sk-dynamic-user-1",
-				"name": "Dynamic User 1",
-				"enabled": true,
-				"max_concurrency": 1,
-				"allowed_models": ["gpt-4o*"],
-				"upstream_binding": {
-					"strategy": "round-robin",
-					"credentials": ["openai-tier5.json"]
-				}
-			}`},
-		},
+		Method:  http.MethodPost,
+		Path:    "/v0/management/key-guard/keys",
+		Headers: authHeaders,
+		Body: []byte(`{
+			"api_key": "sk-dynamic-user-1",
+			"name": "Dynamic User 1",
+			"enabled": true,
+			"max_concurrency": 1,
+			"allowed_models": ["gpt-4o"],
+			"upstream_binding": {
+				"strategy": "round-robin",
+				"credentials": ["openai-tier5.json"]
+			}
+		}`),
 	})
 	rawKeyCreate, err := mgr.HandleRPC(pluginabi.MethodManagementHandle, keyCreateReq)
 	if err != nil {
-		t.Fatalf("GET /ui?op=save-key failed: %v", err)
+		t.Fatalf("POST /v0/management/key-guard/keys failed: %v", err)
 	}
 	keyCreateResp := decodeEnvelope[pluginapi.ManagementResponse](t, rawKeyCreate)
 	if keyCreateResp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 from /ui?op=save-key, got %d: %s", keyCreateResp.StatusCode, string(keyCreateResp.Body))
+		t.Fatalf("expected 200 from POST /v0/management/key-guard/keys, got %d: %s", keyCreateResp.StatusCode, string(keyCreateResp.Body))
 	}
 
 	// 4. Execute a request with sk-dynamic-user-1 consuming 1000 input + 500 output = 1500 total tokens
@@ -411,16 +440,16 @@ storage:
 	})
 	_, _ = mgr.HandleRPC(pluginabi.MethodRequestComplete, comp1)
 
-	// 5. Verify persistence across new Manager restart (loads key_guard_rules.json from disk) via zero-prompt /ui?op=overview
+	// 5. Verify persistence across new Manager restart (loads key_guard_rules.json from disk) via authenticated /v0/management/key-guard/overview
 	mgr2 := NewManager(hostInvoker)
 	defer mgr2.Shutdown()
 	if _, err := mgr2.HandleRPC(pluginabi.MethodPluginRegister, regReq); err != nil {
 		t.Fatalf("mgr2 register failed: %v", err)
 	}
 	ovReq, _ := json.Marshal(pluginapi.ManagementRequest{
-		Method: http.MethodGet,
-		Path:   "/v0/resource/plugins/cpa-plugin-key/ui",
-		Query:  url.Values{"op": {"overview"}},
+		Method:  http.MethodGet,
+		Path:    "/v0/management/key-guard/overview",
+		Headers: authHeaders,
 	})
 	rawOv, _ := mgr2.HandleRPC(pluginabi.MethodManagementHandle, ovReq)
 	ovResp := decodeEnvelope[pluginapi.ManagementResponse](t, rawOv)

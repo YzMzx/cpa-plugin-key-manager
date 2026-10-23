@@ -665,6 +665,45 @@
     font-size: 13px;
   }
   .hidden { display: none !important; }
+
+  /* Auth Gate (Blocks unauthorized / incognito access) */
+  .auth-gate-wrap {
+    min-height: 72vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px 16px;
+  }
+  .auth-gate-card {
+    width: 100%;
+    max-width: 440px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-lg);
+    padding: 28px 26px;
+    box-shadow: var(--shadow-md);
+  }
+  .auth-gate-title {
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin: 0 0 8px 0;
+  }
+  .auth-gate-desc {
+    font-size: 13px;
+    color: var(--text-secondary);
+    line-height: 1.55;
+    margin: 0 0 18px 0;
+  }
+  .auth-gate-error {
+    margin-top: 12px;
+    padding: 9px 12px;
+    border-radius: var(--radius-md);
+    background: var(--error-badge-bg);
+    border: 1px solid var(--error-badge-border);
+    color: var(--error-badge-text);
+    font-size: 12px;
+  }
 </style>
 <script>
   /* Automatic Theme & Auth Synchronization with Cli-Proxy-API-Management-Center (CPAMC) */
@@ -733,6 +772,27 @@
 </head>
 <body>
 <div class="wrap">
+  <!-- Authentication Gate (Default visible until verified against /v0/management/key-guard/overview) -->
+  <div id="authGateView" class="auth-gate-wrap">
+    <div class="auth-gate-card">
+      <h2 class="auth-gate-title">🔒 需要 CLIProxyAPI 管理密钥授权</h2>
+      <p class="auth-gate-desc" id="authGateDesc">
+        未经授权无法查看或修改任何 API Key 配置。请先在 CLIProxyAPI 管理中心登录，或在此输入 Management Key 解锁访问。
+      </p>
+      <div class="form-group">
+        <label class="form-label" for="authGateKeyInput">Management Key</label>
+        <input type="password" class="input mono" id="authGateKeyInput" placeholder="输入 CLIProxyAPI Management Key" autocomplete="off" onkeydown="if(event.key==='Enter')submitAuthGateKey()">
+      </div>
+      <div class="input-row" style="justify-content:space-between;margin-top:14px">
+        <a href="/management.html" target="_top" class="btn btn-sm" style="text-decoration:none">前往管理中心登录</a>
+        <button type="button" class="btn btn-primary" id="authGateSubmitBtn" onclick="submitAuthGateKey()">验证并进入</button>
+      </div>
+      <div id="authGateError" class="auth-gate-error hidden"></div>
+    </div>
+  </div>
+
+  <!-- Admin Workspace (Strictly hidden until Management Key is verified by backend) -->
+  <div id="adminWorkspace" class="hidden">
   <!-- Header -->
   <header class="app-header">
     <div class="app-title">
@@ -990,7 +1050,8 @@
       </div>
     </div>
   </section>
-</div>
+  </div><!-- /#adminWorkspace -->
+</div><!-- /.wrap -->
 
 <!-- ==================== MODAL: CREATE / EDIT UNIFIED API KEY ==================== -->
 <div class="modal-backdrop" id="keyModalBackdrop">
@@ -1098,13 +1159,19 @@
 <div class="toast-box" id="toastBox"></div>
 
 <script>
-  const RESOURCE_UI_PATH = "/v0/resource/plugins/cpa-plugin-key/ui";
-  const API_CPA_KEYS     = "/v0/management/api-keys";
+  const API_OVERVIEW       = "/v0/management/key-guard/overview";
+  const API_KEYS_SYNC      = "/v0/management/key-guard/keys/sync";
+  const API_KEYS_CRUD      = "/v0/management/key-guard/keys";
+  const API_DEFAULT_POLICY = "/v0/management/key-guard/default-policy";
+  const API_USAGE_RESET    = "/v0/management/key-guard/usage/reset";
+  const API_CPA_KEYS       = "/v0/management/api-keys";
+  const SESSION_KEY_NAME   = "cpa_plugin_key_mgmt_session";
 
   if (window.parent !== window) {
     document.body.classList.add("embedded");
   }
 
+  let activeManagementKey = "";
   let overviewData = null;
   let expandedDashKeys = {};
   let revealedKeys = {};
@@ -1158,26 +1225,234 @@
     return k.slice(0, 7) + "..." + k.slice(-5);
   }
 
-  function discoverCPAManagementKeySilent() {
-    const cpamcAuth = cpamcStoredValue("cli-proxy-auth")?.state?.managementKey;
-    if (typeof cpamcAuth === "string" && cpamcAuth.trim()) return cpamcAuth.trim();
-    const cpamcDirect = cpamcStoredValue("managementKey");
-    if (typeof cpamcDirect === "string" && cpamcDirect.trim()) return cpamcDirect.trim();
+  function cleanBearerToken(val) {
+    if (typeof val !== "string") return "";
+    return val.replace(/^Bearer\s+/i, "").trim();
+  }
+
+  // Try reading obfuscated or plaintext storage from current window or same-origin parent window
+  function readStoredManagementKeyFromStorage(storageObj) {
+    if (!storageObj) return "";
+    try {
+      const decodeRaw = (raw) => {
+        if (!raw) return "";
+        const prefix = "enc::v1::";
+        if (raw.startsWith(prefix)) {
+          const secret = new TextEncoder().encode("cli-proxy-api-webui::secure-storage|" + location.host + "|" + navigator.userAgent);
+          const binary = atob(raw.slice(prefix.length));
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i) ^ secret[i % secret.length];
+          return new TextDecoder().decode(bytes);
+        }
+        return raw;
+      };
+
+      const rawAuth = storageObj.getItem("cli-proxy-auth");
+      if (rawAuth) {
+        let parsed = JSON.parse(decodeRaw(rawAuth));
+        if (typeof parsed === "string") {
+          try { parsed = JSON.parse(parsed); } catch (_) {}
+        }
+        const st = (parsed && typeof parsed === "object" && parsed.state) ? parsed.state : parsed;
+        if (st && typeof st.managementKey === "string" && st.managementKey.trim()) {
+          return cleanBearerToken(st.managementKey);
+        }
+      }
+
+      for (const kName of ["managementKey", "cpa-management-key", "management_key"]) {
+        const rawVal = storageObj.getItem(kName);
+        if (!rawVal) continue;
+        const dec = decodeRaw(rawVal);
+        try {
+          const parsed = JSON.parse(dec);
+          if (typeof parsed === "string" && parsed.trim()) return cleanBearerToken(parsed);
+        } catch (_) {
+          if (typeof dec === "string" && dec.trim()) return cleanBearerToken(dec);
+        }
+      }
+    } catch (_) {}
     return "";
   }
 
-  // Zero-prompt plugin resource RPC call: uses `/v0/resource/plugins/cpa-plugin-key/ui?op=...`
-  // which never triggers a 401/403 management key prompt.
-  async function callPluginOp(op, params = {}) {
-    const usp = new URLSearchParams({ op });
-    for (const [k, v] of Object.entries(params)) {
-      if (v !== undefined && v !== null) usp.set(k, String(v));
-    }
-    const resp = await fetch(RESOURCE_UI_PATH + "?" + usp.toString(), {
-      method: "GET",
-      headers: { "Accept": "application/json" }
+  // Extract in-memory managementKey from same-origin CPAMC parent React 18 Fiber tree (works even when "Remember Password" is unchecked)
+  function extractKeyFromParentReactFiber() {
+    if (window.parent === window) return "";
+    try {
+      const inspectFiberHooks = (fiber) => {
+        let h = fiber && fiber.memoizedState;
+        let prevWasBoolTrue = false;
+        while (h) {
+          const ms = h.memoizedState;
+          // Zustand v4 useSyncExternalStoreWithSelector stores [selection, [api.getState, ...]] in useMemo
+          if (Array.isArray(ms) && Array.isArray(ms[1])) {
+            for (const dep of ms[1]) {
+              if (typeof dep === "function" && dep.length === 0) {
+                try {
+                  const st = dep();
+                  if (st && typeof st === "object" && st.isAuthenticated === true && typeof st.managementKey === "string" && st.managementKey.trim()) {
+                    return cleanBearerToken(st.managementKey);
+                  }
+                } catch (_) {}
+              }
+            }
+          }
+          // ProtectedRoute consecutive hooks: isAuthenticated (true) -> managementKey (string)
+          if (ms === true) {
+            prevWasBoolTrue = true;
+          } else if (prevWasBoolTrue && typeof ms === "string" && ms.trim() && !ms.startsWith("http") && !ms.startsWith("/")) {
+            return cleanBearerToken(ms);
+          } else {
+            prevWasBoolTrue = false;
+          }
+          h = h.next;
+        }
+        return "";
+      };
+
+      const findReactFiberOnNode = (domNode) => {
+        if (!domNode) return null;
+        for (const k of Object.keys(domNode)) {
+          if (k.startsWith("__reactFiber$") || k.startsWith("__reactContainer$")) {
+            return domNode[k];
+          }
+        }
+        return null;
+      };
+
+      // 1. Walk up ancestor fibers from window.frameElement (passes directly through ProtectedRoute & MainLayout)
+      if (window.frameElement) {
+        let f = findReactFiberOnNode(window.frameElement);
+        let guard = 0;
+        while (f && guard++ < 80) {
+          const found = inspectFiberHooks(f);
+          if (found) return found;
+          f = f.return;
+        }
+      }
+
+      // 2. Walk down from parent #root container
+      const rootEl = window.parent.document && window.parent.document.getElementById("root");
+      const rootFiber = findReactFiberOnNode(rootEl);
+      if (rootFiber) {
+        const stack = [rootFiber.current || rootFiber];
+        let visited = 0;
+        while (stack.length > 0 && visited++ < 400) {
+          const curr = stack.pop();
+          if (!curr) continue;
+          const found = inspectFiberHooks(curr);
+          if (found) return found;
+          if (curr.sibling) stack.push(curr.sibling);
+          if (curr.child) stack.push(curr.child);
+        }
+      }
+    } catch (_) {}
+    return "";
+  }
+
+  // Fallback for same-origin CPAMC parent: trigger MainLayout's non-disruptive 'auth-files-changed' listener and capture XHR Authorization header
+  function captureKeyFromParentXHR() {
+    return new Promise((resolve) => {
+      if (window.parent === window) return resolve("");
+      try {
+        const pWin = window.parent;
+        const proto = pWin.XMLHttpRequest && pWin.XMLHttpRequest.prototype;
+        if (!proto || typeof proto.setRequestHeader !== "function") return resolve("");
+        const origSetHeader = proto.setRequestHeader;
+        let settled = false;
+        const finish = (val) => {
+          if (settled) return;
+          settled = true;
+          try { proto.setRequestHeader = origSetHeader; } catch (_) {}
+          resolve(val || "");
+        };
+        proto.setRequestHeader = function(name, value) {
+          try {
+            if (typeof name === "string" && (name.toLowerCase() === "authorization" || name.toLowerCase() === "x-management-key") && typeof value === "string") {
+              const token = cleanBearerToken(value);
+              if (token) finish(token);
+            }
+          } catch (_) {}
+          return origSetHeader.apply(this, arguments);
+        };
+        setTimeout(() => finish(""), 350);
+        pWin.dispatchEvent(new pWin.Event("auth-files-changed"));
+      } catch (_) {
+        resolve("");
+      }
     });
+  }
+
+  async function discoverCPAManagementKey() {
+    if (activeManagementKey) return activeManagementKey;
+    try {
+      const sessKey = sessionStorage.getItem(SESSION_KEY_NAME);
+      if (sessKey && sessKey.trim()) return cleanBearerToken(sessKey);
+    } catch (_) {}
+
+    const fromLocal = readStoredManagementKeyFromStorage(window.localStorage);
+    if (fromLocal) return fromLocal;
+
+    if (window.parent !== window) {
+      try {
+        const fromParentLocal = readStoredManagementKeyFromStorage(window.parent.localStorage);
+        if (fromParentLocal) return fromParentLocal;
+      } catch (_) {}
+
+      const fromFiber = extractKeyFromParentReactFiber();
+      if (fromFiber) return fromFiber;
+
+      const fromXHR = await captureKeyFromParentXHR();
+      if (fromXHR) return fromXHR;
+    }
+    return "";
+  }
+
+  function unlockAdminWorkspace(validKey) {
+    activeManagementKey = validKey;
+    try { sessionStorage.setItem(SESSION_KEY_NAME, validKey); } catch (_) {}
+    document.getElementById("authGateError").classList.add("hidden");
+    document.getElementById("authGateView").classList.add("hidden");
+    document.getElementById("adminWorkspace").classList.remove("hidden");
+  }
+
+  function lockAdminWorkspace(errMsg) {
+    activeManagementKey = "";
+    overviewData = null;
+    try { sessionStorage.removeItem(SESSION_KEY_NAME); } catch (_) {}
+    document.getElementById("adminWorkspace").classList.add("hidden");
+    document.getElementById("authGateView").classList.remove("hidden");
+    const errEl = document.getElementById("authGateError");
+    if (errMsg) {
+      errEl.textContent = errMsg;
+      errEl.classList.remove("hidden");
+    } else {
+      errEl.classList.add("hidden");
+    }
+  }
+
+  // Authenticated Management API request: all endpoints live under /v0/management/key-guard/*
+  // which CLIProxyAPI protects with its Management Key middleware.
+  async function callManagementAPI(path, options = {}, overrideKey = "") {
+    const key = cleanBearerToken(overrideKey || activeManagementKey);
+    if (!key) {
+      lockAdminWorkspace();
+      throw new Error("需要 CLIProxyAPI Management Key 授权访问");
+    }
+    const headers = Object.assign({
+      "Accept": "application/json",
+      "Authorization": "Bearer " + key,
+      "X-Management-Key": key
+    }, options.headers || {});
+    if (options.body && !headers["Content-Type"]) {
+      headers["Content-Type"] = "application/json";
+    }
+    const resp = await fetch(path, Object.assign({}, options, { headers }));
     const data = await resp.json().catch(() => ({}));
+    if (resp.status === 401 || resp.status === 403) {
+      const msg = (data && data.error && data.error.message) || data.error || "Management Key 验证失败或未授权 (HTTP " + resp.status + ")";
+      lockAdminWorkspace(msg);
+      throw new Error(msg);
+    }
     if (!resp.ok) {
       const msg = (data && data.error && data.error.message) || data.error || ("操作失败: HTTP " + resp.status);
       throw new Error(msg);
@@ -1185,9 +1460,28 @@
     return data;
   }
 
-  // Optional silent sync with CPA's in-memory `/v0/management/api-keys` when CPAMC token is present
-  async function fetchCPAGlobalKeysSilent() {
-    const key = discoverCPAManagementKeySilent();
+  async function submitAuthGateKey() {
+    const input = document.getElementById("authGateKeyInput");
+    const candidate = cleanBearerToken(input ? input.value : "");
+    if (!candidate) {
+      lockAdminWorkspace("请输入有效的 CLIProxyAPI Management Key");
+      return;
+    }
+    const btn = document.getElementById("authGateSubmitBtn");
+    if (btn) btn.disabled = true;
+    try {
+      await loadAdminOverview(candidate);
+      if (input) input.value = "";
+    } catch (_) {
+      // loadAdminOverview already displays error in authGateError on 401/403
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  // Sync with CPA's in-memory `/v0/management/api-keys` using verified Management Key
+  async function fetchCPAGlobalKeysSilent(keyOverride = "") {
+    const key = cleanBearerToken(keyOverride || activeManagementKey);
     if (!key) return null;
     try {
       const resp = await fetch(API_CPA_KEYS, {
@@ -1209,7 +1503,7 @@
   }
 
   async function writeCPAGlobalKeysSilent(keysArray) {
-    const key = discoverCPAManagementKeySilent();
+    const key = cleanBearerToken(activeManagementKey);
     if (!key) return;
     try {
       const unique = Array.from(new Set(keysArray.map(k => String(k || "").trim()).filter(Boolean)));
@@ -1235,15 +1529,24 @@
   }
 
   // ==================== ADMIN OVERVIEW & UNIFIED KEY SYNC ====================
-  async function loadAdminOverview() {
+  async function loadAdminOverview(candidateKey = "") {
     try {
-      const cpaKeys = await fetchCPAGlobalKeysSilent();
+      const keyToUse = cleanBearerToken(candidateKey || activeManagementKey || await discoverCPAManagementKey());
+      if (!keyToUse) {
+        lockAdminWorkspace();
+        return;
+      }
+      const cpaKeys = await fetchCPAGlobalKeysSilent(keyToUse);
       let data;
       if (cpaKeys !== null) {
-        data = await callPluginOp("sync-keys", { payload: JSON.stringify({ keys: cpaKeys }) });
+        data = await callManagementAPI(API_KEYS_SYNC, {
+          method: "POST",
+          body: JSON.stringify({ keys: cpaKeys })
+        }, keyToUse);
       } else {
-        data = await callPluginOp("overview");
+        data = await callManagementAPI(API_OVERVIEW, { method: "GET" }, keyToUse);
       }
+      unlockAdminWorkspace(keyToUse);
       overviewData = data;
       renderDashboardKPIs(data);
       renderKeysCrudTable();
@@ -1251,7 +1554,12 @@
       initDefaultPolicySelectors();
       renderHostAuthTable();
     } catch (err) {
-      showToast(err.message, true);
+      if (activeManagementKey) {
+        showToast(err.message, true);
+      } else {
+        lockAdminWorkspace(err.message);
+      }
+      throw err;
     }
   }
 
@@ -1677,9 +1985,9 @@
       }
       await writeCPAGlobalKeysSilent(nextCpaKeys);
 
-      await callPluginOp("save-key", {
-        orig_key: origKey,
-        payload: JSON.stringify(payload)
+      await callManagementAPI(API_KEYS_CRUD, {
+        method: "POST",
+        body: JSON.stringify(Object.assign({ orig_key: origKey }, payload))
       });
 
       closeKeyModal();
@@ -1696,8 +2004,9 @@
     const next = kr.enabled === false ? true : false;
     const payload = Object.assign({}, kr, { enabled: next });
     try {
-      await callPluginOp("save-key", {
-        payload: JSON.stringify(payload)
+      await callManagementAPI(API_KEYS_CRUD, {
+        method: "POST",
+        body: JSON.stringify(payload)
       });
       showToast(`已${next ? "启用" : "禁用"} Key: ${kr.name || maskKeyStr(kr.api_key)}`);
       await loadAdminOverview();
@@ -1711,7 +2020,9 @@
     try {
       const currentKeys = ((overviewData && overviewData.keys) || []).map(k => k.api_key).filter(k => k !== apiKey);
       await writeCPAGlobalKeysSilent(currentKeys);
-      await callPluginOp("delete-key", { api_key: apiKey });
+      await callManagementAPI(API_KEYS_CRUD + "?api_key=" + encodeURIComponent(apiKey), {
+        method: "DELETE"
+      });
       showToast("已从 CPA 全局配置与插件中删除该 API Key");
       await loadAdminOverview();
     } catch (err) {
@@ -1723,7 +2034,10 @@
     const desc = apiKey ? `Key [${maskKeyStr(apiKey)}]` : "所有 API Key";
     if (!confirm(`确定要清零 ${desc} 的累计 Token 用量统计吗？`)) return;
     try {
-      await callPluginOp("reset-usage", { api_key: apiKey });
+      await callManagementAPI(API_USAGE_RESET, {
+        method: "POST",
+        body: JSON.stringify({ api_key: apiKey })
+      });
       showToast(`已清零 ${desc} 的 Token 用量统计`);
       await loadAdminOverview();
     } catch (err) {
@@ -1907,8 +2221,9 @@
       }
     };
     try {
-      await callPluginOp("save-default-policy", {
-        payload: JSON.stringify(payload)
+      await callManagementAPI(API_DEFAULT_POLICY, {
+        method: "POST",
+        body: JSON.stringify(payload)
       });
       showToast("全局默认策略已保存并立即生效");
       await loadAdminOverview();
@@ -1951,7 +2266,7 @@
     }).join("");
   }
 
-  loadAdminOverview();
+  loadAdminOverview().catch(() => {});
 </script>
 </body>
 </html>
