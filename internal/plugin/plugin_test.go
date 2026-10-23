@@ -1,0 +1,260 @@
+package plugin
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/url"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
+	"github.com/YzMzx/cpa-plugin-key/internal/handler"
+)
+
+func decodeEnvelope[T any](t *testing.T, raw []byte) T {
+	t.Helper()
+	var env pluginabi.Envelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v (%s)", err, string(raw))
+	}
+	if !env.OK {
+		t.Fatalf("envelope not OK: %+v", env.Error)
+	}
+	var out T
+	if len(env.Result) > 0 {
+		if err := json.Unmarshal(env.Result, &out); err != nil {
+			t.Fatalf("unmarshal result: %v (%s)", err, string(env.Result))
+		}
+	}
+	return out
+}
+
+func TestFullPluginLifecycleAndGovernance(t *testing.T) {
+	tmpDir := t.TempDir()
+	usageFile := filepath.Join(tmpDir, "usage_stats.json")
+	cacheFile := filepath.Join(tmpDir, "models_dev.json")
+
+	mgr := NewManager(nil)
+	defer mgr.Shutdown()
+
+	cfgYAML := `
+enabled: true
+priority: 100
+storage:
+  usage_file: "` + filepath.ToSlash(usageFile) + `"
+  flush_interval_seconds: 60
+  pricing_cache_file: "` + filepath.ToSlash(cacheFile) + `"
+pricing:
+  sync_url: "http://127.0.0.1:1/offline-test"
+  http_timeout_seconds: 1
+  auto_inject_include_usage: true
+  custom_prices:
+    "claude-3-5-sonnet-*":
+      input: 3.0
+      output: 15.0
+      cache_read: 0.3
+      cache_write: 3.75
+    "gpt-4o*":
+      input: 2.5
+      output: 10.0
+      cache_read: 1.25
+      cache_write: 0.0
+keys:
+  - api_key: "sk-key-alpha"
+    name: "Tenant Alpha"
+    max_concurrency: 1
+    allowed_models:
+      - "claude-3-5-*"
+      - "gpt-4o*"
+    upstream_binding:
+      auth_ids:
+        - "auth-alpha-*"
+      strategy: "round-robin"
+      strict: true
+`
+	regReq, _ := json.Marshal(lifecycleRequest{
+		ConfigYAML:    []byte(cfgYAML),
+		SchemaVersion: pluginabi.SchemaVersion,
+	})
+	rawReg, err := mgr.HandleRPC(pluginabi.MethodPluginRegister, regReq)
+	if err != nil {
+		t.Fatalf("plugin.register failed: %v", err)
+	}
+	regResp := decodeEnvelope[registrationResponse](t, rawReg)
+	if !regResp.Capabilities.RequestInterceptor || !regResp.Capabilities.RequestLifecyclePlugin || !regResp.Capabilities.Scheduler {
+		t.Fatalf("missing required capabilities: %+v", regResp.Capabilities)
+	}
+
+	// 1. Unauthorized model -> 403 Forbidden
+	reqForbidden, _ := json.Marshal(pluginapi.RequestInterceptRequest{
+		RequestID:      "req-forbidden",
+		SourceFormat:   "openai",
+		Model:          "o1-pro",
+		RequestedModel: "o1-pro",
+		Headers:        http.Header{"Authorization": {"Bearer sk-key-alpha"}},
+		Body:           []byte(`{"model":"o1-pro","messages":[{"role":"user","content":"hi"}]}`),
+	})
+	rawForb, err := mgr.HandleRPC(pluginabi.MethodRequestInterceptBefore, reqForbidden)
+	if err != nil {
+		t.Fatalf("intercept_before failed: %v", err)
+	}
+	respForb := decodeEnvelope[pluginapi.RequestInterceptResponse](t, rawForb)
+	if !respForb.Terminate || respForb.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 Terminate for unauthorized model o1-pro, got: %+v", respForb)
+	}
+
+	// 2. Authorized streaming request 1 -> acquires concurrency slot (1/1)
+	reqStream1, _ := json.Marshal(pluginapi.RequestInterceptRequest{
+		RequestID:      "req-stream-1",
+		SourceFormat:   "claude",
+		Model:          "claude-3-5-sonnet-20241022",
+		RequestedModel: "claude-3-5-sonnet-20241022",
+		Stream:         true,
+		Headers:        http.Header{"X-Api-Key": {"sk-key-alpha"}},
+		Body:           []byte(`{"model":"claude-3-5-sonnet-20241022","stream":true}`),
+	})
+	rawS1, err := mgr.HandleRPC(pluginabi.MethodRequestInterceptBefore, reqStream1)
+	if err != nil {
+		t.Fatalf("intercept_before stream 1 failed: %v", err)
+	}
+	respS1 := decodeEnvelope[pluginapi.RequestInterceptResponse](t, rawS1)
+	if respS1.Terminate {
+		t.Fatalf("expected stream 1 to be allowed, got terminated: %+v", respS1)
+	}
+	// Verify stream_options was NOT injected into a "claude" protocol request!
+	if strings.Contains(string(respS1.Body), "stream_options") {
+		t.Fatalf("stream_options must NOT be injected into claude request: %s", string(respS1.Body))
+	}
+
+	// 3. Concurrent request 2 while stream 1 is still open -> 429 Too Many Requests
+	reqConcurrent2, _ := json.Marshal(pluginapi.RequestInterceptRequest{
+		RequestID:      "req-concurrent-2",
+		SourceFormat:   "openai",
+		Model:          "gpt-4o-mini",
+		RequestedModel: "gpt-4o-mini",
+		Headers:        http.Header{"Authorization": {"Bearer sk-key-alpha"}},
+		Body:           []byte(`{"model":"gpt-4o-mini"}`),
+	})
+	rawC2, err := mgr.HandleRPC(pluginabi.MethodRequestInterceptBefore, reqConcurrent2)
+	if err != nil {
+		t.Fatalf("intercept_before concurrent 2 failed: %v", err)
+	}
+	respC2 := decodeEnvelope[pluginapi.RequestInterceptResponse](t, rawC2)
+	if !respC2.Terminate || respC2.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 Too Many Requests while stream 1 holds slot, got: %+v", respC2)
+	}
+
+	// 4. Test scheduler.pick via caller_scope metadata
+	schedReq, _ := json.Marshal(pluginapi.SchedulerPickRequest{
+		Model: "claude-3-5-sonnet-20241022",
+		Options: pluginapi.SchedulerOptions{
+			Metadata: map[string]any{
+				"caller_scope": ComputeCallerScope("sk-key-alpha"),
+			},
+		},
+		Candidates: []pluginapi.SchedulerAuthCandidate{
+			{ID: "auth-other-1.json", Provider: "claude"},
+			{ID: "auth-alpha-primary.json", Provider: "claude"},
+		},
+	})
+	rawPick, err := mgr.HandleRPC(pluginabi.MethodSchedulerPick, schedReq)
+	if err != nil {
+		t.Fatalf("scheduler.pick failed: %v", err)
+	}
+	respPick := decodeEnvelope[pluginapi.SchedulerPickResponse](t, rawPick)
+	if !respPick.Handled || respPick.AuthID != "auth-alpha-primary.json" {
+		t.Fatalf("expected bound credential auth-alpha-primary.json, got: %+v", respPick)
+	}
+
+	// 5. Simulate SSE stream chunks for req-stream-1 (header-init chunk -1, then message_start, then message_delta)
+	// Slot MUST remain occupied during chunks!
+	chunkInit, _ := json.Marshal(pluginapi.StreamChunkInterceptRequest{
+		RequestID:  "req-stream-1",
+		Model:      "claude-3-5-sonnet-20241022",
+		ChunkIndex: -1,
+	})
+	_, _ = mgr.HandleRPC(pluginabi.MethodResponseInterceptStreamChunk, chunkInit)
+
+	chunkStart, _ := json.Marshal(pluginapi.StreamChunkInterceptRequest{
+		RequestID:  "req-stream-1",
+		Model:      "claude-3-5-sonnet-20241022",
+		ChunkIndex: 0,
+		Body:       []byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-3-5-sonnet-20241022\",\"usage\":{\"input_tokens\":1000,\"cache_read_input_tokens\":2000,\"cache_creation_input_tokens\":500,\"output_tokens\":1}}}\n\n"),
+	})
+	_, _ = mgr.HandleRPC(pluginabi.MethodResponseInterceptStreamChunk, chunkStart)
+
+	chunkDelta, _ := json.Marshal(pluginapi.StreamChunkInterceptRequest{
+		RequestID:  "req-stream-1",
+		Model:      "claude-3-5-sonnet-20241022",
+		ChunkIndex: 1,
+		Body:       []byte("event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":300}}\n\n"),
+	})
+	_, _ = mgr.HandleRPC(pluginabi.MethodResponseInterceptStreamChunk, chunkDelta)
+
+	// Hot-reload (`plugin.reconfigure`) WHILE stream 1 is still active: slot must still be held!
+	if _, err := mgr.HandleRPC(pluginabi.MethodPluginReconfigure, regReq); err != nil {
+		t.Fatalf("plugin.reconfigure failed: %v", err)
+	}
+	if active := mgr.limiter.ActiveCountForKey("sk-key-alpha"); active != 1 {
+		t.Fatalf("expected active slot=1 preserved across reconfigure, got %d", active)
+	}
+
+	// 6. Stream 1 completes (`request.complete` on stream close / [DONE] / context.Canceled) -> releases slot and records billing!
+	compReq, _ := json.Marshal(pluginapi.RequestCompletion{
+		RequestID:      "req-stream-1",
+		TraceID:        "trace-s1",
+		SourceFormat:   "claude",
+		Model:          "claude-3-5-sonnet-20241022",
+		RequestedModel: "claude-3-5-sonnet-20241022",
+		Stream:         true,
+		Outcome:        pluginapi.RequestCompletionSucceeded,
+		StatusCode:     http.StatusOK,
+	})
+	if _, err := mgr.HandleRPC(pluginabi.MethodRequestComplete, compReq); err != nil {
+		t.Fatalf("request.complete failed: %v", err)
+	}
+	if active := mgr.limiter.ActiveCountForKey("sk-key-alpha"); active != 0 {
+		t.Fatalf("expected active slot=0 after request.complete, got %d", active)
+	}
+
+	// 7. Query Management API to verify usage and USD cost
+	mgmtReq, _ := json.Marshal(pluginapi.ManagementRequest{
+		Method: http.MethodGet,
+		Path:   "/v0/management/key-guard/usage",
+		Query:  url.Values{"unmask": {"true"}},
+	})
+	rawMgmt, err := mgr.HandleRPC(pluginabi.MethodManagementHandle, mgmtReq)
+	if err != nil {
+		t.Fatalf("management.handle failed: %v", err)
+	}
+	mgmtResp := decodeEnvelope[pluginapi.ManagementResponse](t, rawMgmt)
+	if mgmtResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK from management API, got %d: %s", mgmtResp.StatusCode, string(mgmtResp.Body))
+	}
+	// Expected cost: (1000*3.0 + 300*15.0 + 2000*0.3 + 500*3.75) / 1e6 = (3000 + 4500 + 600 + 1875) / 1e6 = $0.009975
+	if !strings.Contains(string(mgmtResp.Body), "$0.009975") {
+		t.Fatalf("expected $0.009975 in management usage response, got: %s", string(mgmtResp.Body))
+	}
+
+	// 8. Query CLI flag `-key-usage`
+	cliReq, _ := json.Marshal(pluginapi.CommandLineExecutionRequest{
+		TriggeredFlags: map[string]pluginapi.CommandLineFlagValue{
+			handler.FlagKeyUsage: {
+				Name:  handler.FlagKeyUsage,
+				Type:  "bool",
+				Value: "true",
+				Set:   true,
+			},
+		},
+	})
+	rawCLI, err := mgr.HandleRPC(pluginabi.MethodCommandLineExecute, cliReq)
+	if err != nil {
+		t.Fatalf("command_line.execute failed: %v", err)
+	}
+	cliResp := decodeEnvelope[pluginapi.CommandLineExecutionResponse](t, rawCLI)
+	if cliResp.ExitCode != 0 || !strings.Contains(string(cliResp.Stdout), "$0.009975") {
+		t.Fatalf("unexpected CLI output: exit=%d, stdout=%s", cliResp.ExitCode, string(cliResp.Stdout))
+	}
+}

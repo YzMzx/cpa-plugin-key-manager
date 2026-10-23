@@ -1,0 +1,36 @@
+# Compiled shared libraries and C headers
+*.dll
+*.so
+*.dylib
+*.h
+*.lib
+*.exp
+*.a
+*.o
+*.exe
+*.test
+*.out
+
+# Build & release output directories
+dist/
+build/
+bin/
+release/
+
+# Runtime data, state, and pricing cache files
+data/
+state/
+*.db
+*.sqlite
+*.sqlite3
+*usage*.json
+*models_dev*.json
+*.tmp.*
+
+# IDE and OS files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
