@@ -315,6 +315,86 @@ func ReadHostConfigAPIKeys(configPath string) []string {
 	return out
 }
 
+// WriteHostConfigAPIKeys updates the global `api-keys` list in CLIProxyAPI's config.yaml on disk
+// while preserving all other YAML nodes and comments.
+func WriteHostConfigAPIKeys(configPath string, keys []string) error {
+	if strings.TrimSpace(configPath) == "" {
+		configPath = os.Getenv("CPA_CONFIG_FILE")
+		if strings.TrimSpace(configPath) == "" {
+			configPath = "config.yaml"
+		}
+	}
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		return nil
+	}
+	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return nil
+	}
+	rootMap := doc.Content[0]
+
+	seqNode := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+	seen := make(map[string]struct{}, len(keys))
+	for _, rawKey := range keys {
+		k := strings.TrimSpace(rawKey)
+		if k == "" {
+			continue
+		}
+		if _, ok := seen[k]; ok {
+			continue
+		}
+		seen[k] = struct{}{}
+		seqNode.Content = append(seqNode.Content, &yaml.Node{
+			Kind:  yaml.ScalarNode,
+			Tag:   "!!str",
+			Value: k,
+		})
+	}
+
+	updated := false
+	for i := 0; i+1 < len(rootMap.Content); i += 2 {
+		kNode := rootMap.Content[i]
+		vNode := rootMap.Content[i+1]
+		if kNode.Value == "api-keys" && (vNode.Kind == yaml.SequenceNode || vNode.Tag == "!!null") {
+			rootMap.Content[i+1] = seqNode
+			updated = true
+			break
+		}
+		if kNode.Value == "access" && vNode.Kind == yaml.MappingNode {
+			for j := 0; j+1 < len(vNode.Content); j += 2 {
+				if vNode.Content[j].Value == "api-keys" {
+					vNode.Content[j+1] = seqNode
+					updated = true
+					break
+				}
+			}
+		}
+	}
+	if !updated {
+		rootMap.Content = append(rootMap.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "api-keys"},
+			seqNode,
+		)
+	}
+
+	var buf strings.Builder
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(&doc); err != nil {
+		_ = enc.Close()
+		return err
+	}
+	_ = enc.Close()
+	return usage.WriteFileAtomically(configPath, []byte(buf.String()))
+}
+
 // MergeDynamicState combines CPA's global `api-keys`, the base config.yaml seed, and dynamic Web UI changes from DynamicRulesState.
 func MergeDynamicState(seed Config, state *DynamicRulesState, hostAPIKeys ...string) Config {
 	out := seed

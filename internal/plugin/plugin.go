@@ -21,7 +21,7 @@ import (
 
 const (
 	PluginID      = "cpa-plugin-key"
-	PluginVersion = "0.3.0"
+	PluginVersion = "0.4.0"
 	PluginAuthor  = "YzMzx"
 	PluginRepo    = "https://github.com/YzMzx/cpa-plugin-key"
 	PluginLogoSVG = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%238b8680'/><path d='M24 22a10 10 0 1 0 9.5 13H42v5h6v-5h4v-6H33.5A10 10 0 0 0 24 22zm0 6a4 4 0 1 1 0 8 4 4 0 0 1 0-8z' fill='%23fff'/></svg>"
@@ -222,22 +222,12 @@ func (m *Manager) Configure(raw []byte) error {
 	)
 
 	m.mu.Lock()
-	needRestartSync := m.lastSyncKey != syncKey
 	m.seedCfg = seedCfg
 	m.dynamicState = dynState
 	m.hostAPIKeys = hostKeys
 	m.cfg = cfg
 	m.lastSyncKey = syncKey
 	m.mu.Unlock()
-
-	if needRestartSync {
-		m.pricingSyncer.ConfigureAndStart(pricing.SyncConfig{
-			SyncURL:      cfg.Pricing.SyncURL,
-			CacheFile:    cfg.Storage.PricingCacheFile,
-			SyncInterval: time.Duration(cfg.Pricing.SyncIntervalHours) * time.Hour,
-			HTTPTimeout:  time.Duration(cfg.Pricing.HTTPTimeoutSeconds) * time.Second,
-		})
-	}
 
 	return nil
 }
@@ -261,22 +251,17 @@ func (m *Manager) registrationPayload() registrationResponse {
 				{
 					Name:        "storage",
 					Type:        pluginapi.ConfigFieldTypeObject,
-					Description: "Persistence paths for usage statistics JSON, dynamic rules JSON, and models.dev pricing cache.",
-				},
-				{
-					Name:        "pricing",
-					Type:        pluginapi.ConfigFieldTypeObject,
-					Description: "models.dev sync interval and custom per-1M-token model price overrides.",
+					Description: "Persistence paths for token usage statistics JSON and dynamic rules JSON.",
 				},
 				{
 					Name:        "default_policy",
 					Type:        pluginapi.ConfigFieldTypeObject,
-					Description: "Default concurrency, quota limit, model whitelist, and upstream binding policy for unlisted API keys.",
+					Description: "Default concurrency, model whitelist, and upstream credential binding policy for API keys.",
 				},
 				{
 					Name:        "keys",
 					Type:        pluginapi.ConfigFieldTypeArray,
-					Description: "Per-API-Key rules (allowed_models, max_concurrency, quota_limit_usd, upstream_binding).",
+					Description: "Per-API-Key rules (allowed_models, max_concurrency, upstream_binding).",
 				},
 			},
 		},
@@ -1068,11 +1053,27 @@ func (m *Manager) UpsertKeyRuleFromJSON(rawBody []byte) (any, error) {
 		m.dynamicState.Keys = append(m.dynamicState.Keys, cloneKeyRule(rule))
 	}
 
+	hasInHost := false
+	for _, hk := range m.hostAPIKeys {
+		if hk == rule.APIKey {
+			hasInHost = true
+			break
+		}
+	}
+	if !hasInHost {
+		m.hostAPIKeys = append(m.hostAPIKeys, rule.APIKey)
+	}
+
 	m.cfg = MergeDynamicState(m.seedCfg, m.dynamicState, m.hostAPIKeys...)
+	allKeys := make([]string, 0, len(m.cfg.Keys))
+	for _, k := range m.cfg.Keys {
+		allKeys = append(allKeys, k.APIKey)
+	}
 	rulesFile := m.cfg.Storage.RulesFile
 	errSave := SaveDynamicRulesFile(rulesFile, m.dynamicState)
 	m.mu.Unlock()
 
+	_ = WriteHostConfigAPIKeys("", allKeys)
 	if errSave != nil {
 		return nil, fmt.Errorf("failed to persist rules to %s: %w", rulesFile, errSave)
 	}
@@ -1118,10 +1119,15 @@ func (m *Manager) DeleteKeyRule(apiKey string) error {
 	}
 
 	m.cfg = MergeDynamicState(m.seedCfg, m.dynamicState, m.hostAPIKeys...)
+	allKeys := make([]string, 0, len(m.cfg.Keys))
+	for _, k := range m.cfg.Keys {
+		allKeys = append(allKeys, k.APIKey)
+	}
 	rulesFile := m.cfg.Storage.RulesFile
 	errSave := SaveDynamicRulesFile(rulesFile, m.dynamicState)
 	m.mu.Unlock()
 
+	_ = WriteHostConfigAPIKeys("", allKeys)
 	return errSave
 }
 

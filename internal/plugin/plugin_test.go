@@ -254,12 +254,12 @@ keys:
 		t.Fatalf("command_line.execute failed: %v", err)
 	}
 	cliResp := decodeEnvelope[pluginapi.CommandLineExecutionResponse](t, rawCLI)
-	if cliResp.ExitCode != 0 || !strings.Contains(string(cliResp.Stdout), "$0.009975") {
+	if cliResp.ExitCode != 0 || !strings.Contains(string(cliResp.Stdout), "TotalTokens=3800") {
 		t.Fatalf("unexpected CLI output: exit=%d, stdout=%s", cliResp.ExitCode, string(cliResp.Stdout))
 	}
 }
 
-func TestWebUIDynamicCRUDAndQuotaEnforcement(t *testing.T) {
+func TestWebUIDynamicCRUDAndTokenTracking(t *testing.T) {
 	tmpDir := t.TempDir()
 	usageFile := filepath.Join(tmpDir, "usage_stats.json")
 	rulesFile := filepath.Join(tmpDir, "key_guard_rules.json")
@@ -295,9 +295,6 @@ storage:
   usage_file: "` + filepath.ToSlash(usageFile) + `"
   rules_file: "` + filepath.ToSlash(rulesFile) + `"
   pricing_cache_file: "` + filepath.ToSlash(cacheFile) + `"
-pricing:
-  sync_url: "http://127.0.0.1:1/offline-test"
-  http_timeout_seconds: 1
 `
 	regReq, _ := json.Marshal(lifecycleRequest{
 		ConfigYAML:    []byte(cfgYAML),
@@ -307,7 +304,7 @@ pricing:
 		t.Fatalf("plugin.register failed: %v", err)
 	}
 
-	// 1. Verify management.register exposes /ui with Menu "API Key 计费与管控"
+	// 1. Verify management.register exposes /ui with Menu "API Key 管控与用量"
 	rawMgmtReg, err := mgr.HandleRPC(pluginabi.MethodManagementRegister, nil)
 	if err != nil {
 		t.Fatalf("management.register failed: %v", err)
@@ -315,16 +312,16 @@ pricing:
 	mgmtReg := decodeEnvelope[managementRegistrationResponse](t, rawMgmtReg)
 	foundUIMenu := false
 	for _, r := range mgmtReg.Resources {
-		if r.Path == "/ui" && r.Menu == "API Key 计费与管控" {
+		if r.Path == "/ui" && r.Menu == "API Key 管控与用量" {
 			foundUIMenu = true
 			break
 		}
 	}
 	if !foundUIMenu {
-		t.Fatalf("expected /ui resource with Menu 'API Key 计费与管控', got: %+v", mgmtReg.Resources)
+		t.Fatalf("expected /ui resource with Menu 'API Key 管控与用量', got: %+v", mgmtReg.Resources)
 	}
 
-	// 2. Verify GET /v0/resource/plugins/cpa-plugin-key/ui renders embedded HTML SPA
+	// 2. Verify GET /v0/resource/plugins/cpa-plugin-key/ui renders embedded HTML SPA without Management Key prompt
 	uiReq, _ := json.Marshal(pluginapi.ManagementRequest{
 		Method: http.MethodGet,
 		Path:   "/v0/resource/plugins/cpa-plugin-key/ui",
@@ -334,67 +331,54 @@ pricing:
 		t.Fatalf("GET /ui failed: %v", err)
 	}
 	uiResp := decodeEnvelope[pluginapi.ManagementResponse](t, rawUI)
-	if uiResp.StatusCode != http.StatusOK || !strings.Contains(string(uiResp.Body), "API Key 计费与管控") {
+	if uiResp.StatusCode != http.StatusOK || !strings.Contains(string(uiResp.Body), "API Key 管控与 Token 用量") {
 		t.Fatalf("unexpected /ui HTML response: status=%d", uiResp.StatusCode)
 	}
 
-	// 2b. Verify POST /v0/management/key-guard/keys/sync unifies CPA global api-keys with plugin
+	// 2b. Verify zero-prompt GET /v0/resource/plugins/cpa-plugin-key/ui?op=sync-keys unifies CPA global api-keys with plugin
 	syncKeysReq, _ := json.Marshal(pluginapi.ManagementRequest{
-		Method: http.MethodPost,
-		Path:   "/v0/management/key-guard/keys/sync",
-		Body:   []byte(`{"keys":["sk-cpa-global-1","sk-cpa-global-2"]}`),
+		Method: http.MethodGet,
+		Path:   "/v0/resource/plugins/cpa-plugin-key/ui",
+		Query:  url.Values{"op": {"sync-keys"}, "payload": {`{"keys":["sk-cpa-global-1","sk-cpa-global-2"]}`}},
 	})
 	rawSyncKeys, err := mgr.HandleRPC(pluginabi.MethodManagementHandle, syncKeysReq)
 	if err != nil {
-		t.Fatalf("POST /keys/sync failed: %v", err)
+		t.Fatalf("GET /ui?op=sync-keys failed: %v", err)
 	}
 	syncKeysResp := decodeEnvelope[pluginapi.ManagementResponse](t, rawSyncKeys)
 	if syncKeysResp.StatusCode != http.StatusOK || !strings.Contains(string(syncKeysResp.Body), "sk-cpa-global-1") || !strings.Contains(string(syncKeysResp.Body), "claude-sonnet-4-20250514") {
-		t.Fatalf("unexpected /keys/sync response: status=%d body=%s", syncKeysResp.StatusCode, string(syncKeysResp.Body))
+		t.Fatalf("unexpected /ui?op=sync-keys response: status=%d body=%s", syncKeysResp.StatusCode, string(syncKeysResp.Body))
 	}
 
-	// 3. Dynamically add a custom price override via POST /v0/management/key-guard/pricing/custom
-	priceReq, _ := json.Marshal(pluginapi.ManagementRequest{
-		Method: http.MethodPost,
-		Path:   "/v0/management/key-guard/pricing/custom",
-		Body:   []byte(`{"model":"gpt-4o*","price":{"input":10.0,"output":20.0,"cache_read":0,"cache_write":0}}`),
-	})
-	rawPrice, err := mgr.HandleRPC(pluginabi.MethodManagementHandle, priceReq)
-	if err != nil {
-		t.Fatalf("POST /pricing/custom failed: %v", err)
-	}
-	priceResp := decodeEnvelope[pluginapi.ManagementResponse](t, rawPrice)
-	if priceResp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 from /pricing/custom, got %d: %s", priceResp.StatusCode, string(priceResp.Body))
-	}
-
-	// 4. Dynamically create a new API Key rule with quota_limit_usd = $0.01 via POST /v0/management/key-guard/keys
+	// 3. Dynamically create a new API Key rule via zero-prompt GET /v0/resource/plugins/cpa-plugin-key/ui?op=save-key
 	keyCreateReq, _ := json.Marshal(pluginapi.ManagementRequest{
-		Method: http.MethodPost,
-		Path:   "/v0/management/key-guard/keys",
-		Body: []byte(`{
-			"api_key": "sk-dynamic-user-1",
-			"name": "Dynamic User 1",
-			"enabled": true,
-			"max_concurrency": 2,
-			"quota_limit_usd": 0.01,
-			"allowed_models": ["gpt-4o*"],
-			"upstream_binding": {
-				"strategy": "round-robin",
-				"credentials": ["openai-tier5.json"]
-			}
-		}`),
+		Method: http.MethodGet,
+		Path:   "/v0/resource/plugins/cpa-plugin-key/ui",
+		Query: url.Values{
+			"op": {"save-key"},
+			"payload": {`{
+				"api_key": "sk-dynamic-user-1",
+				"name": "Dynamic User 1",
+				"enabled": true,
+				"max_concurrency": 1,
+				"allowed_models": ["gpt-4o*"],
+				"upstream_binding": {
+					"strategy": "round-robin",
+					"credentials": ["openai-tier5.json"]
+				}
+			}`},
+		},
 	})
 	rawKeyCreate, err := mgr.HandleRPC(pluginabi.MethodManagementHandle, keyCreateReq)
 	if err != nil {
-		t.Fatalf("POST /keys failed: %v", err)
+		t.Fatalf("GET /ui?op=save-key failed: %v", err)
 	}
 	keyCreateResp := decodeEnvelope[pluginapi.ManagementResponse](t, rawKeyCreate)
 	if keyCreateResp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 from POST /keys, got %d: %s", keyCreateResp.StatusCode, string(keyCreateResp.Body))
+		t.Fatalf("expected 200 from /ui?op=save-key, got %d: %s", keyCreateResp.StatusCode, string(keyCreateResp.Body))
 	}
 
-	// 5. Execute a request with sk-dynamic-user-1 consuming 1000 input + 500 output tokens = $0.01 + $0.01 = $0.02 (>= $0.01 quota)
+	// 4. Execute a request with sk-dynamic-user-1 consuming 1000 input + 500 output = 1500 total tokens
 	req1, _ := json.Marshal(pluginapi.RequestInterceptRequest{
 		RequestID:      "dyn-req-1",
 		SourceFormat:   "openai",
@@ -406,7 +390,7 @@ pricing:
 	rawInt1, _ := mgr.HandleRPC(pluginabi.MethodRequestInterceptBefore, req1)
 	respInt1 := decodeEnvelope[pluginapi.RequestInterceptResponse](t, rawInt1)
 	if respInt1.Terminate {
-		t.Fatalf("expected first request before quota exhaustion to pass, got: %+v", respInt1)
+		t.Fatalf("expected first request to pass, got: %+v", respInt1)
 	}
 
 	respAfter1, _ := json.Marshal(pluginapi.ResponseInterceptRequest{
@@ -427,35 +411,7 @@ pricing:
 	})
 	_, _ = mgr.HandleRPC(pluginabi.MethodRequestComplete, comp1)
 
-	// 6. Second request with sk-dynamic-user-1 must now be rejected with 429 insufficient_quota
-	req2, _ := json.Marshal(pluginapi.RequestInterceptRequest{
-		RequestID:      "dyn-req-2",
-		SourceFormat:   "openai",
-		Model:          "gpt-4o",
-		RequestedModel: "gpt-4o",
-		Headers:        http.Header{"Authorization": {"Bearer sk-dynamic-user-1"}},
-		Body:           []byte(`{"model":"gpt-4o"}`),
-	})
-	rawInt2, _ := mgr.HandleRPC(pluginabi.MethodRequestInterceptBefore, req2)
-	respInt2 := decodeEnvelope[pluginapi.RequestInterceptResponse](t, rawInt2)
-	if !respInt2.Terminate || respInt2.StatusCode != http.StatusTooManyRequests || !strings.Contains(string(respInt2.ResponseBody), "insufficient_quota") {
-		t.Fatalf("expected 429 insufficient_quota on second request, got status=%d body=%s", respInt2.StatusCode, string(respInt2.ResponseBody))
-	}
-
-	// 7. User self-service query (#account mode)
-	selfReq, _ := json.Marshal(pluginapi.ManagementRequest{
-		Method:  http.MethodGet,
-		Path:    "/v0/resource/plugins/cpa-plugin-key/usage",
-		Headers: http.Header{"X-Api-Key": {"sk-dynamic-user-1"}},
-		Query:   url.Values{"mode": {"account"}, "format": {"json"}},
-	})
-	rawSelf, _ := mgr.HandleRPC(pluginabi.MethodManagementHandle, selfReq)
-	selfResp := decodeEnvelope[pluginapi.ManagementResponse](t, rawSelf)
-	if selfResp.StatusCode != http.StatusOK || !strings.Contains(string(selfResp.Body), "Dynamic User 1") || !strings.Contains(string(selfResp.Body), "$0.020000") {
-		t.Fatalf("unexpected self-service account response: %s", string(selfResp.Body))
-	}
-
-	// 8. Verify persistence across new Manager restart (loads key_guard_rules.json from disk)
+	// 5. Verify persistence across new Manager restart (loads key_guard_rules.json from disk) via zero-prompt /ui?op=overview
 	mgr2 := NewManager(hostInvoker)
 	defer mgr2.Shutdown()
 	if _, err := mgr2.HandleRPC(pluginabi.MethodPluginRegister, regReq); err != nil {
@@ -463,7 +419,8 @@ pricing:
 	}
 	ovReq, _ := json.Marshal(pluginapi.ManagementRequest{
 		Method: http.MethodGet,
-		Path:   "/v0/management/key-guard/overview",
+		Path:   "/v0/resource/plugins/cpa-plugin-key/ui",
+		Query:  url.Values{"op": {"overview"}},
 	})
 	rawOv, _ := mgr2.HandleRPC(pluginabi.MethodManagementHandle, ovReq)
 	ovResp := decodeEnvelope[pluginapi.ManagementResponse](t, rawOv)

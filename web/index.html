@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>API Key 计费与管控 - CLIProxyAPI</title>
+<title>API Key 管控与用量 - CLIProxyAPI</title>
 <style>
   /* ==========================================================================
    * CLI-Proxy-API-Management-Center (CPAMC) Unified Design System & Theme Tokens
@@ -160,20 +160,12 @@
     gap: 12px;
     margin-bottom: 18px;
   }
-  .app-title {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
   .app-title h1 {
     margin: 0;
     font-size: 21px;
     font-weight: 650;
     letter-spacing: -0.01em;
     color: var(--text-primary);
-    display: flex;
-    align-items: center;
-    gap: 10px;
   }
   .app-subtitle {
     margin: 2px 0 0;
@@ -287,7 +279,7 @@
     font-weight: 500;
   }
 
-  /* Cards & Inset Cards */
+  /* Cards */
   .card {
     background: var(--bg-primary);
     border: 1px solid var(--border-color);
@@ -295,12 +287,6 @@
     box-shadow: var(--shadow);
     padding: 18px;
     margin-bottom: var(--page-gap);
-  }
-  .inset-card {
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-color);
-    border-radius: var(--radius-md);
-    padding: 14px;
   }
   .card-header {
     display: flex;
@@ -428,12 +414,12 @@
     border-color: var(--border-primary);
   }
   .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
-  .cost-val { font-family: var(--font-mono); font-weight: 700; color: var(--text-primary); }
+  .token-val { font-family: var(--font-mono); font-weight: 700; color: var(--text-primary); }
 
   /* Progress Bar */
   .bar {
     width: 100%;
-    min-width: 110px;
+    min-width: 100px;
     height: 6px;
     background: var(--bg-tertiary);
     border-radius: 999px;
@@ -446,8 +432,6 @@
     border-radius: 999px;
     transition: width 0.2s ease;
   }
-  .bar-fill.warn { background: var(--quota-medium-color); }
-  .bar-fill.danger { background: var(--error-color); }
 
   /* Forms & Inputs */
   .form-grid {
@@ -572,10 +556,6 @@
     gap: 6px;
     padding: 4px 2px;
   }
-  .selection-list.disabled-overlay {
-    opacity: 0.48;
-    pointer-events: none;
-  }
   .check-item {
     display: flex;
     align-items: center;
@@ -687,7 +667,7 @@
   .hidden { display: none !important; }
 </style>
 <script>
-  /* Synchronize theme & management key with Cli-Proxy-API-Management-Center (CPAMC) */
+  /* Automatic Theme & Auth Synchronization with Cli-Proxy-API-Management-Center (CPAMC) */
   function cpamcStoredValue(name) {
     try {
       let raw = localStorage.getItem(name);
@@ -704,23 +684,18 @@
     } catch (_) { return null; }
   }
 
-  (function initThemeSync() {
+  (function initThemeSyncWithCPA() {
     const HOST_THEME_KEY = "cli-proxy-theme";
-    const OWN_THEME_KEY = "cpa-plugin-key:theme";
 
     function parentDoc() {
       if (window.parent === window) return null;
       try { return window.parent.document; } catch (_) { return null; }
     }
 
-    function readHostTheme() {
+    function resolveCPATheme() {
       const pdoc = parentDoc();
       if (pdoc) {
         return pdoc.documentElement.getAttribute("data-theme") || "";
-      }
-      const own = localStorage.getItem(OWN_THEME_KEY);
-      if (own === "dark" || own === "white" || own === "warm") {
-        return own === "warm" ? "" : own;
       }
       const hostStored = cpamcStoredValue(HOST_THEME_KEY)?.state?.theme;
       if (hostStored === "dark" || hostStored === "white") return hostStored;
@@ -740,19 +715,19 @@
       root.style.colorScheme = t === "dark" ? "dark" : "light";
     }
 
-    const sync = () => applyTheme(readHostTheme());
+    const sync = () => applyTheme(resolveCPATheme());
     sync();
 
     const pdoc = parentDoc();
     if (pdoc) {
       new MutationObserver(sync).observe(pdoc.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
     }
-    window.cyclePluginTheme = function () {
-      const cur = document.documentElement.getAttribute("data-theme") || "";
-      const next = cur === "" ? "white" : (cur === "white" ? "dark" : "");
-      localStorage.setItem(OWN_THEME_KEY, next || "warm");
-      applyTheme(next);
-    };
+    window.addEventListener("storage", (e) => {
+      if (!e.key || e.key === HOST_THEME_KEY) sync();
+    });
+    if (window.matchMedia) {
+      window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", sync);
+    }
   })();
 </script>
 </head>
@@ -761,422 +736,260 @@
   <!-- Header -->
   <header class="app-header">
     <div class="app-title">
-      <div>
-        <h1 id="pageTitle">API Key 计费与管控</h1>
-        <p class="app-subtitle" id="pageSubtitle">与 CLIProxyAPI 全局 API Key 统一同步 · 复选框模型白名单 · 复选框凭证路由绑定 · Token/USD 实时账单</p>
-      </div>
+      <h1>API Key 管控与 Token 用量</h1>
+      <p class="app-subtitle">与 CLIProxyAPI 全局 API Key 统一同步 · 复选框模型白名单 · 复选框账号凭证绑定 · 多协议 Token 用量统计</p>
     </div>
     <div class="header-actions">
-      <span class="tag plain" id="syncBadge">models.dev: 同步就绪</span>
-      <button type="button" class="btn btn-sm" onclick="window.cyclePluginTheme()" title="切换主题 (暖灰 / 纯白 / 深色)">🌓 主题</button>
-      <button type="button" class="btn btn-sm" onclick="copySelfQueryLink()" title="复制给下游用户的账单自查链接">🔗 复制自查链接</button>
-      <button type="button" class="btn btn-sm" id="btnSwitchMode" onclick="toggleMode()">👤 Key 自查模式</button>
-      <button type="button" class="btn btn-sm" id="btnSetMgmtKey" onclick="openMgmtKeyModal()">🛡️ 管理密钥</button>
-      <button type="button" class="btn btn-primary btn-sm" onclick="refreshCurrentView()">🔄 刷新</button>
+      <button type="button" class="btn btn-primary btn-sm" onclick="loadAdminOverview()">🔄 刷新数据</button>
     </div>
   </header>
 
-  <!-- ==================== ADMIN VIEW ==================== -->
-  <div id="adminContainer">
-    <div class="page-tabs-row">
-      <div class="tabs" role="tablist">
-        <button type="button" class="tab-btn active" data-tab="tab-keys" onclick="switchAdminTab('tab-keys')">API Key 与规则管控</button>
-        <button type="button" class="tab-btn" data-tab="tab-dashboard" onclick="switchAdminTab('tab-dashboard')">用量排行与账单看板</button>
-        <button type="button" class="tab-btn" data-tab="tab-routing" onclick="switchAdminTab('tab-routing')">全局默认策略与凭证池</button>
-        <button type="button" class="tab-btn" data-tab="tab-pricing" onclick="switchAdminTab('tab-pricing')">模型定价 (models.dev)</button>
-      </div>
+  <!-- Navigation Tabs -->
+  <div class="page-tabs-row">
+    <div class="tabs" role="tablist">
+      <button type="button" class="tab-btn active" data-tab="tab-keys" onclick="switchAdminTab('tab-keys')">API Key 与规则管控</button>
+      <button type="button" class="tab-btn" data-tab="tab-dashboard" onclick="switchAdminTab('tab-dashboard')">Token 用量统计看板</button>
+      <button type="button" class="tab-btn" data-tab="tab-routing" onclick="switchAdminTab('tab-routing')">全局默认策略与凭证池</button>
     </div>
-
-    <!-- KPI Summary Row (Always visible at top of Admin) -->
-    <div class="kpi-grid">
-      <div class="kpi-card">
-        <div class="kpi-label">全局累计消耗 (USD)</div>
-        <div class="kpi-value" id="kpiTotalCost">$0.000000</div>
-        <div class="kpi-sub" id="kpiCostSub">与 CPA 全局 API Key 实时联动计费</div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-label">累计总 Token 消耗</div>
-        <div class="kpi-value" id="kpiTotalTokens">0</div>
-        <div class="kpi-sub" id="kpiTokenSub">输入: 0 · 输出: 0 · 缓存读: 0</div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-label">累计请求总数 / 成功率</div>
-        <div class="kpi-value" id="kpiTotalRequests">0</div>
-        <div class="kpi-sub" id="kpiReqSub">成功: 0 · 失败: 0 (100.0%)</div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-label">实时活跃并发 / 统一 Key 总数</div>
-        <div class="kpi-value" id="kpiActiveConc">0</div>
-        <div class="kpi-sub" id="kpiKeyCountSub">CPA 统一 API Key: 0 个</div>
-      </div>
-    </div>
-
-    <!-- TAB 1: UNIFIED API KEYS & GOVERNANCE CRUD -->
-    <section id="tab-keys" class="admin-tab">
-      <div class="card">
-        <div class="card-header">
-          <div>
-            <h2 class="card-title">统一 API Key 列表与并发、配额、模型/凭证复选框管控</h2>
-            <div class="card-hint">此处列表与 CLIProxyAPI 主配置 <code>api-keys</code> 全局双向同步；新建或删除 Key 将同时更新 CPA 全局配置与插件规则。</div>
-          </div>
-          <div class="input-row">
-            <input type="text" class="input" style="width:220px" id="crudKeySearch" placeholder="搜索 API Key 或备注名称..." oninput="renderKeysCrudTable()">
-            <button type="button" class="btn btn-primary" onclick="openKeyModal(null)">➕ 新建 API Key</button>
-          </div>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>状态</th>
-                <th>API Key (与 CPA 全局同步)</th>
-                <th>备注名称</th>
-                <th>并发限制 (活跃/上限)</th>
-                <th>已用金额 / 配额上限</th>
-                <th>模型白名单规则</th>
-                <th>绑定账号凭证</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody id="crudKeysTableBody">
-              <tr><td colspan="8" style="text-align:center;color:var(--text-tertiary)">加载中...</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </section>
-
-    <!-- TAB 2: DASHBOARD & LEADERBOARDS -->
-    <section id="tab-dashboard" class="admin-tab hidden">
-      <div class="card">
-        <div class="card-header">
-          <div>
-            <h2 class="card-title">按 API Key 消耗排行榜与模型明细</h2>
-            <div class="card-hint">点击「展开明细」可查看单个 API Key 在各个模型上的输入、输出、缓存 Token 与 USD 费用。</div>
-          </div>
-          <div class="input-row">
-            <input type="text" class="input" style="width:210px" id="dashKeySearch" placeholder="搜索 Key 或备注..." oninput="renderDashboardTables()">
-            <button type="button" class="btn btn-sm btn-danger" onclick="resetUsageStats('')">清空全部统计</button>
-          </div>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>API Key / 备注</th>
-                <th>实时并发</th>
-                <th>配额进度 (USD)</th>
-                <th>请求数 (成功/失败)</th>
-                <th>Input / Output</th>
-                <th>Cache (读 / 写)</th>
-                <th>总 Tokens</th>
-                <th>累计费用 (USD)</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody id="dashKeyTableBody">
-              <tr><td colspan="9" style="text-align:center;color:var(--text-tertiary)">加载中...</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-header">
-          <h2 class="card-title">按模型 (Model) 全局消耗排行榜</h2>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>模型名称 (Model)</th>
-                <th>生效单价 ($/1M In / Out)</th>
-                <th>请求数 (成功/失败)</th>
-                <th>Input Tokens</th>
-                <th>Output (含推理)</th>
-                <th>Cache (读 / 写)</th>
-                <th>总 Tokens</th>
-                <th>累计费用 (USD)</th>
-                <th>费用占比</th>
-              </tr>
-            </thead>
-            <tbody id="dashModelTableBody">
-              <tr><td colspan="9" style="text-align:center;color:var(--text-tertiary)">加载中...</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </section>
-
-    <!-- TAB 3: GLOBAL DEFAULT POLICY & UPSTREAM CREDENTIALS -->
-    <section id="tab-routing" class="admin-tab hidden">
-      <div class="card">
-        <div class="card-header">
-          <div>
-            <h2 class="card-title">全局默认策略 (Default Policy)</h2>
-            <div class="card-hint">当 CPA 中的 API Key 未单独定制专属规则时，默认适用以下并发上限、配额上限及模型/账号凭证复选框范围。</div>
-          </div>
-          <button type="button" class="btn btn-primary" onclick="saveDefaultPolicy()">💾 保存全局默认策略</button>
-        </div>
-
-        <div class="form-grid">
-          <div class="form-group">
-            <label class="form-label">未单独定制规则的 CPA Key 访问策略</label>
-            <select id="dpAllowUnlisted">
-              <option value="true">允许访问（适用下方默认策略）</option>
-              <option value="false">禁止访问（必须开启专属规则才可调用）</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label class="form-label">默认单 Key 最大并发数 (Max Concurrency)</label>
-            <input type="number" min="0" class="input" id="dpMaxConcurrency" placeholder="0 表示不限并发">
-          </div>
-          <div class="form-group">
-            <label class="form-label">默认单 Key 配额上限 (USD, Quota Limit)</label>
-            <input type="number" min="0" step="0.01" class="input" id="dpQuotaLimit" placeholder="0 表示不限额度">
-          </div>
-          <div class="form-group">
-            <label class="form-label">默认上游账号凭证调度策略</label>
-            <select id="dpBindStrategy">
-              <option value="round-robin">round-robin (在勾选凭证间轮询负载均衡)</option>
-              <option value="fill-first">fill-first (按优先级顺序依次使用)</option>
-              <option value="strict">strict (严格隔离：勾选凭证不可用时直接拒绝)</option>
-            </select>
-          </div>
-        </div>
-
-        <!-- Default Policy Model Checkboxes -->
-        <div class="form-group">
-          <label class="form-label">
-            <span>默认模型白名单规则（复选框选择）</span>
-            <span class="tag plain" id="dpModelCountBadge">全部允许 (*)</span>
-          </label>
-          <div class="selector-box">
-            <div class="selector-mode-bar">
-              <label class="master-check-label">
-                <input type="checkbox" id="dpAllModelsCheck" checked onchange="onToggleAllModels('dp')">
-                <span>允许访问全部模型 (<code>*</code>，不限制模型)</span>
-              </label>
-              <div class="input-row">
-                <button type="button" class="btn btn-sm" onclick="batchCheckModels('dp', true)">全选当前列表</button>
-                <button type="button" class="btn btn-sm" onclick="batchCheckModels('dp', false)">清空勾选</button>
-              </div>
-            </div>
-            <div id="dpModelPickerPanel" class="hidden">
-              <div class="selector-toolbar">
-                <div class="provider-pills" id="dpProviderPills"></div>
-                <input type="text" class="input" style="width:220px;min-height:30px;padding:4px 9px" id="dpModelSearch" placeholder="搜索模型名称..." oninput="renderModelCheckList('dp')">
-              </div>
-              <div class="selection-list" id="dpModelCheckList"></div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Default Policy Credential Checkboxes -->
-        <div class="form-group" style="margin-bottom:0">
-          <label class="form-label">
-            <span>默认绑定上游账号凭证（复选框选择）</span>
-            <span class="tag plain" id="dpCredCountBadge">全部可用凭证</span>
-          </label>
-          <div class="selector-box">
-            <div class="selector-mode-bar">
-              <label class="master-check-label">
-                <input type="checkbox" id="dpAllCredsCheck" checked onchange="onToggleAllCreds('dp')">
-                <span>使用全部可用账号凭证（公共池自动负载均衡）</span>
-              </label>
-              <div class="input-row">
-                <button type="button" class="btn btn-sm" onclick="batchCheckCreds('dp', true)">全选凭证</button>
-                <button type="button" class="btn btn-sm" onclick="batchCheckCreds('dp', false)">清空勾选</button>
-              </div>
-            </div>
-            <div id="dpCredPickerPanel" class="hidden">
-              <div class="selector-toolbar">
-                <input type="text" class="input" style="width:240px;min-height:30px;padding:4px 9px" id="dpCredSearch" placeholder="搜索凭证名称、邮箱或 Provider..." oninput="renderCredCheckList('dp')">
-              </div>
-              <div class="selection-list" id="dpCredCheckList"></div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Host Auth Files Overview Table -->
-      <div class="card">
-        <div class="card-header">
-          <div>
-            <h2 class="card-title">宿主已加载的上游账号凭证列表 (Host Auth Files)</h2>
-            <div class="card-hint">实时同步自 CLIProxyAPI 宿主 <code>host.auth.list</code> 与 <code>host.auth.models</code>。</div>
-          </div>
-          <button type="button" class="btn btn-sm" onclick="loadAdminOverview()">🔄 刷新凭证</button>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>凭证名称 / ID</th>
-                <th>Provider</th>
-                <th>账号 / 邮箱 / 标签</th>
-                <th>状态</th>
-                <th>优先级</th>
-                <th>成功 / 失败</th>
-                <th>已绑定此凭证的 API Key</th>
-              </tr>
-            </thead>
-            <tbody id="hostAuthTableBody">
-              <tr><td colspan="7" style="text-align:center;color:var(--text-tertiary)">加载中...</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </section>
-
-    <!-- TAB 4: MODEL PRICING -->
-    <section id="tab-pricing" class="admin-tab hidden">
-      <div class="card">
-        <div class="card-header">
-          <div>
-            <h2 class="card-title">自定义模型单价覆盖 (USD / 1M Tokens)</h2>
-            <div class="card-hint">优先级高于 <code>models.dev</code> 标准价，修改后立即热生效并持久化至 <code>data/key_guard_rules.json</code>。</div>
-          </div>
-          <div class="input-row">
-            <button type="button" class="btn btn-sm" id="btnSyncPricing" onclick="triggerModelsDevSync()">🌐 立即同步 models.dev</button>
-            <button type="button" class="btn btn-primary" onclick="openPriceModal('', 0, 0, 0, 0)">➕ 新增自定义价格</button>
-          </div>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>模型名称 / 通配符</th>
-                <th>匹配类型</th>
-                <th>Input ($ / 1M)</th>
-                <th>Output ($ / 1M)</th>
-                <th>Cache Read ($ / 1M)</th>
-                <th>Cache Write ($ / 1M)</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody id="customPriceTableBody">
-              <tr><td colspan="7" style="text-align:center;color:var(--text-tertiary)">暂无自定义价格</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-header">
-          <div>
-            <h2 class="card-title">models.dev 官方参考价格库</h2>
-            <div class="card-hint" id="pricingSyncMeta">点击「覆盖此价格」可一键填入自定义价格表。</div>
-          </div>
-          <div class="input-row">
-            <input type="text" class="input" style="width:260px" id="refPriceSearch" placeholder="搜索模型 (如 claude, gpt-4o, gemini)..." oninput="searchRefPricesDebounced()">
-          </div>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>模型标识 (Model ID)</th>
-                <th>Input ($ / 1M)</th>
-                <th>Output ($ / 1M)</th>
-                <th>Cache Read ($ / 1M)</th>
-                <th>Cache Write ($ / 1M)</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody id="refPriceTableBody">
-              <tr><td colspan="6" style="text-align:center;color:var(--text-tertiary)">加载中...</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </section>
   </div>
 
-  <!-- ==================== USER SELF-QUERY VIEW (#account) ==================== -->
-  <div id="accountContainer" class="hidden">
+  <!-- KPI Summary Row -->
+  <div class="kpi-grid">
+    <div class="kpi-card">
+      <div class="kpi-label">累计总 Token 用量</div>
+      <div class="kpi-value" id="kpiTotalTokens">0</div>
+      <div class="kpi-sub" id="kpiTokenSub">输入: 0 · 输出: 0 · 推理: 0</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">缓存 Token 用量 (Cache Read / Write)</div>
+      <div class="kpi-value" id="kpiCacheTokens">0</div>
+      <div class="kpi-sub" id="kpiCacheSub">缓存读取: 0 · 缓存写入: 0</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">累计请求总数 / 成功率</div>
+      <div class="kpi-value" id="kpiTotalRequests">0</div>
+      <div class="kpi-sub" id="kpiReqSub">成功: 0 · 失败: 0 (100.0%)</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">实时活跃并发 / 统一 Key 总数</div>
+      <div class="kpi-value" id="kpiActiveConc">0</div>
+      <div class="kpi-sub" id="kpiKeyCountSub">CPA 统一 API Key: 0 个</div>
+    </div>
+  </div>
+
+  <!-- TAB 1: UNIFIED API KEYS & GOVERNANCE CRUD -->
+  <section id="tab-keys" class="admin-tab">
     <div class="card">
       <div class="card-header">
         <div>
-          <h2 class="card-title">API Key 实时配额、并发与账单自查</h2>
-          <div class="card-hint">输入您的 API Key 查询当前实时并发占用、配额余额、授权模型列表与各模型 Token 消费明细。</div>
+          <h2 class="card-title">统一 API Key 列表与并发、模型白名单、凭证绑定管控</h2>
+          <div class="card-hint">此处列表与 CLIProxyAPI 主配置 <code>api-keys</code> 全局统一同步；新建或删除 Key 将同时更新 CPA 全局配置与插件规则。</div>
+        </div>
+        <div class="input-row">
+          <input type="text" class="input" style="width:220px" id="crudKeySearch" placeholder="搜索 API Key 或备注名称..." oninput="renderKeysCrudTable()">
+          <button type="button" class="btn btn-primary" onclick="openKeyModal(null)">➕ 新建 API Key</button>
         </div>
       </div>
-      <div class="input-row" style="max-width:620px">
-        <input type="password" class="input mono" style="flex:1" id="selfApiKeyInput" placeholder="请输入您的 API Key (例如 sk-...)" onkeydown="if(event.key==='Enter') querySelfAccount()">
-        <button type="button" class="btn" onclick="toggleSelfKeyVisibility()">👁️</button>
-        <button type="button" class="btn btn-primary" onclick="querySelfAccount()">查询账单</button>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>状态</th>
+              <th>API Key (与 CPA 全局同步)</th>
+              <th>备注名称</th>
+              <th>并发限制 (活跃/上限)</th>
+              <th>请求数 (成功/失败)</th>
+              <th>累计总 Tokens (输入/输出)</th>
+              <th>模型白名单规则</th>
+              <th>绑定账号凭证</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="crudKeysTableBody">
+            <tr><td colspan="9" style="text-align:center;color:var(--text-tertiary)">加载中...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- TAB 2: TOKEN USAGE DASHBOARD & LEADERBOARDS -->
+  <section id="tab-dashboard" class="admin-tab hidden">
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <h2 class="card-title">按 API Key 统计的 Token 用量排行与模型明细</h2>
+          <div class="card-hint">点击「展开明细」可查看单个 API Key 在各个模型上的输入、输出、推理及缓存 Token 消耗明细。</div>
+        </div>
+        <div class="input-row">
+          <input type="text" class="input" style="width:210px" id="dashKeySearch" placeholder="搜索 Key 或备注..." oninput="renderDashboardTables()">
+          <button type="button" class="btn btn-sm btn-danger" onclick="resetUsageStats('')">清空全部用量统计</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>API Key / 备注</th>
+              <th>实时并发</th>
+              <th>请求数 (成功/失败)</th>
+              <th>Input Tokens</th>
+              <th>Output (含推理)</th>
+              <th>Cache (读 / 写)</th>
+              <th>总 Tokens</th>
+              <th>Token 占比</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="dashKeyTableBody">
+            <tr><td colspan="9" style="text-align:center;color:var(--text-tertiary)">加载中...</td></tr>
+          </tbody>
+        </table>
       </div>
     </div>
 
-    <div id="selfResultBox" class="hidden">
-      <div class="kpi-grid">
-        <div class="kpi-card">
-          <div class="kpi-label">API Key 状态 / 备注</div>
-          <div class="kpi-value" id="selfKeyStatus" style="font-size:18px">-</div>
-          <div class="kpi-sub mono" id="selfKeyMasked">-</div>
+    <div class="card">
+      <div class="card-header">
+        <h2 class="card-title">按模型 (Model) 全局 Token 用量排行</h2>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>模型名称 (Model)</th>
+              <th>请求数 (成功/失败)</th>
+              <th>Input Tokens</th>
+              <th>Output Tokens</th>
+              <th>Reasoning Tokens</th>
+              <th>Cache (读 / 写)</th>
+              <th>总 Tokens</th>
+              <th>Token 占比</th>
+            </tr>
+          </thead>
+          <tbody id="dashModelTableBody">
+            <tr><td colspan="8" style="text-align:center;color:var(--text-tertiary)">加载中...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- TAB 3: GLOBAL DEFAULT POLICY & UPSTREAM CREDENTIALS -->
+  <section id="tab-routing" class="admin-tab hidden">
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <h2 class="card-title">全局默认策略 (Default Policy)</h2>
+          <div class="card-hint">当 CPA 中的 API Key 未单独定制专属规则时，默认适用以下并发上限及模型/账号凭证复选框范围。</div>
         </div>
-        <div class="kpi-card">
-          <div class="kpi-label">已用金额 / 配额上限 (USD)</div>
-          <div class="kpi-value" id="selfUsedCost">$0.000000</div>
-          <div class="bar"><div class="bar-fill" id="selfQuotaBar" style="width:0%"></div></div>
-          <div class="kpi-sub" id="selfQuotaSub">配额上限: 不限额度</div>
+        <button type="button" class="btn btn-primary" onclick="saveDefaultPolicy()">💾 保存全局默认策略</button>
+      </div>
+
+      <div class="form-grid">
+        <div class="form-group">
+          <label class="form-label">未单独定制规则的 CPA Key 访问策略</label>
+          <select id="dpAllowUnlisted">
+            <option value="true">允许访问（适用下方默认策略）</option>
+            <option value="false">禁止访问（必须开启专属规则才可调用）</option>
+          </select>
         </div>
-        <div class="kpi-card">
-          <div class="kpi-label">实时活跃并发 / 并发上限</div>
-          <div class="kpi-value" id="selfConcurrency">0 / ∞</div>
-          <div class="kpi-sub" id="selfReqSummary">累计请求: 0 次 (成功 0 / 失败 0)</div>
+        <div class="form-group">
+          <label class="form-label">默认单 Key 最大并发数 (Max Concurrency)</label>
+          <input type="number" min="0" class="input" id="dpMaxConcurrency" placeholder="0 表示不限并发">
         </div>
-        <div class="kpi-card">
-          <div class="kpi-label">累计总 Token 消耗</div>
-          <div class="kpi-value" id="selfTotalTokens">0</div>
-          <div class="kpi-sub" id="selfTokenBreakdown">输入: 0 · 输出: 0 · 缓存: 0</div>
+        <div class="form-group">
+          <label class="form-label">默认上游账号凭证调度策略</label>
+          <select id="dpBindStrategy">
+            <option value="round-robin">round-robin (在勾选凭证间轮询负载均衡)</option>
+            <option value="fill-first">fill-first (按优先级顺序依次使用)</option>
+            <option value="strict">strict (严格隔离：勾选凭证不可用时直接拒绝)</option>
+          </select>
         </div>
       </div>
 
-      <div class="card">
-        <div class="card-header">
-          <h2 class="card-title">授权模型范围与专属通道路由</h2>
-        </div>
-        <div class="inset-card" style="display:grid;gap:10px">
-          <div>
-            <span style="color:var(--text-secondary);font-size:13px;margin-right:8px">可用模型范围:</span>
-            <span id="selfAllowedModels"></span>
+      <!-- Default Policy Model Checkboxes -->
+      <div class="form-group">
+        <label class="form-label">
+          <span>默认模型白名单规则（复选框选择）</span>
+          <span class="tag plain" id="dpModelCountBadge">全部允许 (*)</span>
+        </label>
+        <div class="selector-box">
+          <div class="selector-mode-bar">
+            <label class="master-check-label">
+              <input type="checkbox" id="dpAllModelsCheck" checked onchange="onToggleAllModels('dp')">
+              <span>允许访问全部模型 (<code>*</code>，不限制模型)</span>
+            </label>
+            <div class="input-row">
+              <button type="button" class="btn btn-sm" onclick="batchCheckModels('dp', true)">全选当前列表</button>
+              <button type="button" class="btn btn-sm" onclick="batchCheckModels('dp', false)">清空勾选</button>
+            </div>
           </div>
-          <div>
-            <span style="color:var(--text-secondary);font-size:13px;margin-right:8px">上游账号通道:</span>
-            <span id="selfUpstreamInfo"></span>
+          <div id="dpModelPickerPanel" class="hidden">
+            <div class="selector-toolbar">
+              <div class="provider-pills" id="dpProviderPills"></div>
+              <input type="text" class="input" style="width:220px;min-height:30px;padding:4px 9px" id="dpModelSearch" placeholder="搜索模型名称..." oninput="renderModelCheckList('dp')">
+            </div>
+            <div class="selection-list" id="dpModelCheckList"></div>
           </div>
         </div>
       </div>
 
-      <div class="card">
-        <div class="card-header">
-          <h2 class="card-title">按模型统计的 Token 与 USD 消费明细</h2>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>模型名称 (Model)</th>
-                <th>计费单价 ($/1M In / Out)</th>
-                <th>请求数 (成功/失败)</th>
-                <th>Input Tokens</th>
-                <th>Output (含推理)</th>
-                <th>Cache (读 / 写)</th>
-                <th>总 Tokens</th>
-                <th>折算费用 (USD)</th>
-                <th>最后调用时间</th>
-              </tr>
-            </thead>
-            <tbody id="selfModelsTableBody">
-              <tr><td colspan="9" style="text-align:center;color:var(--text-tertiary)">暂无调用记录</td></tr>
-            </tbody>
-          </table>
+      <!-- Default Policy Credential Checkboxes -->
+      <div class="form-group" style="margin-bottom:0">
+        <label class="form-label">
+          <span>默认绑定上游账号凭证（复选框选择）</span>
+          <span class="tag plain" id="dpCredCountBadge">全部可用凭证</span>
+        </label>
+        <div class="selector-box">
+          <div class="selector-mode-bar">
+            <label class="master-check-label">
+              <input type="checkbox" id="dpAllCredsCheck" checked onchange="onToggleAllCreds('dp')">
+              <span>使用全部可用账号凭证（公共池自动负载均衡）</span>
+            </label>
+            <div class="input-row">
+              <button type="button" class="btn btn-sm" onclick="batchCheckCreds('dp', true)">全选凭证</button>
+              <button type="button" class="btn btn-sm" onclick="batchCheckCreds('dp', false)">清空勾选</button>
+            </div>
+          </div>
+          <div id="dpCredPickerPanel" class="hidden">
+            <div class="selector-toolbar">
+              <input type="text" class="input" style="width:240px;min-height:30px;padding:4px 9px" id="dpCredSearch" placeholder="搜索凭证名称、邮箱或 Provider..." oninput="renderCredCheckList('dp')">
+            </div>
+            <div class="selection-list" id="dpCredCheckList"></div>
+          </div>
         </div>
       </div>
     </div>
-  </div>
+
+    <!-- Host Auth Files Overview Table -->
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <h2 class="card-title">宿主已加载的上游账号凭证列表 (Host Auth Files)</h2>
+          <div class="card-hint">实时同步自 CLIProxyAPI 宿主 <code>host.auth.list</code> 与 <code>host.auth.models</code>。</div>
+        </div>
+        <button type="button" class="btn btn-sm" onclick="loadAdminOverview()">🔄 刷新凭证</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>凭证名称 / ID</th>
+              <th>Provider</th>
+              <th>账号 / 邮箱 / 标签</th>
+              <th>状态</th>
+              <th>优先级</th>
+              <th>成功 / 失败</th>
+              <th>已绑定此凭证的 API Key</th>
+            </tr>
+          </thead>
+          <tbody id="hostAuthTableBody">
+            <tr><td colspan="7" style="text-align:center;color:var(--text-tertiary)">加载中...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
 </div>
 
 <!-- ==================== MODAL: CREATE / EDIT UNIFIED API KEY ==================== -->
@@ -1207,11 +1020,6 @@
           <label class="form-label">最大并发数限制 (Max Concurrency)</label>
           <input type="number" min="0" class="input" id="kmMaxConcurrency" value="0">
           <div class="form-hint">0 表示不限并发；超出时返回 429</div>
-        </div>
-        <div class="form-group">
-          <label class="form-label">累计配额上限 (USD, Quota Limit)</label>
-          <input type="number" min="0" step="0.01" class="input" id="kmQuotaLimit" value="0">
-          <div class="form-hint">0 表示不限额度；耗尽后返回 429</div>
         </div>
         <div class="form-group">
           <label class="form-label">启用状态</label>
@@ -1287,85 +1095,19 @@
   </div>
 </div>
 
-<!-- ==================== MODAL: CUSTOM PRICE OVERRIDE ==================== -->
-<div class="modal-backdrop" id="priceModalBackdrop">
-  <div class="modal" style="max-width:500px">
-    <div class="modal-header">
-      <h3 class="card-title">新增 / 编辑自定义模型价格 (USD / 1M Tokens)</h3>
-      <button type="button" class="btn btn-sm" onclick="closePriceModal()">✕</button>
-    </div>
-    <div class="modal-body">
-      <div class="form-group">
-        <label class="form-label">选择或输入模型名称 / 通配符规则 *</label>
-        <input type="text" class="input mono" id="pmModel" list="pmModelDatalist" placeholder="例如: gpt-4o 或 claude-*">
-        <datalist id="pmModelDatalist"></datalist>
-        <div class="form-hint">可从下拉列表选择已有模型，或填写 <code>__default__</code> 设置全局兜底单价</div>
-      </div>
-      <div class="form-grid">
-        <div class="form-group">
-          <label class="form-label">Input 输入单价 ($ / 1M)</label>
-          <input type="number" min="0" step="0.0001" class="input mono" id="pmInput" value="0">
-        </div>
-        <div class="form-group">
-          <label class="form-label">Output 输出单价 ($ / 1M)</label>
-          <input type="number" min="0" step="0.0001" class="input mono" id="pmOutput" value="0">
-        </div>
-        <div class="form-group">
-          <label class="form-label">Cache Read 缓存读取 ($ / 1M)</label>
-          <input type="number" min="0" step="0.0001" class="input mono" id="pmCacheRead" value="0">
-        </div>
-        <div class="form-group">
-          <label class="form-label">Cache Write 缓存写入 ($ / 1M)</label>
-          <input type="number" min="0" step="0.0001" class="input mono" id="pmCacheWrite" value="0">
-        </div>
-      </div>
-    </div>
-    <div class="modal-footer">
-      <button type="button" class="btn" onclick="closePriceModal()">取消</button>
-      <button type="button" class="btn btn-primary" onclick="submitPriceModal()">💾 保存单价规则</button>
-    </div>
-  </div>
-</div>
-
-<!-- ==================== MODAL: MANAGEMENT KEY AUTH ==================== -->
-<div class="modal-backdrop" id="mgmtKeyModalBackdrop">
-  <div class="modal" style="max-width:440px">
-    <div class="modal-header">
-      <h3 class="card-title">输入 CLIProxyAPI 管理密钥 (Management Key)</h3>
-      <button type="button" class="btn btn-sm" onclick="closeMgmtKeyModal()">✕</button>
-    </div>
-    <div class="modal-body">
-      <div class="form-group">
-        <label class="form-label">Management Secret Key</label>
-        <input type="password" class="input mono" id="mgmtKeyInput" placeholder="输入 config.yaml 中的 remote-management.secret-key" onkeydown="if(event.key==='Enter') saveMgmtKey()">
-        <div class="form-hint">当内嵌在 CPAMC 管理后台时会自动读取登录密钥；独立访问时请输入管理密钥，或切换至「Key 自查模式」。</div>
-      </div>
-    </div>
-    <div class="modal-footer">
-      <button type="button" class="btn" onclick="switchToAccountModeFromModal()">👤 我是普通用户，去查 Key 账单</button>
-      <button type="button" class="btn btn-primary" onclick="saveMgmtKey()">解锁管理控制台</button>
-    </div>
-  </div>
-</div>
-
 <div class="toast-box" id="toastBox"></div>
 
 <script>
-  const API_BASE_MGMT = "/v0/management/key-guard";
-  const API_CPA_KEYS  = "/v0/management/api-keys";
-  const API_SELF_USAGE = "/v0/resource/plugins/cpa-plugin-key/usage";
-  const STORAGE_MGMT_KEY = "cpa_key_guard_mgmt_key";
-  const STORAGE_SELF_KEY = "cpa_key_guard_self_api_key";
+  const RESOURCE_UI_PATH = "/v0/resource/plugins/cpa-plugin-key/ui";
+  const API_CPA_KEYS     = "/v0/management/api-keys";
 
   if (window.parent !== window) {
     document.body.classList.add("embedded");
   }
 
-  let currentMode = "admin";
   let overviewData = null;
   let expandedDashKeys = {};
   let revealedKeys = {};
-  let refSearchTimer = null;
 
   // Checkbox selection state for Modal ('km') and Default Policy ('dp')
   const selectorState = {
@@ -1409,10 +1151,6 @@
     return Number(n || 0).toLocaleString("en-US");
   }
 
-  function fmtUSD(n) {
-    return "$" + Number(n || 0).toFixed(6);
-  }
-
   function maskKeyStr(k) {
     if (!k) return "anonymous";
     if (k.length <= 8) return k.slice(0, 2) + "***";
@@ -1420,70 +1158,48 @@
     return k.slice(0, 7) + "..." + k.slice(-5);
   }
 
-  function discoverManagementKey() {
-    // 1. Check CPAMC encrypted localStorage (`cli-proxy-auth`)
+  function discoverCPAManagementKeySilent() {
     const cpamcAuth = cpamcStoredValue("cli-proxy-auth")?.state?.managementKey;
     if (typeof cpamcAuth === "string" && cpamcAuth.trim()) return cpamcAuth.trim();
-
     const cpamcDirect = cpamcStoredValue("managementKey");
     if (typeof cpamcDirect === "string" && cpamcDirect.trim()) return cpamcDirect.trim();
-
-    // 2. Check URL query
-    const params = new URLSearchParams(window.location.search);
-    for (const qk of ["mgmt_key", "management_key", "token", "admin_token"]) {
-      if (params.get(qk)) {
-        localStorage.setItem(STORAGE_MGMT_KEY, params.get(qk));
-        return params.get(qk);
-      }
-    }
-
-    // 3. Check localStorage / sessionStorage
-    const candidates = [
-      STORAGE_MGMT_KEY,
-      "management_key",
-      "cpa_management_key",
-      "cliproxy_management_key",
-      "secret_key",
-      "managementKey"
-    ];
-    for (const k of candidates) {
-      const v = localStorage.getItem(k) || sessionStorage.getItem(k);
-      if (v && v.trim()) return v.trim();
-    }
     return "";
   }
 
-  async function apiFetchRaw(urlPath, options = {}) {
-    const key = discoverManagementKey();
-    const headers = Object.assign({ "Accept": "application/json" }, options.headers || {});
-    if (options.body && !headers["Content-Type"]) {
-      headers["Content-Type"] = "application/json";
+  // Zero-prompt plugin resource RPC call: uses `/v0/resource/plugins/cpa-plugin-key/ui?op=...`
+  // which never triggers a 401/403 management key prompt.
+  async function callPluginOp(op, params = {}) {
+    const usp = new URLSearchParams({ op });
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== undefined && v !== null) usp.set(k, String(v));
     }
-    if (key) {
-      headers["Authorization"] = "Bearer " + key;
-      headers["X-Management-Key"] = key;
-    }
-    const resp = await fetch(urlPath, Object.assign({}, options, { headers }));
-    if (resp.status === 401 || resp.status === 403) {
-      openMgmtKeyModal();
-      throw new Error("需要管理员密钥认证 (HTTP " + resp.status + ")");
-    }
+    const resp = await fetch(RESOURCE_UI_PATH + "?" + usp.toString(), {
+      method: "GET",
+      headers: { "Accept": "application/json" }
+    });
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok) {
-      const msg = (data && data.error && data.error.message) || data.error || ("请求失败: HTTP " + resp.status);
+      const msg = (data && data.error && data.error.message) || data.error || ("操作失败: HTTP " + resp.status);
       throw new Error(msg);
     }
     return data;
   }
 
-  function apiFetchMgmt(subpath, options = {}) {
-    return apiFetchRaw(API_BASE_MGMT + subpath, options);
-  }
-
-  // ==================== UNIFIED CPA GLOBAL API-KEYS SYNC ====================
-  async function fetchCPAGlobalKeys() {
+  // Optional silent sync with CPA's in-memory `/v0/management/api-keys` when CPAMC token is present
+  async function fetchCPAGlobalKeysSilent() {
+    const key = discoverCPAManagementKeySilent();
+    if (!key) return null;
     try {
-      const res = await apiFetchRaw(API_CPA_KEYS, { method: "GET" });
+      const resp = await fetch(API_CPA_KEYS, {
+        method: "GET",
+        headers: {
+          "Accept": "application/json",
+          "Authorization": "Bearer " + key,
+          "X-Management-Key": key
+        }
+      });
+      if (!resp.ok) return null;
+      const res = await resp.json();
       const list = res["api-keys"] || res.api_keys || [];
       if (Array.isArray(list)) {
         return list.map(k => String(k || "").trim()).filter(Boolean);
@@ -1492,104 +1208,22 @@
     return null;
   }
 
-  async function writeCPAGlobalKeys(keysArray) {
+  async function writeCPAGlobalKeysSilent(keysArray) {
+    const key = discoverCPAManagementKeySilent();
+    if (!key) return;
     try {
       const unique = Array.from(new Set(keysArray.map(k => String(k || "").trim()).filter(Boolean)));
-      await apiFetchRaw(API_CPA_KEYS, {
+      await fetch(API_CPA_KEYS, {
         method: "PUT",
+        headers: {
+          "Accept": "application/json",
+          "Content-Type": "application/json",
+          "Authorization": "Bearer " + key,
+          "X-Management-Key": key
+        },
         body: JSON.stringify(unique)
       });
-      return unique;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  // ==================== MODE & TAB SWITCHING ====================
-  function detectInitialMode() {
-    const hash = (window.location.hash || "").toLowerCase();
-    const params = new URLSearchParams(window.location.search);
-    if (hash.startsWith("#account") || params.get("mode") === "account") {
-      setMode("account");
-      const hashQueryIdx = window.location.hash.indexOf("?");
-      if (hashQueryIdx >= 0) {
-        const hp = new URLSearchParams(window.location.hash.slice(hashQueryIdx + 1));
-        if (hp.get("key")) document.getElementById("selfApiKeyInput").value = hp.get("key");
-      } else if (params.get("key")) {
-        document.getElementById("selfApiKeyInput").value = params.get("key");
-      } else {
-        const saved = sessionStorage.getItem(STORAGE_SELF_KEY) || "";
-        if (saved) document.getElementById("selfApiKeyInput").value = saved;
-      }
-      if (document.getElementById("selfApiKeyInput").value.trim()) {
-        querySelfAccount();
-      }
-    } else {
-      setMode("admin");
-      loadAdminOverview();
-      searchRefPrices("");
-    }
-  }
-
-  function setMode(mode) {
-    currentMode = mode;
-    const adminEl = document.getElementById("adminContainer");
-    const acctEl = document.getElementById("accountContainer");
-    const switchBtn = document.getElementById("btnSwitchMode");
-    const mgmtBtn = document.getElementById("btnSetMgmtKey");
-    const titleEl = document.getElementById("pageTitle");
-    if (mode === "account") {
-      adminEl.classList.add("hidden");
-      acctEl.classList.remove("hidden");
-      switchBtn.textContent = "🛠️ 管理员模式";
-      mgmtBtn.classList.add("hidden");
-      titleEl.textContent = "API Key 额度与账单自查";
-      if (!window.location.hash.startsWith("#account")) {
-        history.replaceState(null, "", "#account");
-      }
-    } else {
-      acctEl.classList.add("hidden");
-      adminEl.classList.remove("hidden");
-      switchBtn.textContent = "👤 Key 自查模式";
-      mgmtBtn.classList.remove("hidden");
-      titleEl.textContent = "API Key 计费与管控";
-      if (window.location.hash.startsWith("#account")) {
-        history.replaceState(null, "", window.location.pathname + window.location.search);
-      }
-    }
-  }
-
-  function toggleMode() {
-    if (currentMode === "admin") {
-      setMode("account");
-      const saved = sessionStorage.getItem(STORAGE_SELF_KEY) || "";
-      if (saved && !document.getElementById("selfApiKeyInput").value) {
-        document.getElementById("selfApiKeyInput").value = saved;
-        querySelfAccount();
-      }
-    } else {
-      setMode("admin");
-      loadAdminOverview();
-      searchRefPrices("");
-    }
-  }
-
-  function copySelfQueryLink() {
-    const url = window.location.origin + "/v0/resource/plugins/cpa-plugin-key/ui#account";
-    navigator.clipboard.writeText(url).then(() => {
-      showToast("已复制用户自查链接: " + url);
-    }).catch(() => {
-      prompt("请复制用户自查链接:", url);
-    });
-  }
-
-  function refreshCurrentView() {
-    if (currentMode === "account") {
-      querySelfAccount();
-    } else {
-      loadAdminOverview();
-      searchRefPrices(document.getElementById("refPriceSearch").value);
-    }
+    } catch (_) {}
   }
 
   function switchAdminTab(tabId) {
@@ -1603,54 +1237,33 @@
   // ==================== ADMIN OVERVIEW & UNIFIED KEY SYNC ====================
   async function loadAdminOverview() {
     try {
-      // 1. Pull CPA's global api-keys and sync with plugin if reachable
-      const cpaKeys = await fetchCPAGlobalKeys();
+      const cpaKeys = await fetchCPAGlobalKeysSilent();
       let data;
       if (cpaKeys !== null) {
-        data = await apiFetchMgmt("/keys/sync", {
-          method: "POST",
-          body: JSON.stringify({ keys: cpaKeys })
-        });
+        data = await callPluginOp("sync-keys", { payload: JSON.stringify({ keys: cpaKeys }) });
       } else {
-        data = await apiFetchMgmt("/overview");
+        data = await callPluginOp("overview");
       }
       overviewData = data;
-      populateModelDatalist();
-      renderSyncBadge(data.pricing_status);
       renderDashboardKPIs(data);
       renderKeysCrudTable();
       renderDashboardTables();
       initDefaultPolicySelectors();
       renderHostAuthTable();
-      renderCustomPricesTable();
     } catch (err) {
       showToast(err.message, true);
     }
   }
 
-  function populateModelDatalist() {
-    const dl = document.getElementById("pmModelDatalist");
-    if (!dl || !overviewData) return;
-    const models = overviewData.available_models || [];
-    dl.innerHTML = models.map(m => `<option value="${escapeHtml(m.id)}">${escapeHtml(m.provider)}</option>`).join("");
-  }
-
-  function renderSyncBadge(ps) {
-    if (!ps) return;
-    const el = document.getElementById("syncBadge");
-    el.textContent = `models.dev: ${fmtInt(ps.synced_model_keys)} 模型`;
-    const meta = document.getElementById("pricingSyncMeta");
-    if (meta) {
-      meta.textContent = `最后同步: ${ps.last_sync_at || "未同步"} · 来源: ${ps.sync_source || "-"} · 已载入模型键: ${fmtInt(ps.synced_model_keys)}`;
-    }
-  }
-
   function renderDashboardKPIs(data) {
     const s = data.summary || {};
-    document.getElementById("kpiTotalCost").textContent = fmtUSD(s.total_cost_usd || 0);
     document.getElementById("kpiTotalTokens").textContent = fmtInt(s.total_tokens || 0);
     document.getElementById("kpiTokenSub").textContent =
-      `输入: ${fmtInt(s.input_tokens)} · 输出: ${fmtInt(s.output_tokens)} · 缓存读: ${fmtInt(s.cache_read_tokens)}`;
+      `输入: ${fmtInt(s.input_tokens)} · 输出: ${fmtInt(s.output_tokens)} · 推理: ${fmtInt(s.reasoning_tokens)}`;
+    const totalCache = (s.cache_read_tokens || 0) + (s.cache_write_tokens || 0);
+    document.getElementById("kpiCacheTokens").textContent = fmtInt(totalCache);
+    document.getElementById("kpiCacheSub").textContent =
+      `缓存读取: ${fmtInt(s.cache_read_tokens)} · 缓存写入: ${fmtInt(s.cache_write_tokens)}`;
     document.getElementById("kpiTotalRequests").textContent = fmtInt(s.total_requests || 0);
     const rate = s.total_requests > 0 ? ((s.success_requests / s.total_requests) * 100).toFixed(1) : "100.0";
     document.getElementById("kpiReqSub").textContent =
@@ -1770,7 +1383,6 @@
     const q = (document.getElementById(prefix + "ModelSearch")?.value || "").toLowerCase().trim();
     const baseModels = getAvailableModels();
 
-    // Ensure any previously selected model is also in the list
     const knownIDs = new Set(baseModels.map(m => m.id));
     const merged = baseModels.slice();
     st.selectedModels.forEach(id => {
@@ -1925,7 +1537,7 @@
 
     const tbody = document.getElementById("crudKeysTableBody");
     if (filtered.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--text-tertiary)">暂无 API Key，点击右上角「新建 API Key」创建并自动同步至 CPA</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;color:var(--text-tertiary)">暂无 API Key，点击右上角「新建 API Key」创建并自动同步至 CPA</td></tr>`;
       return;
     }
 
@@ -1937,16 +1549,6 @@
       const dispKey = isRevealed ? k : maskKeyStr(k);
       const activeC = ks.active_concurrency || 0;
       const maxC = kr.max_concurrency || 0;
-      const usedUSD = ks.total_cost_usd || 0;
-      const quotaUSD = kr.quota_limit_usd || 0;
-
-      let quotaCell = `<span class="cost-val">${fmtUSD(usedUSD)}</span> <span style="color:var(--text-tertiary)">/ 不限额</span>`;
-      if (quotaUSD > 0) {
-        const pct = Math.min(100, (usedUSD / quotaUSD) * 100);
-        const cls = pct >= 100 ? "danger" : (pct >= 80 ? "warn" : "");
-        quotaCell = `<div><span class="cost-val">${fmtUSD(usedUSD)}</span> / <span class="mono">$${Number(quotaUSD).toFixed(2)}</span></div>
-          <div class="bar"><div class="bar-fill ${cls}" style="width:${pct}%"></div></div>`;
-      }
 
       const models = (kr.allowed_models && kr.allowed_models.length) ? kr.allowed_models : ["*"];
       const modelsHtml = (models.length === 1 && models[0] === "*")
@@ -1974,12 +1576,16 @@
         </td>
         <td style="font-weight:600">${escapeHtml(kr.name || "-")}</td>
         <td class="mono">${activeC} / ${maxC > 0 ? maxC : "∞"}</td>
-        <td>${quotaCell}</td>
+        <td class="mono">${fmtInt(ks.total_requests)} <span style="color:var(--text-tertiary)">(${fmtInt(ks.success_requests)}/${fmtInt(ks.failed_requests)})</span></td>
+        <td>
+          <span class="token-val">${fmtInt(ks.total_tokens)}</span>
+          <span class="mono" style="font-size:12px;color:var(--text-secondary)"> (${fmtInt(ks.input_tokens)} / ${fmtInt(ks.output_tokens)})</span>
+        </td>
         <td>${modelsHtml}</td>
         <td>${bindHtml}</td>
         <td style="white-space:nowrap">
           <button type="button" class="btn btn-sm" onclick="openKeyModalByKey('${escapeHtml(k)}')">编辑规则</button>
-          <button type="button" class="btn btn-sm" onclick="resetUsageStats('${escapeHtml(k)}')">清零账单</button>
+          <button type="button" class="btn btn-sm" onclick="resetUsageStats('${escapeHtml(k)}')">清零用量</button>
           <button type="button" class="btn btn-sm btn-danger" onclick="deleteKeyRule('${escapeHtml(k)}')">删除</button>
         </td>
       </tr>`;
@@ -2017,7 +1623,6 @@
     document.getElementById("kmApiKey").value = rule ? rule.api_key : "";
     document.getElementById("kmName").value = (rule && rule.name) || "";
     document.getElementById("kmMaxConcurrency").value = (rule && rule.max_concurrency) || 0;
-    document.getElementById("kmQuotaLimit").value = (rule && rule.quota_limit_usd) || 0;
     document.getElementById("kmEnabled").value = (rule && rule.enabled === false) ? "false" : "true";
 
     const ub = (rule && rule.upstream_binding) || {};
@@ -2056,7 +1661,6 @@
       name: document.getElementById("kmName").value.trim(),
       enabled: document.getElementById("kmEnabled").value === "true",
       max_concurrency: parseInt(document.getElementById("kmMaxConcurrency").value || "0", 10) || 0,
-      quota_limit_usd: parseFloat(document.getElementById("kmQuotaLimit").value || "0") || 0,
       allowed_models: allowedModels,
       upstream_binding: {
         strategy: document.getElementById("kmBindStrategy").value,
@@ -2065,22 +1669,19 @@
     };
 
     try {
-      // 1. Synchronize with CPA global /v0/management/api-keys so there is only ONE unified key list
-      const currentCpaKeys = (await fetchCPAGlobalKeys()) || ((overviewData && overviewData.keys) || []).map(k => k.api_key);
-      let nextCpaKeys = currentCpaKeys.slice();
+      const currentKeys = ((overviewData && overviewData.keys) || []).map(k => k.api_key);
+      let nextCpaKeys = currentKeys.slice();
       if (origKey && origKey !== apiKey) {
         nextCpaKeys = nextCpaKeys.filter(k => k !== origKey);
-        await apiFetchMgmt("/keys?api_key=" + encodeURIComponent(origKey), { method: "DELETE" });
       }
       if (!nextCpaKeys.includes(apiKey)) {
         nextCpaKeys.push(apiKey);
       }
-      await writeCPAGlobalKeys(nextCpaKeys);
+      await writeCPAGlobalKeysSilent(nextCpaKeys);
 
-      // 2. Save rule in plugin
-      await apiFetchMgmt("/keys", {
-        method: "POST",
-        body: JSON.stringify(payload)
+      await callPluginOp("save-key", {
+        orig_key: origKey,
+        payload: JSON.stringify(payload)
       });
 
       closeKeyModal();
@@ -2097,9 +1698,8 @@
     const next = kr.enabled === false ? true : false;
     const payload = Object.assign({}, kr, { enabled: next });
     try {
-      await apiFetchMgmt("/keys", {
-        method: "POST",
-        body: JSON.stringify(payload)
+      await callPluginOp("save-key", {
+        payload: JSON.stringify(payload)
       });
       showToast(`已${next ? "启用" : "禁用"} Key: ${kr.name || maskKeyStr(kr.api_key)}`);
       await loadAdminOverview();
@@ -2111,14 +1711,9 @@
   async function deleteKeyRule(apiKey) {
     if (!confirm(`确定要删除 API Key [${maskKeyStr(apiKey)}] 吗？（将同时从 CPA 全局 api-keys 与插件中移除）`)) return;
     try {
-      const currentCpaKeys = await fetchCPAGlobalKeys();
-      if (currentCpaKeys !== null) {
-        const remaining = currentCpaKeys.filter(k => k !== apiKey);
-        await writeCPAGlobalKeys(remaining);
-      }
-      await apiFetchMgmt("/keys?api_key=" + encodeURIComponent(apiKey), {
-        method: "DELETE"
-      });
+      const currentKeys = ((overviewData && overviewData.keys) || []).map(k => k.api_key).filter(k => k !== apiKey);
+      await writeCPAGlobalKeysSilent(currentKeys);
+      await callPluginOp("delete-key", { api_key: apiKey });
       showToast("已从 CPA 全局配置与插件中删除该 API Key");
       await loadAdminOverview();
     } catch (err) {
@@ -2128,25 +1723,24 @@
 
   async function resetUsageStats(apiKey) {
     const desc = apiKey ? `Key [${maskKeyStr(apiKey)}]` : "所有 API Key";
-    if (!confirm(`确定要清零 ${desc} 的累计 Token 与 USD 账单统计吗？`)) return;
+    if (!confirm(`确定要清零 ${desc} 的累计 Token 用量统计吗？`)) return;
     try {
-      await apiFetchMgmt("/usage/reset", {
-        method: "POST",
-        body: JSON.stringify({ api_key: apiKey })
-      });
-      showToast(`已清零 ${desc} 的账单统计`);
+      await callPluginOp("reset-usage", { api_key: apiKey });
+      showToast(`已清零 ${desc} 的 Token 用量统计`);
       await loadAdminOverview();
     } catch (err) {
       showToast(err.message, true);
     }
   }
 
-  // ==================== TAB 2: DASHBOARD LEADERBOARDS ====================
+  // ==================== TAB 2: TOKEN USAGE LEADERBOARDS ====================
   function renderDashboardTables() {
     if (!overviewData) return;
     const snapKeys = (overviewData.usage && overviewData.usage.keys) || {};
     const rulesMap = {};
     (overviewData.keys || []).forEach(r => { rulesMap[r.api_key] = r; });
+
+    const grandTotalTokens = (overviewData.summary && overviewData.summary.total_tokens) || 0;
 
     const q = (document.getElementById("dashKeySearch").value || "").toLowerCase().trim();
     const rows = Object.values(snapKeys).filter(ks => {
@@ -2156,7 +1750,7 @@
              (ks.key_name || "").toLowerCase().includes(q);
     });
 
-    rows.sort((a, b) => (b.total_cost_usd || 0) - (a.total_cost_usd || 0) || (b.total_tokens || 0) - (a.total_tokens || 0));
+    rows.sort((a, b) => (b.total_tokens || 0) - (a.total_tokens || 0) || (b.total_requests || 0) - (a.total_requests || 0));
 
     const tbody = document.getElementById("dashKeyTableBody");
     if (rows.length === 0) {
@@ -2168,15 +1762,7 @@
         const rule = rulesMap[rawKey] || {};
         const maxConc = ks.max_concurrency || rule.max_concurrency || 0;
         const concText = maxConc > 0 ? `${ks.active_concurrency || 0} / ${maxConc}` : `${ks.active_concurrency || 0} / ∞`;
-        const quota = rule.quota_limit_usd || ks.quota_limit_usd || 0;
-        const used = ks.total_cost_usd || 0;
-        let quotaHtml = `<span style="color:var(--text-tertiary)">不限额</span>`;
-        if (quota > 0) {
-          const pct = Math.min(100, (used / quota) * 100);
-          const cls = pct >= 100 ? "danger" : (pct >= 80 ? "warn" : "");
-          quotaHtml = `<div style="font-size:12px" class="mono">${fmtUSD(used)} / $${Number(quota).toFixed(2)} (${pct.toFixed(1)}%)</div>
-            <div class="bar"><div class="bar-fill ${cls}" style="width:${pct}%"></div></div>`;
-        }
+        const share = grandTotalTokens > 0 ? (((ks.total_tokens || 0) / grandTotalTokens) * 100).toFixed(1) : "0.0";
         const modelCount = ks.models ? Object.keys(ks.models).length : 0;
         const isExpanded = !!expandedDashKeys[rawKey];
 
@@ -2186,12 +1772,15 @@
             <div class="mono" style="font-size:12px;color:var(--text-secondary)">${escapeHtml(ks.masked_key)}</div>
           </td>
           <td><span class="tag ${ks.active_concurrency > 0 ? "ok" : "plain"} mono">${escapeHtml(concText)}</span></td>
-          <td>${quotaHtml}</td>
           <td class="mono">${fmtInt(ks.total_requests)} <span style="color:var(--text-tertiary)">(${fmtInt(ks.success_requests)}/${fmtInt(ks.failed_requests)})</span></td>
-          <td class="mono">${fmtInt(ks.input_tokens)} / ${fmtInt(ks.output_tokens)}</td>
+          <td class="mono">${fmtInt(ks.input_tokens)}</td>
+          <td class="mono">${fmtInt(ks.output_tokens)} <span style="color:var(--text-tertiary)">(推理 ${fmtInt(ks.reasoning_tokens)})</span></td>
           <td class="mono">${fmtInt(ks.cache_read_tokens)} / ${fmtInt(ks.cache_write_tokens)}</td>
-          <td class="mono" style="font-weight:600">${fmtInt(ks.total_tokens)}</td>
-          <td class="cost-val">${escapeHtml(ks.total_cost_formatted || "$0.000000")}</td>
+          <td class="token-val">${fmtInt(ks.total_tokens)}</td>
+          <td style="min-width:120px">
+            <div style="font-size:12px" class="mono">${share}%</div>
+            <div class="bar"><div class="bar-fill" style="width:${share}%"></div></div>
+          </td>
           <td>
             <button type="button" class="btn btn-sm" onclick="toggleDashKeyExpand('${escapeHtml(rawKey)}')">${isExpanded ? "收起" : "展开明细 (" + modelCount + ")"}</button>
             <button type="button" class="btn btn-sm btn-danger" onclick="resetUsageStats('${escapeHtml(rawKey)}')">清零</button>
@@ -2199,18 +1788,16 @@
         </tr>`;
 
         if (isExpanded && ks.models) {
-          const mList = Object.values(ks.models).sort((a, b) => (b.cost_usd || 0) - (a.cost_usd || 0));
+          const mList = Object.values(ks.models).sort((a, b) => (b.total_tokens || 0) - (a.total_tokens || 0));
           for (const ms of mList) {
-            const up = ms.unit_price_per_1m || {};
             html += `<tr class="sub-row">
-              <td>↳ <span class="mono" style="color:var(--text-primary);font-weight:600">${escapeHtml(ms.model)}</span></td>
-              <td colspan="2"><span class="tag plain">单价: $${Number(up.input||0).toFixed(2)} / $${Number(up.output||0).toFixed(2)} (${escapeHtml(up.source||"auto")})</span></td>
+              <td colspan="2">↳ <span class="mono" style="color:var(--text-primary);font-weight:600">${escapeHtml(ms.model)}</span></td>
               <td class="mono">${fmtInt(ms.requests)} (${fmtInt(ms.success_requests)}/${fmtInt(ms.failed_requests)})</td>
-              <td class="mono">${fmtInt(ms.input_tokens)} / ${fmtInt(ms.output_tokens)}</td>
+              <td class="mono">${fmtInt(ms.input_tokens)}</td>
+              <td class="mono">${fmtInt(ms.output_tokens)} (推理 ${fmtInt(ms.reasoning_tokens)})</td>
               <td class="mono">${fmtInt(ms.cache_read_tokens)} / ${fmtInt(ms.cache_write_tokens)}</td>
-              <td class="mono">${fmtInt(ms.total_tokens)}</td>
-              <td class="cost-val">${escapeHtml(ms.cost_formatted || "$0.000000")}</td>
-              <td style="font-size:11px;color:var(--text-tertiary)">${escapeHtml(ms.last_used_at || "-")}</td>
+              <td class="token-val">${fmtInt(ms.total_tokens)}</td>
+              <td colspan="2" style="font-size:11px;color:var(--text-tertiary)">最后调用: ${escapeHtml(ms.last_used_at || "-")}</td>
             </tr>`;
           }
         }
@@ -2218,9 +1805,9 @@
       tbody.innerHTML = html;
     }
 
-    // Model Leaderboard
+    // Model Token Leaderboard
     const modelAgg = {};
-    let grandTotalCost = 0;
+    let totalModelTokens = 0;
     for (const ks of Object.values(snapKeys)) {
       if (!ks.models) continue;
       for (const ms of Object.values(ks.models)) {
@@ -2233,11 +1820,10 @@
             failed: 0,
             input: 0,
             output: 0,
+            reasoning: 0,
             cacheRead: 0,
             cacheWrite: 0,
-            totalTokens: 0,
-            costUSD: 0,
-            unitPrice: ms.unit_price_per_1m || {}
+            totalTokens: 0
           };
         }
         const a = modelAgg[m];
@@ -2246,31 +1832,29 @@
         a.failed += ms.failed_requests || 0;
         a.input += ms.input_tokens || 0;
         a.output += ms.output_tokens || 0;
+        a.reasoning += ms.reasoning_tokens || 0;
         a.cacheRead += ms.cache_read_tokens || 0;
         a.cacheWrite += ms.cache_write_tokens || 0;
         a.totalTokens += ms.total_tokens || 0;
-        a.costUSD += ms.cost_usd || 0;
-        grandTotalCost += ms.cost_usd || 0;
+        totalModelTokens += ms.total_tokens || 0;
       }
     }
 
-    const mRows = Object.values(modelAgg).sort((a, b) => b.costUSD - a.costUSD || b.totalTokens - a.totalTokens);
+    const mRows = Object.values(modelAgg).sort((a, b) => b.totalTokens - a.totalTokens || b.requests - a.requests);
     const mBody = document.getElementById("dashModelTableBody");
     if (mRows.length === 0) {
-      mBody.innerHTML = `<tr><td colspan="9" style="text-align:center;color:var(--text-tertiary)">暂无模型消耗数据</td></tr>`;
+      mBody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--text-tertiary)">暂无模型 Token 消耗数据</td></tr>`;
     } else {
       mBody.innerHTML = mRows.map(m => {
-        const share = grandTotalCost > 0 ? ((m.costUSD / grandTotalCost) * 100).toFixed(1) : "0.0";
-        const up = m.unitPrice || {};
+        const share = totalModelTokens > 0 ? ((m.totalTokens / totalModelTokens) * 100).toFixed(1) : "0.0";
         return `<tr>
           <td class="mono" style="font-weight:600">${escapeHtml(m.model)}</td>
-          <td class="mono">$${Number(up.input||0).toFixed(2)} / $${Number(up.output||0).toFixed(2)} <span class="tag plain">${escapeHtml(up.source||"-")}</span></td>
           <td class="mono">${fmtInt(m.requests)} (${fmtInt(m.success)}/${fmtInt(m.failed)})</td>
           <td class="mono">${fmtInt(m.input)}</td>
           <td class="mono">${fmtInt(m.output)}</td>
+          <td class="mono">${fmtInt(m.reasoning)}</td>
           <td class="mono">${fmtInt(m.cacheRead)} / ${fmtInt(m.cacheWrite)}</td>
-          <td class="mono" style="font-weight:600">${fmtInt(m.totalTokens)}</td>
-          <td class="cost-val">${fmtUSD(m.costUSD)}</td>
+          <td class="token-val">${fmtInt(m.totalTokens)}</td>
           <td style="min-width:130px">
             <div style="font-size:12px" class="mono">${share}%</div>
             <div class="bar"><div class="bar-fill" style="width:${share}%"></div></div>
@@ -2291,7 +1875,6 @@
     const dp = overviewData.default_policy;
     document.getElementById("dpAllowUnlisted").value = dp.allow_unlisted_keys === false ? "false" : "true";
     document.getElementById("dpMaxConcurrency").value = dp.max_concurrency || 0;
-    document.getElementById("dpQuotaLimit").value = dp.quota_limit_usd || 0;
     const ub = dp.upstream_binding || {};
     document.getElementById("dpBindStrategy").value = ub.strategy || "round-robin";
 
@@ -2314,7 +1897,6 @@
     const payload = {
       allow_unlisted_keys: document.getElementById("dpAllowUnlisted").value === "true",
       max_concurrency: parseInt(document.getElementById("dpMaxConcurrency").value || "0", 10) || 0,
-      quota_limit_usd: parseFloat(document.getElementById("dpQuotaLimit").value || "0") || 0,
       allowed_models: allowedModels,
       upstream_binding: {
         strategy: document.getElementById("dpBindStrategy").value,
@@ -2322,9 +1904,8 @@
       }
     };
     try {
-      await apiFetchMgmt("/default-policy", {
-        method: "POST",
-        body: JSON.stringify(payload)
+      await callPluginOp("save-default-policy", {
+        payload: JSON.stringify(payload)
       });
       showToast("全局默认策略已保存并立即生效");
       await loadAdminOverview();
@@ -2367,291 +1948,7 @@
     }).join("");
   }
 
-  // ==================== TAB 4: MODEL PRICING ====================
-  function renderCustomPricesTable() {
-    if (!overviewData || !overviewData.pricing_status) return;
-    const cp = overviewData.pricing_status.custom_prices || {};
-    const defPrice = overviewData.pricing_status.default_price;
-    const entries = Object.entries(cp).sort((a, b) => a[0].localeCompare(b[0]));
-
-    const tbody = document.getElementById("customPriceTableBody");
-    let html = "";
-
-    if (defPrice) {
-      html += `<tr>
-        <td class="mono" style="font-weight:700">__default__ (全局兜底默认单价)</td>
-        <td><span class="tag warn">兜底默认</span></td>
-        <td class="mono">$${Number(defPrice.input||0).toFixed(4)}</td>
-        <td class="mono">$${Number(defPrice.output||0).toFixed(4)}</td>
-        <td class="mono">$${Number(defPrice.cache_read||0).toFixed(4)}</td>
-        <td class="mono">$${Number(defPrice.cache_write||0).toFixed(4)}</td>
-        <td>
-          <button type="button" class="btn btn-sm" onclick="openPriceModal('__default__', ${defPrice.input||0}, ${defPrice.output||0}, ${defPrice.cache_read||0}, ${defPrice.cache_write||0})">编辑</button>
-        </td>
-      </tr>`;
-    }
-
-    for (const [model, p] of entries) {
-      const isWild = model.includes("*") || model.includes("?");
-      html += `<tr>
-        <td class="mono" style="font-weight:600">${escapeHtml(model)}</td>
-        <td><span class="tag ${isWild ? "warn" : "plain"}">${isWild ? "通配符规则" : "精确匹配"}</span></td>
-        <td class="mono">$${Number(p.input||0).toFixed(4)}</td>
-        <td class="mono">$${Number(p.output||0).toFixed(4)}</td>
-        <td class="mono">$${Number(p.cache_read||0).toFixed(4)}</td>
-        <td class="mono">$${Number(p.cache_write||0).toFixed(4)}</td>
-        <td>
-          <button type="button" class="btn btn-sm" onclick="openPriceModal('${escapeHtml(model)}', ${p.input||0}, ${p.output||0}, ${p.cache_read||0}, ${p.cache_write||0})">编辑</button>
-          <button type="button" class="btn btn-sm btn-danger" onclick="deleteCustomPrice('${escapeHtml(model)}')">删除</button>
-        </td>
-      </tr>`;
-    }
-
-    if (!html) {
-      html = `<tr><td colspan="7" style="text-align:center;color:var(--text-tertiary)">暂无自定义价格覆盖，当前全部使用 models.dev 标准价格</td></tr>`;
-    }
-    tbody.innerHTML = html;
-  }
-
-  function openPriceModal(model, inp, outp, cread, cwrite) {
-    document.getElementById("pmModel").value = model || "";
-    document.getElementById("pmInput").value = inp || 0;
-    document.getElementById("pmOutput").value = outp || 0;
-    document.getElementById("pmCacheRead").value = cread || 0;
-    document.getElementById("pmCacheWrite").value = cwrite || 0;
-    document.getElementById("priceModalBackdrop").classList.add("open");
-  }
-
-  function closePriceModal() {
-    document.getElementById("priceModalBackdrop").classList.remove("open");
-  }
-
-  async function submitPriceModal() {
-    const model = document.getElementById("pmModel").value.trim();
-    if (!model) {
-      showToast("模型名称或通配符不能为空", true);
-      return;
-    }
-    const price = {
-      input: parseFloat(document.getElementById("pmInput").value || "0") || 0,
-      output: parseFloat(document.getElementById("pmOutput").value || "0") || 0,
-      cache_read: parseFloat(document.getElementById("pmCacheRead").value || "0") || 0,
-      cache_write: parseFloat(document.getElementById("pmCacheWrite").value || "0") || 0
-    };
-    try {
-      await apiFetchMgmt("/pricing/custom", {
-        method: "POST",
-        body: JSON.stringify({ model, price })
-      });
-      closePriceModal();
-      showToast("自定义模型单价已保存并立即生效");
-      await loadAdminOverview();
-    } catch (err) {
-      showToast(err.message, true);
-    }
-  }
-
-  async function deleteCustomPrice(model) {
-    if (!confirm(`确定删除模型 [${model}] 的自定义价格覆盖吗？`)) return;
-    try {
-      await apiFetchMgmt("/pricing/custom?model=" + encodeURIComponent(model), {
-        method: "DELETE"
-      });
-      showToast("已删除自定义价格覆盖");
-      await loadAdminOverview();
-    } catch (err) {
-      showToast(err.message, true);
-    }
-  }
-
-  async function triggerModelsDevSync() {
-    const btn = document.getElementById("btnSyncPricing");
-    btn.disabled = true;
-    btn.textContent = "⏳ 正在同步...";
-    try {
-      const res = await apiFetchMgmt("/pricing/sync", { method: "POST" });
-      showToast(`models.dev 同步成功 (${fmtInt(res.synced_models)} 个模型键)`);
-      await loadAdminOverview();
-      await searchRefPrices(document.getElementById("refPriceSearch").value);
-    } catch (err) {
-      showToast("同步失败: " + err.message, true);
-    } finally {
-      btn.disabled = false;
-      btn.textContent = "🌐 立即同步 models.dev";
-    }
-  }
-
-  function searchRefPricesDebounced() {
-    clearTimeout(refSearchTimer);
-    refSearchTimer = setTimeout(() => {
-      searchRefPrices(document.getElementById("refPriceSearch").value);
-    }, 220);
-  }
-
-  async function searchRefPrices(q) {
-    try {
-      const data = await apiFetchMgmt("/pricing?search=" + encodeURIComponent(q || "") + "&limit=100");
-      const list = data.reference_models || [];
-      const tbody = document.getElementById("refPriceTableBody");
-      if (list.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;color:var(--text-tertiary)">未找到匹配的 models.dev 模型价格记录</td></tr>`;
-        return;
-      }
-      tbody.innerHTML = list.map(item => {
-        const p = item.price || {};
-        return `<tr>
-          <td class="mono">${escapeHtml(item.model)}</td>
-          <td class="mono">$${Number(p.input||0).toFixed(4)}</td>
-          <td class="mono">$${Number(p.output||0).toFixed(4)}</td>
-          <td class="mono">$${Number(p.cache_read||0).toFixed(4)}</td>
-          <td class="mono">$${Number(p.cache_write||0).toFixed(4)}</td>
-          <td>
-            <button type="button" class="btn btn-sm" onclick="openPriceModal('${escapeHtml(item.model)}', ${p.input||0}, ${p.output||0}, ${p.cache_read||0}, ${p.cache_write||0})">覆盖此价格</button>
-          </td>
-        </tr>`;
-      }).join("");
-    } catch (_) {}
-  }
-
-  // ==================== USER SELF-QUERY MODE (#account) ====================
-  function toggleSelfKeyVisibility() {
-    const el = document.getElementById("selfApiKeyInput");
-    el.type = el.type === "password" ? "text" : "password";
-  }
-
-  async function querySelfAccount() {
-    const apiKey = document.getElementById("selfApiKeyInput").value.trim();
-    if (!apiKey) {
-      showToast("请输入您的 API Key", true);
-      return;
-    }
-    sessionStorage.setItem(STORAGE_SELF_KEY, apiKey);
-    try {
-      const resp = await fetch(API_SELF_USAGE + "?format=json&mode=account", {
-        headers: {
-          "Accept": "application/json",
-          "X-Api-Key": apiKey
-        }
-      });
-      const data = await resp.json().catch(() => ({}));
-      if (!resp.ok) {
-        const msg = (data && data.error && data.error.message) || ("查询失败: HTTP " + resp.status);
-        throw new Error(msg);
-      }
-      renderSelfAccountResult(data);
-    } catch (err) {
-      showToast(err.message, true);
-    }
-  }
-
-  function renderSelfAccountResult(data) {
-    document.getElementById("selfResultBox").classList.remove("hidden");
-    const acct = data.self_account || {};
-    const stats = acct.stats || {};
-
-    const enabled = acct.enabled !== false;
-    const quotaUSD = acct.quota_limit_usd || 0;
-    const usedUSD = acct.used_cost_usd || stats.total_cost_usd || 0;
-    const isQuotaExhausted = quotaUSD > 0 && usedUSD >= quotaUSD;
-
-    const statusEl = document.getElementById("selfKeyStatus");
-    if (!enabled) {
-      statusEl.innerHTML = `<span class="tag bad">⛔ 已禁用</span> ` + escapeHtml(acct.key_name || "");
-    } else if (isQuotaExhausted) {
-      statusEl.innerHTML = `<span class="tag warn">⚠️ 配额已用尽</span> ` + escapeHtml(acct.key_name || "");
-    } else {
-      statusEl.innerHTML = `<span class="tag ok">● 正常可用</span> ` + escapeHtml(acct.key_name || "");
-    }
-    document.getElementById("selfKeyMasked").textContent = acct.api_key_masked || stats.masked_key || "-";
-
-    document.getElementById("selfUsedCost").textContent = fmtUSD(usedUSD);
-    const bar = document.getElementById("selfQuotaBar");
-    if (quotaUSD > 0) {
-      const pct = Math.min(100, (usedUSD / quotaUSD) * 100);
-      bar.style.width = pct + "%";
-      bar.className = "bar-fill " + (pct >= 100 ? "danger" : (pct >= 80 ? "warn" : ""));
-      const rem = Math.max(0, quotaUSD - usedUSD);
-      document.getElementById("selfQuotaSub").textContent = `配额上限: $${Number(quotaUSD).toFixed(2)} · 剩余可用: ${fmtUSD(rem)}`;
-    } else {
-      bar.style.width = "15%";
-      bar.className = "bar-fill";
-      document.getElementById("selfQuotaSub").textContent = "配额上限: 不限额度 (Unlimited)";
-    }
-
-    const maxC = acct.max_concurrency || 0;
-    const actC = acct.active_concurrency || 0;
-    document.getElementById("selfConcurrency").textContent = maxC > 0 ? `${actC} / ${maxC}` : `${actC} / ∞`;
-    document.getElementById("selfReqSummary").textContent =
-      `累计请求: ${fmtInt(stats.total_requests)} 次 (成功 ${fmtInt(stats.success_requests)} / 失败 ${fmtInt(stats.failed_requests)})`;
-
-    document.getElementById("selfTotalTokens").textContent = fmtInt(stats.total_tokens || 0);
-    document.getElementById("selfTokenBreakdown").textContent =
-      `输入: ${fmtInt(stats.input_tokens)} · 输出: ${fmtInt(stats.output_tokens)} · 缓存读: ${fmtInt(stats.cache_read_tokens)}`;
-
-    const models = (acct.allowed_models && acct.allowed_models.length) ? acct.allowed_models : ["*"];
-    document.getElementById("selfAllowedModels").innerHTML = (models.length === 1 && models[0] === "*")
-      ? `<span class="tag ok">全部模型 (*)</span>`
-      : models.map(m => `<span class="tag plain mono">${escapeHtml(m)}</span>`).join(" ");
-
-    const ub = acct.upstream_binding || {};
-    const bCreds = [].concat(ub.auth_ids || [], ub.credentials || []);
-    document.getElementById("selfUpstreamInfo").innerHTML = bCreds.length > 0
-      ? `<span class="tag plain">专属通道 (${escapeHtml(ub.strategy || "round-robin")}，已绑定 ${bCreds.length} 个账号凭证)</span>`
-      : `<span class="tag ok">公共凭证池自动负载均衡</span>`;
-
-    const mMap = stats.models || {};
-    const mList = Object.values(mMap).sort((a, b) => (b.cost_usd || 0) - (a.cost_usd || 0));
-    const tbody = document.getElementById("selfModelsTableBody");
-    if (mList.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;color:var(--text-tertiary)">该 API Key 暂无模型调用记录</td></tr>`;
-    } else {
-      tbody.innerHTML = mList.map(ms => {
-        const up = ms.unit_price_per_1m || {};
-        return `<tr>
-          <td class="mono" style="font-weight:600">${escapeHtml(ms.model)}</td>
-          <td class="mono">$${Number(up.input||0).toFixed(2)} / $${Number(up.output||0).toFixed(2)}</td>
-          <td class="mono">${fmtInt(ms.requests)} (${fmtInt(ms.success_requests)}/${fmtInt(ms.failed_requests)})</td>
-          <td class="mono">${fmtInt(ms.input_tokens)}</td>
-          <td class="mono">${fmtInt(ms.output_tokens)}</td>
-          <td class="mono">${fmtInt(ms.cache_read_tokens)} / ${fmtInt(ms.cache_write_tokens)}</td>
-          <td class="mono" style="font-weight:600">${fmtInt(ms.total_tokens)}</td>
-          <td class="cost-val">${escapeHtml(ms.cost_formatted || "$0.000000")}</td>
-          <td style="font-size:12px;color:var(--text-secondary)">${escapeHtml(ms.last_used_at || "-")}</td>
-        </tr>`;
-      }).join("");
-    }
-  }
-
-  // ==================== MGMT KEY MODAL ====================
-  function openMgmtKeyModal() {
-    document.getElementById("mgmtKeyInput").value = localStorage.getItem(STORAGE_MGMT_KEY) || "";
-    document.getElementById("mgmtKeyModalBackdrop").classList.add("open");
-  }
-
-  function closeMgmtKeyModal() {
-    document.getElementById("mgmtKeyModalBackdrop").classList.remove("open");
-  }
-
-  function saveMgmtKey() {
-    const val = document.getElementById("mgmtKeyInput").value.trim();
-    localStorage.setItem(STORAGE_MGMT_KEY, val);
-    closeMgmtKeyModal();
-    loadAdminOverview();
-    searchRefPrices("");
-  }
-
-  function switchToAccountModeFromModal() {
-    closeMgmtKeyModal();
-    setMode("account");
-  }
-
-  window.addEventListener("hashchange", () => {
-    if ((window.location.hash || "").toLowerCase().startsWith("#account")) {
-      setMode("account");
-    }
-  });
-
-  detectInitialMode();
+  loadAdminOverview();
 </script>
 </body>
 </html>

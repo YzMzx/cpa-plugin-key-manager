@@ -112,7 +112,6 @@ if ((-not (Test-Path $RulesFile)) -or $ResetData) {
   "default_policy": {
     "allow_unlisted_keys": true,
     "max_concurrency": 0,
-    "quota_limit_usd": 0,
     "allowed_models": [
       "*"
     ],
@@ -120,8 +119,7 @@ if ((-not (Test-Path $RulesFile)) -or $ResetData) {
       "strategy": "round-robin"
     }
   },
-  "keys": [],
-  "custom_prices": {}
+  "keys": []
 }
 "@
     [System.IO.File]::WriteAllText($RulesFile, $RulesJson, (New-Object System.Text.UTF8Encoding($false)))
@@ -140,23 +138,9 @@ if ((-not (Test-Path $UsageFile)) -or $ResetData) {
 }
 "@
     [System.IO.File]::WriteAllText($UsageFile, $UsageJson, (New-Object System.Text.UTF8Encoding($false)))
-    Write-Info "Initialized usage billing store: $UsageFile"
+    Write-Info "Initialized token usage store: $UsageFile"
 } else {
-    Write-Info "Preserved existing usage billing store: $UsageFile"
-}
-
-$ModelsCache = Join-Path $DataDir "models_dev.json"
-if ((-not $SkipModelsSync) -and ((-not (Test-Path $ModelsCache)) -or $ResetData)) {
-    Write-Info "Pre-fetching reference model pricing from https://models.dev/api.json..."
-    try {
-        Invoke-WebRequest -Uri "https://models.dev/api.json" -OutFile $ModelsCache -TimeoutSec 15 -UseBasicParsing
-        Write-Info "Initialized models.dev pricing cache: $ModelsCache"
-    } catch {
-        if (-not (Test-Path $ModelsCache)) {
-            [System.IO.File]::WriteAllText($ModelsCache, "{}`n", (New-Object System.Text.UTF8Encoding($false)))
-        }
-        Write-Warn "Could not reach models.dev right now; plugin will sync automatically in the background."
-    }
+    Write-Info "Preserved existing token usage store: $UsageFile"
 }
 
 $PluginYamlBlock = @"
@@ -173,16 +157,9 @@ plugins:
         usage_file: "./data/key_usage_stats.json"
         rules_file: "./data/key_guard_rules.json"
         flush_interval_seconds: 10
-        pricing_cache_file: "./data/models_dev.json"
-      pricing:
-        sync_url: "https://models.dev/api.json"
-        sync_interval_hours: 24
-        http_timeout_seconds: 30
-        auto_inject_include_usage: true
       default_policy:
         allow_unlisted_keys: true
         max_concurrency: 0
-        quota_limit_usd: 0
         allowed_models:
           - "*"
 "@
@@ -209,6 +186,5 @@ Write-Host "  cpa-plugin-key installation & data initialization completed!" -For
 Write-Host "  - Plugin directory : $PluginDir"
 Write-Host "  - Data directory   : $DataDir"
 Write-Host "  - Admin Web UI     : http://127.0.0.1:8317/v0/resource/plugins/cpa-plugin-key/ui"
-Write-Host "  - Key Self-Query   : http://127.0.0.1:8317/v0/resource/plugins/cpa-plugin-key/ui#account"
 Write-Host "  Restart CLIProxyAPI to load the plugin."
 Write-Host "==============================================================================" -ForegroundColor Green

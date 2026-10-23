@@ -103,12 +103,12 @@ func RegisterManagementEndpoints() ([]pluginapi.ManagementRoute, []pluginapi.Res
 	resources := []pluginapi.ResourceRoute{
 		{
 			Path:        ResourcePathUI,
-			Menu:        "API Key 计费与管控",
-			Description: "可视化管理下游 API Key、并发限流、配额上限、模型白名单、上游凭证绑定及 Token/USD 实时账单（支持 #account 用户自查模式）。",
+			Menu:        "API Key 管控与用量",
+			Description: "统一管理 CPA 全局 API Key、并发限流、模型白名单、上游凭证绑定及 Token 用量统计。",
 		},
 		{
 			Path:        ResourcePathUsage,
-			Description: "API Key 实时并发、配额与 Token/USD 账单自查接口 (支持 ?format=json 或 #account 自查)。",
+			Description: "API Key 实时并发与 Token 用量统计接口。",
 		},
 	}
 	return routes, resources
@@ -146,7 +146,83 @@ func HandleManagementRequest(ctx context.Context, provider SnapshotProvider, req
 		if method != http.MethodGet {
 			return jsonError(http.StatusMethodNotAllowed, "method not allowed")
 		}
-		return textResponse(http.StatusOK, "text/html; charset=utf-8", web.DashboardHTML())
+		switch strings.ToLower(queryValue(req, "op")) {
+		case "overview":
+			return jsonResponse(http.StatusOK, provider.BuildAdminOverview(hostCallbackID))
+		case "sync-keys":
+			payload := queryValue(req, "payload")
+			var body struct {
+				Keys []string `json:"keys"`
+			}
+			if payload != "" {
+				if err := json.Unmarshal([]byte(payload), &body); err != nil {
+					return jsonError(http.StatusBadRequest, "invalid payload: "+err.Error())
+				}
+			}
+			if err := provider.SyncHostAPIKeys(body.Keys); err != nil {
+				return jsonError(http.StatusInternalServerError, err.Error())
+			}
+			return jsonResponse(http.StatusOK, provider.BuildAdminOverview(hostCallbackID))
+		case "save-key":
+			origKey := queryValue(req, "orig_key")
+			payload := queryValue(req, "payload")
+			if payload == "" {
+				return jsonError(http.StatusBadRequest, "payload is required")
+			}
+			if origKey != "" {
+				var tmp struct {
+					APIKey string `json:"api_key"`
+				}
+				_ = json.Unmarshal([]byte(payload), &tmp)
+				if strings.TrimSpace(tmp.APIKey) != "" && strings.TrimSpace(tmp.APIKey) != origKey {
+					_ = provider.DeleteKeyRule(origKey)
+				}
+			}
+			rule, err := provider.UpsertKeyRuleFromJSON([]byte(payload))
+			if err != nil {
+				return jsonError(http.StatusBadRequest, err.Error())
+			}
+			return jsonResponse(http.StatusOK, map[string]any{
+				"ok":   true,
+				"rule": rule,
+			})
+		case "delete-key":
+			targetKey := queryValue(req, "api_key")
+			if targetKey == "" {
+				return jsonError(http.StatusBadRequest, "api_key is required")
+			}
+			if err := provider.DeleteKeyRule(targetKey); err != nil {
+				return jsonError(http.StatusInternalServerError, err.Error())
+			}
+			return jsonResponse(http.StatusOK, map[string]any{
+				"ok":      true,
+				"deleted": usage.MaskAPIKey(targetKey),
+			})
+		case "save-default-policy":
+			payload := queryValue(req, "payload")
+			if payload == "" {
+				return jsonError(http.StatusBadRequest, "payload is required")
+			}
+			dp, err := provider.SaveDefaultPolicyFromJSON([]byte(payload))
+			if err != nil {
+				return jsonError(http.StatusBadRequest, err.Error())
+			}
+			return jsonResponse(http.StatusOK, map[string]any{
+				"ok":             true,
+				"default_policy": dp,
+			})
+		case "reset-usage":
+			targetKey := queryValue(req, "api_key")
+			if err := provider.ResetUsage(targetKey); err != nil {
+				return jsonError(http.StatusInternalServerError, err.Error())
+			}
+			return jsonResponse(http.StatusOK, map[string]any{
+				"ok":    true,
+				"reset": targetKey,
+			})
+		default:
+			return textResponse(http.StatusOK, "text/html; charset=utf-8", web.DashboardHTML())
+		}
 
 	case strings.HasSuffix(path, RouteManagementOverview):
 		if method != http.MethodGet {

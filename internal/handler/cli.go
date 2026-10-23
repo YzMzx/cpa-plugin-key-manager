@@ -49,11 +49,11 @@ func RegisterCLIFlags() []pluginapi.CommandLineFlag {
 	}
 }
 
-// RenderUsageTable renders a human-readable ASCII table of per-API-Key and per-Model token usage & USD cost.
+// RenderUsageTable renders a human-readable ASCII table of per-API-Key and per-Model token usage.
 func RenderUsageTable(snap usage.PersistedSnapshot) string {
 	var buf bytes.Buffer
 	fmt.Fprintf(&buf, "====================================================================================================\n")
-	fmt.Fprintf(&buf, " CLIProxyAPI Key Governance & Billing Report (Updated: %s)\n", snap.UpdatedAt)
+	fmt.Fprintf(&buf, " CLIProxyAPI Key Governance & Token Usage Report (Updated: %s)\n", snap.UpdatedAt)
 	fmt.Fprintf(&buf, "====================================================================================================\n\n")
 
 	if len(snap.Keys) == 0 {
@@ -62,11 +62,11 @@ func RenderUsageTable(snap usage.PersistedSnapshot) string {
 	}
 
 	tw := tabwriter.NewWriter(&buf, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "API KEY\tNAME\tCONCURRENCY\tREQ(OK/ERR)\tINPUT\tOUTPUT\tCACHE(R/W)\tTOTAL TOKENS\tCOST (USD)")
-	fmt.Fprintln(tw, "-------\t----\t-----------\t-----------\t-----\t------\t----------\t------------\t----------")
+	fmt.Fprintln(tw, "API KEY\tNAME\tCONCURRENCY\tREQ(OK/ERR)\tINPUT\tOUTPUT\tCACHE(R/W)\tTOTAL TOKENS")
+	fmt.Fprintln(tw, "-------\t----\t-----------\t-----------\t-----\t------\t----------\t------------")
 
 	keyIDs := usage.SortedKeyIDs(snap.Keys)
-	var grandReq, grandIn, grandOut, grandRead, grandWrite, grandTotal, grandNano int64
+	var grandReq, grandIn, grandOut, grandRead, grandWrite, grandTotal int64
 
 	for _, k := range keyIDs {
 		ks := snap.Keys[k]
@@ -79,7 +79,6 @@ func RenderUsageTable(snap usage.PersistedSnapshot) string {
 		grandRead += ks.CacheReadTokens
 		grandWrite += ks.CacheWriteTokens
 		grandTotal += ks.TotalTokens
-		grandNano += ks.TotalCostNanoUSD
 
 		concStr := fmt.Sprintf("%d/unlimited", ks.ActiveConcurrency)
 		if ks.MaxConcurrency > 0 {
@@ -89,7 +88,7 @@ func RenderUsageTable(snap usage.PersistedSnapshot) string {
 		if name == "" {
 			name = "-"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%d (%d/%d)\t%d\t%d\t%d/%d\t%d\t%s\n",
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%d (%d/%d)\t%d\t%d\t%d/%d\t%d\n",
 			ks.MaskedKey,
 			name,
 			concStr,
@@ -101,7 +100,6 @@ func RenderUsageTable(snap usage.PersistedSnapshot) string {
 			ks.CacheReadTokens,
 			ks.CacheWriteTokens,
 			ks.TotalTokens,
-			ks.TotalCostFormatted,
 		)
 
 		if len(ks.Models) > 0 {
@@ -112,7 +110,7 @@ func RenderUsageTable(snap usage.PersistedSnapshot) string {
 			sort.Strings(modelNames)
 			for _, m := range modelNames {
 				ms := ks.Models[m]
-				fmt.Fprintf(tw, "  └─ %s\t\t\t%d (%d/%d)\t%d\t%d\t%d/%d\t%d\t%s\n",
+				fmt.Fprintf(tw, "  └─ %s\t\t\t%d (%d/%d)\t%d\t%d\t%d/%d\t%d\n",
 					ms.Model,
 					ms.Requests,
 					ms.SuccessRequests,
@@ -122,7 +120,6 @@ func RenderUsageTable(snap usage.PersistedSnapshot) string {
 					ms.CacheReadTokens,
 					ms.CacheWriteTokens,
 					ms.TotalTokens,
-					ms.CostFormatted,
 				)
 			}
 		}
@@ -130,8 +127,8 @@ func RenderUsageTable(snap usage.PersistedSnapshot) string {
 	_ = tw.Flush()
 
 	fmt.Fprintf(&buf, "\n----------------------------------------------------------------------------------------------------\n")
-	fmt.Fprintf(&buf, "GRAND TOTAL: Requests=%d | Input=%d | Output=%d | CacheRead=%d | CacheWrite=%d | TotalTokens=%d | TotalCost=$%.6f\n",
-		grandReq, grandIn, grandOut, grandRead, grandWrite, grandTotal, float64(grandNano)/1e9)
+	fmt.Fprintf(&buf, "GRAND TOTAL: Requests=%d | Input=%d | Output=%d | CacheRead=%d | CacheWrite=%d | TotalTokens=%d\n",
+		grandReq, grandIn, grandOut, grandRead, grandWrite, grandTotal)
 	return buf.String()
 }
 

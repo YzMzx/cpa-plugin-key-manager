@@ -261,7 +261,6 @@ init_plugin_data() {
   "default_policy": {
     "allow_unlisted_keys": true,
     "max_concurrency": 0,
-    "quota_limit_usd": 0,
     "allowed_models": [
       "*"
     ],
@@ -269,8 +268,7 @@ init_plugin_data() {
       "strategy": "round-robin"
     }
   },
-  "keys": [],
-  "custom_prices": {}
+  "keys": []
 }
 EOF
     mv -f "${rules_file}.tmp.$$" "$rules_file"
@@ -289,28 +287,9 @@ EOF
 }
 EOF
     mv -f "${usage_file}.tmp.$$" "$usage_file"
-    info "Initialized usage billing store: ${usage_file}"
+    info "Initialized token usage store: ${usage_file}"
   else
-    info "Preserved existing usage billing store: ${usage_file}"
-  fi
-
-  models_cache="${data_dir}/models_dev.json"
-  if [ "$skip_models_sync" -eq 0 ] && { [ ! -s "$models_cache" ] || [ "$reset_data" -eq 1 ]; }; then
-    if command -v curl >/dev/null 2>&1; then
-      info "Pre-fetching reference model pricing from https://models.dev/api.json..."
-      if curl -fsSL --retry 2 --connect-timeout 10 -o "${models_cache}.tmp.$$" "https://models.dev/api.json" 2>/dev/null && [ -s "${models_cache}.tmp.$$" ]; then
-        mv -f "${models_cache}.tmp.$$" "$models_cache"
-        info "Initialized models.dev pricing cache: ${models_cache}"
-      else
-        rm -f "${models_cache}.tmp.$$"
-        if [ ! -f "$models_cache" ]; then
-          printf '{}\n' > "$models_cache"
-        fi
-        warn "Could not reach models.dev right now; plugin will sync automatically in the background."
-      fi
-    fi
-  else
-    info "Preserved existing models.dev cache: ${models_cache}"
+    info "Preserved existing token usage store: ${usage_file}"
   fi
 }
 
@@ -329,16 +308,9 @@ plugins:
         usage_file: "./data/key_usage_stats.json"
         rules_file: "./data/key_guard_rules.json"
         flush_interval_seconds: 10
-        pricing_cache_file: "./data/models_dev.json"
-      pricing:
-        sync_url: "https://models.dev/api.json"
-        sync_interval_hours: 24
-        http_timeout_seconds: 30
-        auto_inject_include_usage: true
       default_policy:
         allow_unlisted_keys: true
         max_concurrency: 0
-        quota_limit_usd: 0
         allowed_models:
           - "*"
 EOF
@@ -367,16 +339,9 @@ plugins:
         usage_file: "./data/key_usage_stats.json"
         rules_file: "./data/key_guard_rules.json"
         flush_interval_seconds: 10
-        pricing_cache_file: "./data/models_dev.json"
-      pricing:
-        sync_url: "https://models.dev/api.json"
-        sync_interval_hours: 24
-        http_timeout_seconds: 30
-        auto_inject_include_usage: true
       default_policy:
         allow_unlisted_keys: true
         max_concurrency: 0
-        quota_limit_usd: 0
         allowed_models:
           - "*"
 EOF
@@ -391,7 +356,6 @@ EOF
         usage_file: "./data/key_usage_stats.json"
         rules_file: "./data/key_guard_rules.json"
         flush_interval_seconds: 10
-        pricing_cache_file: "./data/models_dev.json"
 EOF
   fi
 }
@@ -410,6 +374,5 @@ printf '  cpa-plugin-key installation & data initialization completed!\n'
 printf '  - Plugin directory : %s\n' "$plugin_dir"
 printf '  - Data directory   : %s\n' "$data_dir"
 printf '  - Admin Web UI     : http://127.0.0.1:8317/v0/resource/plugins/cpa-plugin-key/ui\n'
-printf '  - Key Self-Query   : http://127.0.0.1:8317/v0/resource/plugins/cpa-plugin-key/ui#account\n'
 printf '  Restart CLIProxyAPI to load the plugin.\n'
 printf '==============================================================================\n'
