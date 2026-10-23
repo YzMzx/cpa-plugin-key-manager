@@ -1,5 +1,5 @@
 # =============================================================================
-# CLIProxyAPI - cpa-plugin-key 插件完整配置示例
+# CLIProxyAPI - cpa-plugin-key 插件配置示例
 # 将以下 plugins 配置块合入 CLIProxyAPI 的主配置文件 config.yaml 即可启用
 # =============================================================================
 
@@ -11,9 +11,7 @@ plugins:
       enabled: true
       priority: 100
 
-      # -----------------------------------------------------------------------
       # 1. 存储与持久化配置
-      # -----------------------------------------------------------------------
       storage:
         # 累计 Token 用量持久化文件路径（采用临时文件 + fsync + 原子重命名机制）
         usage_file: "./data/key_usage_stats.json"
@@ -22,59 +20,14 @@ plugins:
         # 定时落盘间隔（秒），同时在 plugin.shutdown / plugin.quiesce 时会自动触发刷盘
         flush_interval_seconds: 10
 
-      # -----------------------------------------------------------------------
-      # 2. 全局默认策略（未在下方 keys 列表中单独声明专属规则的 API Key 适用）
-      # -----------------------------------------------------------------------
+      # 2. 全局默认策略（未单独设置专属规则的 CPA API Key 适用）
       default_policy:
-        # true: 允许主配置 api-keys 中的其他 Key 按默认策略通过；false: 仅允许下方 keys 列表中的 Key
         allow_unlisted_keys: true
-        # 默认最大并发数（0 表示不限制并发）
         max_concurrency: 0
-        # 默认允许访问的模型白名单
         allowed_models:
           - "*"
+        upstream_binding:
+          strategy: "round-robin"
 
-      # -----------------------------------------------------------------------
-      # 3. 按 API Key 维度的精细化路由、并发限制、模型白名单与凭证绑定策略
-      # （也可直接在 CPA 管理后台左侧「API Key 管控与用量」页面免密可视化增删改查）
-      # -----------------------------------------------------------------------
-      keys:
-        - api_key: "sk-tenant-alpha-prod"
-          name: "租户 Alpha (生产环境)"
-          enabled: true
-          # 最大并发请求数（非流式在响应结束释放；SSE 流式在 [DONE] / 连接关闭 / context.Canceled 时释放）
-          max_concurrency: 5
-          # 允许调用的模型白名单（支持精确匹配、* 通配符、以及 ! 前缀排除规则）
-          allowed_models:
-            - "claude-3-5-*"
-            - "claude-3-7-*"
-            - "gpt-4o*"
-            - "!gpt-4o-audio-*"
-          # 上游凭证绑定（实现多租户上游账号物理隔离）
-          upstream_binding:
-            # 绑定特定的上游 Auth ID、凭证文件名或凭证池前缀（支持 * 通配符）
-            auth_ids:
-              - "claude-alpha-*.json"
-              - "openai-alpha-01"
-            # 可选：限制允许路由的 Provider 类型
-            providers:
-              - "claude"
-              - "openai"
-            # 绑定池内负载均衡策略: "round-robin" (默认轮询) | "fill-first" (按优先级顺序)
-            strategy: "round-robin"
-            # true: 当绑定的专属凭证不可用/冷却时直接拒绝请求，严禁回退借用其他租户凭证
-            strict: true
-
-        - api_key: "sk-tenant-beta-dev"
-          name: "租户 Beta (研发测试)"
-          enabled: true
-          max_concurrency: 2
-          allowed_models:
-            - "gpt-4o-mini"
-            - "claude-3-5-haiku-*"
-            - "gemini-2.5-flash*"
-          upstream_binding:
-            auth_ids:
-              - "beta-pool-*"
-            strategy: "fill-first"
-            strict: true
+      # 3. API Key 专属规则（自动与 CPA 全局 api-keys 同步，请在 CPA 管理后台「API Key 管控与用量」页面可视化配置）
+      keys: []

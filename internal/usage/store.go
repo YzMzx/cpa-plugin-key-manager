@@ -487,15 +487,37 @@ func (s *Store) ensureTrackerLocked(reqID, apiKey, model, requestedModel, source
 	return tr
 }
 
+func isInvalidKeyID(k string) bool {
+	v := strings.TrimSpace(k)
+	if v == "" || v == "__anonymous__" || strings.EqualFold(v, "anonymous") {
+		return true
+	}
+	if v == "sk-tenant-alpha-prod" || v == "sk-tenant-beta-dev" {
+		return true
+	}
+	return false
+}
+
+func isInvalidModelID(m string) bool {
+	v := strings.TrimSpace(m)
+	return v == "" || strings.EqualFold(v, "unknown")
+}
+
 // reconcileTrackerDeltaLocked applies the request count (at most once) and any newly discovered
 // token deltas for `tr` to the cumulative key/model statistics.
 func (s *Store) reconcileTrackerDeltaLocked(tr *TrackedRequest) {
 	apiKey := normalizeAPIKey(tr.APIKey)
+	if isInvalidKeyID(apiKey) {
+		return
+	}
 	model := s.canonicalBillingModel(tr)
-	if tr.BilledModel != "" {
+	if tr.BilledModel != "" && !isInvalidModelID(tr.BilledModel) {
 		model = tr.BilledModel
-	} else {
+	} else if !isInvalidModelID(model) {
 		tr.BilledModel = model
+	}
+	if isInvalidModelID(model) {
+		return
 	}
 
 	ks := s.getOrCreateKeyStatsLocked(apiKey, tr.KeyName)
@@ -588,11 +610,11 @@ func (s *Store) reconcileTrackerDeltaLocked(tr *TrackedRequest) {
 func (s *Store) canonicalBillingModel(tr *TrackedRequest) string {
 	for _, cand := range []string{tr.Model, tr.RequestedModel, tr.ExtractedUsage.ResponseModel} {
 		cand = strings.TrimSpace(cand)
-		if cand != "" {
+		if !isInvalidModelID(cand) {
 			return cand
 		}
 	}
-	return "unknown"
+	return ""
 }
 
 func (s *Store) getOrCreateKeyStatsLocked(apiKey, keyName string) *KeyStats {
@@ -635,17 +657,29 @@ func (s *Store) Snapshot(filterAPIKey, filterModel string, activeByKey map[strin
 	filterKey := strings.TrimSpace(filterAPIKey)
 	filterMod := strings.ToLower(strings.TrimSpace(filterModel))
 
-	// Include all configured keys or keys with stats
-	allKeyIDs := make(map[string]struct{}, len(s.keys)+len(keyNames))
+	// Include all configured keys or valid keys with stats
+	allKeyIDs := make(map[string]struct{}, len(s.keys)+len(keyNames)+len(maxConcByKey))
 	for k := range s.keys {
-		allKeyIDs[k] = struct{}{}
+		if !isInvalidKeyID(k) {
+			allKeyIDs[k] = struct{}{}
+		}
 	}
 	for k := range keyNames {
-		allKeyIDs[k] = struct{}{}
+		if !isInvalidKeyID(k) {
+			allKeyIDs[k] = struct{}{}
+		}
+	}
+	for k := range maxConcByKey {
+		if !isInvalidKeyID(k) {
+			allKeyIDs[k] = struct{}{}
+		}
 	}
 
 	outKeys := make(map[string]*KeyStats, len(allKeyIDs))
 	for k := range allKeyIDs {
+		if isInvalidKeyID(k) {
+			continue
+		}
 		if filterKey != "" && k != filterKey && MaskAPIKey(k) != filterKey {
 			continue
 		}
@@ -675,8 +709,12 @@ func (s *Store) Snapshot(filterAPIKey, filterModel string, activeByKey map[strin
 		}
 
 		cpModels := make(map[string]*ModelStats)
+		var sumReq, sumOk, sumFail, sumIn, sumOut, sumReason, sumRead, sumWrite, sumTotal, sumNano int64
 		if exists && src.Models != nil {
 			for mName, mStat := range src.Models {
+				if mStat == nil || isInvalidModelID(mName) || isInvalidModelID(mStat.Model) {
+					continue
+				}
 				if filterMod != "" && !strings.Contains(strings.ToLower(mName), filterMod) {
 					continue
 				}
@@ -684,9 +722,32 @@ func (s *Store) Snapshot(filterAPIKey, filterModel string, activeByKey map[strin
 				mCopy.CostUSD = pricing.NanoToUSD(mCopy.CostNanoUSD)
 				mCopy.CostFormatted = pricing.FormatUSD(mCopy.CostNanoUSD)
 				cpModels[mName] = &mCopy
+
+				sumReq += mCopy.Requests
+				sumOk += mCopy.SuccessRequests
+				sumFail += mCopy.FailedRequests
+				sumIn += mCopy.InputTokens
+				sumOut += mCopy.OutputTokens
+				sumReason += mCopy.ReasoningTokens
+				sumRead += mCopy.CacheReadTokens
+				sumWrite += mCopy.CacheWriteTokens
+				sumTotal += mCopy.TotalTokens
+				sumNano += mCopy.CostNanoUSD
 			}
 		}
 		cpKey.Models = cpModels
+		if filterMod == "" && exists {
+			cpKey.TotalRequests = sumReq
+			cpKey.SuccessRequests = sumOk
+			cpKey.FailedRequests = sumFail
+			cpKey.InputTokens = sumIn
+			cpKey.OutputTokens = sumOut
+			cpKey.ReasoningTokens = sumReason
+			cpKey.CacheReadTokens = sumRead
+			cpKey.CacheWriteTokens = sumWrite
+			cpKey.TotalTokens = sumTotal
+			cpKey.TotalCostNanoUSD = sumNano
+		}
 		cpKey.TotalCostUSD = pricing.NanoToUSD(cpKey.TotalCostNanoUSD)
 		cpKey.TotalCostFormatted = pricing.FormatUSD(cpKey.TotalCostNanoUSD)
 
@@ -785,40 +846,80 @@ func (s *Store) loadFromDisk(filePath string) error {
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.keys == nil {
 		s.keys = make(map[string]*KeyStats)
 	}
+	cleanedDisk := false
 	for k, ks := range snap.Keys {
 		if ks == nil {
+			cleanedDisk = true
 			continue
 		}
 		if ks.APIKey == "" {
 			ks.APIKey = k
 		}
+		if isInvalidKeyID(k) || isInvalidKeyID(ks.APIKey) {
+			cleanedDisk = true
+			continue
+		}
 		ks.MaskedKey = MaskAPIKey(ks.APIKey)
-		if ks.TotalCostNanoUSD == 0 && ks.TotalCostUSD > 0 {
-			ks.TotalCostNanoUSD = int64(ks.TotalCostUSD * float64(pricing.NanoUSDPerUSD))
-		}
-		ks.TotalCostUSD = pricing.NanoToUSD(ks.TotalCostNanoUSD)
-		ks.TotalCostFormatted = pricing.FormatUSD(ks.TotalCostNanoUSD)
-		if ks.Models == nil {
-			ks.Models = make(map[string]*ModelStats)
-		}
+		validModels := make(map[string]*ModelStats)
+		var sumReq, sumOk, sumFail, sumIn, sumOut, sumReason, sumRead, sumWrite, sumTotal, sumNano int64
 		for mk, ms := range ks.Models {
 			if ms == nil {
+				cleanedDisk = true
 				continue
 			}
 			if ms.Model == "" {
 				ms.Model = mk
+			}
+			if isInvalidModelID(mk) || isInvalidModelID(ms.Model) {
+				cleanedDisk = true
+				continue
 			}
 			if ms.CostNanoUSD == 0 && ms.CostUSD > 0 {
 				ms.CostNanoUSD = int64(ms.CostUSD * float64(pricing.NanoUSDPerUSD))
 			}
 			ms.CostUSD = pricing.NanoToUSD(ms.CostNanoUSD)
 			ms.CostFormatted = pricing.FormatUSD(ms.CostNanoUSD)
+			validModels[ms.Model] = ms
+
+			sumReq += ms.Requests
+			sumOk += ms.SuccessRequests
+			sumFail += ms.FailedRequests
+			sumIn += ms.InputTokens
+			sumOut += ms.OutputTokens
+			sumReason += ms.ReasoningTokens
+			sumRead += ms.CacheReadTokens
+			sumWrite += ms.CacheWriteTokens
+			sumTotal += ms.TotalTokens
+			sumNano += ms.CostNanoUSD
 		}
-		s.keys[k] = ks
+		if len(validModels) == 0 {
+			cleanedDisk = true
+			continue
+		}
+		ks.Models = validModels
+		ks.TotalRequests = sumReq
+		ks.SuccessRequests = sumOk
+		ks.FailedRequests = sumFail
+		ks.InputTokens = sumIn
+		ks.OutputTokens = sumOut
+		ks.ReasoningTokens = sumReason
+		ks.CacheReadTokens = sumRead
+		ks.CacheWriteTokens = sumWrite
+		ks.TotalTokens = sumTotal
+		ks.TotalCostNanoUSD = sumNano
+		ks.TotalCostUSD = pricing.NanoToUSD(ks.TotalCostNanoUSD)
+		ks.TotalCostFormatted = pricing.FormatUSD(ks.TotalCostNanoUSD)
+		s.keys[ks.APIKey] = ks
+	}
+	if cleanedDisk {
+		s.dirty = true
+	}
+	s.mu.Unlock()
+	if cleanedDisk {
+		_ = s.FlushIfDirty()
 	}
 	return nil
 }

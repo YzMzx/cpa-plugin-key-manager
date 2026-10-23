@@ -911,13 +911,13 @@
       <div class="form-group">
         <label class="form-label">
           <span>默认模型白名单规则（复选框选择）</span>
-          <span class="tag plain" id="dpModelCountBadge">全部允许 (*)</span>
+          <span class="tag plain" id="dpModelCountBadge">全部已有模型</span>
         </label>
         <div class="selector-box">
           <div class="selector-mode-bar">
             <label class="master-check-label">
               <input type="checkbox" id="dpAllModelsCheck" checked onchange="onToggleAllModels('dp')">
-              <span>允许访问全部模型 (<code>*</code>，不限制模型)</span>
+              <span>允许访问全部已有模型（不限制模型）</span>
             </label>
             <div class="input-row">
               <button type="button" class="btn btn-sm" onclick="batchCheckModels('dp', true)">全选当前列表</button>
@@ -927,7 +927,7 @@
           <div id="dpModelPickerPanel" class="hidden">
             <div class="selector-toolbar">
               <div class="provider-pills" id="dpProviderPills"></div>
-              <input type="text" class="input" style="width:220px;min-height:30px;padding:4px 9px" id="dpModelSearch" placeholder="搜索模型名称..." oninput="renderModelCheckList('dp')">
+              <input type="text" class="input" style="width:220px;min-height:30px;padding:4px 9px" id="dpModelSearch" placeholder="搜索已有模型..." oninput="renderModelCheckList('dp')">
             </div>
             <div class="selection-list" id="dpModelCheckList"></div>
           </div>
@@ -1010,8 +1010,8 @@
           </div>
         </div>
         <div class="form-group">
-          <label class="form-label">备注名称 / 租户标识</label>
-          <input type="text" class="input" id="kmName" placeholder="例如：研发部-张三 / 生产客户端">
+          <label class="form-label">备注名称</label>
+          <input type="text" class="input" id="kmName" placeholder="选填备注">
         </div>
       </div>
 
@@ -1033,14 +1033,14 @@
       <!-- Pure Checkbox Model Whitelist Selector -->
       <div class="form-group">
         <label class="form-label">
-          <span>模型白名单规则（复选框选择）</span>
-          <span class="tag plain" id="kmModelCountBadge">全部允许 (*)</span>
+          <span>模型白名单规则（复选框选择已有模型）</span>
+          <span class="tag plain" id="kmModelCountBadge">全部已有模型</span>
         </label>
         <div class="selector-box">
           <div class="selector-mode-bar">
             <label class="master-check-label">
               <input type="checkbox" id="kmAllModelsCheck" checked onchange="onToggleAllModels('km')">
-              <span>允许访问全部模型 (<code>*</code>，不限制模型)</span>
+              <span>允许访问全部已有模型（不限制模型）</span>
             </label>
             <div class="input-row">
               <button type="button" class="btn btn-sm" onclick="batchCheckModels('km', true)">全选当前列表</button>
@@ -1050,7 +1050,7 @@
           <div id="kmModelPickerPanel" class="hidden">
             <div class="selector-toolbar">
               <div class="provider-pills" id="kmProviderPills"></div>
-              <input type="text" class="input" style="width:210px;min-height:30px;padding:4px 9px" id="kmModelSearch" placeholder="搜索模型名称..." oninput="renderModelCheckList('km')">
+              <input type="text" class="input" style="width:210px;min-height:30px;padding:4px 9px" id="kmModelSearch" placeholder="搜索已有模型..." oninput="renderModelCheckList('km')">
             </div>
             <div class="selection-list" id="kmModelCheckList"></div>
           </div>
@@ -1152,7 +1152,7 @@
   }
 
   function maskKeyStr(k) {
-    if (!k) return "anonymous";
+    if (!k) return "-";
     if (k.length <= 8) return k.slice(0, 2) + "***";
     if (k.length <= 14) return k.slice(0, 4) + "..." + k.slice(-3);
     return k.slice(0, 7) + "..." + k.slice(-5);
@@ -1275,7 +1275,8 @@
 
   // ==================== PURE CHECKBOX SELECTORS (MODELS & CREDENTIALS) ====================
   function getAvailableModels() {
-    return (overviewData && overviewData.available_models) || [];
+    const raw = (overviewData && overviewData.available_models) || [];
+    return raw.filter(m => m && m.id && m.id.toLowerCase() !== "unknown" && !m.id.includes("*") && !m.id.includes("?") && !m.id.startsWith("!"));
   }
 
   function getAvailableCredentials() {
@@ -1284,10 +1285,13 @@
 
   function loadSelectorFromRule(prefix, allowedModels, boundCreds) {
     const st = selectorState[prefix];
+    const existingIDs = new Set(getAvailableModels().map(m => m.id));
     const normModels = (allowedModels || []).map(s => s.trim()).filter(Boolean);
-    const isAllModels = normModels.length === 0 || (normModels.length === 1 && normModels[0] === "*");
+    const hasWildcardAll = normModels.length === 0 || normModels.includes("*");
+    const validSelectedModels = normModels.filter(m => m !== "*" && existingIDs.has(m));
+    const isAllModels = hasWildcardAll || (existingIDs.size > 0 && validSelectedModels.length === 0);
     st.allModels = isAllModels;
-    st.selectedModels = new Set(isAllModels ? [] : normModels);
+    st.selectedModels = new Set(isAllModels ? [] : validSelectedModels);
     st.providerFilter = "all";
 
     const normCreds = (boundCreds || []).map(s => s.trim()).filter(Boolean);
@@ -1331,10 +1335,10 @@
     const st = selectorState[prefix];
     const mBadge = document.getElementById(prefix + "ModelCountBadge");
     if (st.allModels) {
-      mBadge.textContent = "全部允许 (*)";
+      mBadge.textContent = "全部已有模型";
       mBadge.className = "tag ok";
     } else {
-      mBadge.textContent = `已勾选 ${st.selectedModels.size} 项模型`;
+      mBadge.textContent = `已勾选 ${st.selectedModels.size} 项已有模型`;
       mBadge.className = st.selectedModels.size > 0 ? "tag plain" : "tag warn";
     }
 
@@ -1383,15 +1387,7 @@
     const q = (document.getElementById(prefix + "ModelSearch")?.value || "").toLowerCase().trim();
     const baseModels = getAvailableModels();
 
-    const knownIDs = new Set(baseModels.map(m => m.id));
-    const merged = baseModels.slice();
-    st.selectedModels.forEach(id => {
-      if (!knownIDs.has(id)) {
-        merged.unshift({ id, provider: "custom" });
-      }
-    });
-
-    return merged.filter(m => {
+    return baseModels.filter(m => {
       if (st.providerFilter !== "all" && m.provider !== st.providerFilter) return false;
       if (q && !m.id.toLowerCase().includes(q) && !(m.provider || "").toLowerCase().includes(q)) return false;
       return true;
@@ -1403,17 +1399,16 @@
     const list = getFilteredModelsForSelector(prefix);
     const container = document.getElementById(prefix + "ModelCheckList");
     if (list.length === 0) {
-      container.innerHTML = `<div style="grid-column:1/-1;text-align:center;padding:14px;color:var(--text-tertiary)">没有匹配的模型选项</div>`;
+      container.innerHTML = `<div style="grid-column:1/-1;text-align:center;padding:14px;color:var(--text-tertiary)">当前暂无匹配的已有模型</div>`;
       return;
     }
     container.innerHTML = list.map(m => {
       const checked = st.selectedModels.has(m.id);
-      const isWild = m.id.includes("*");
       return `<label class="check-item ${checked ? "checked" : ""}">
         <input type="checkbox" ${checked ? "checked" : ""} onchange="toggleModelCheckItem('${prefix}', '${escapeHtml(m.id)}', this.checked)">
         <div class="check-item-body">
           <div class="check-item-title mono">${escapeHtml(m.id)}</div>
-          <div class="check-item-sub">${isWild ? "通配符全系匹配" : escapeHtml(m.provider || "model")}</div>
+          <div class="check-item-sub">${escapeHtml(m.provider || "model")}</div>
         </div>
       </label>`;
     }).join("");
@@ -1550,10 +1545,13 @@
       const activeC = ks.active_concurrency || 0;
       const maxC = kr.max_concurrency || 0;
 
-      const models = (kr.allowed_models && kr.allowed_models.length) ? kr.allowed_models : ["*"];
-      const modelsHtml = (models.length === 1 && models[0] === "*")
-        ? `<span class="tag ok">全部模型 (*)</span>`
-        : models.map(m => `<span class="tag plain mono">${escapeHtml(m)}</span>`).join(" ");
+      const existingModelIDs = new Set(getAvailableModels().map(m => m.id));
+      const rawModels = (kr.allowed_models && kr.allowed_models.length) ? kr.allowed_models : ["*"];
+      const existingSelected = rawModels.filter(m => m !== "*" && !m.includes("*") && !m.includes("?") && existingModelIDs.has(m));
+      const isAllModels = rawModels.includes("*") || existingSelected.length === 0;
+      const modelsHtml = isAllModels
+        ? `<span class="tag ok">全部已有模型</span>`
+        : existingSelected.map(m => `<span class="tag plain mono">${escapeHtml(m)}</span>`).join(" ");
 
       const ub = kr.upstream_binding || {};
       const creds = Array.from(new Set([].concat(ub.auth_ids || [], ub.credentials || [])));
@@ -1744,6 +1742,8 @@
 
     const q = (document.getElementById("dashKeySearch").value || "").toLowerCase().trim();
     const rows = Object.values(snapKeys).filter(ks => {
+      const rawKey = (ks.api_key || ks.masked_key || "").trim();
+      if (!rawKey || rawKey === "__anonymous__" || rawKey.toLowerCase() === "anonymous") return false;
       if (!q) return true;
       return (ks.api_key || "").toLowerCase().includes(q) ||
              (ks.masked_key || "").toLowerCase().includes(q) ||
@@ -1763,13 +1763,15 @@
         const maxConc = ks.max_concurrency || rule.max_concurrency || 0;
         const concText = maxConc > 0 ? `${ks.active_concurrency || 0} / ${maxConc}` : `${ks.active_concurrency || 0} / ∞`;
         const share = grandTotalTokens > 0 ? (((ks.total_tokens || 0) / grandTotalTokens) * 100).toFixed(1) : "0.0";
-        const modelCount = ks.models ? Object.keys(ks.models).length : 0;
+        const validModels = ks.models ? Object.values(ks.models).filter(ms => ms && ms.model && ms.model.toLowerCase() !== "unknown") : [];
+        const modelCount = validModels.length;
         const isExpanded = !!expandedDashKeys[rawKey];
+        const keyNote = ks.key_name || rule.name || "";
 
         html += `<tr>
           <td>
-            <div style="font-weight:600">${escapeHtml(ks.key_name || "未命名 Key")}</div>
-            <div class="mono" style="font-size:12px;color:var(--text-secondary)">${escapeHtml(ks.masked_key)}</div>
+            <div class="mono" style="font-weight:600">${escapeHtml(ks.masked_key || maskKeyStr(rawKey))}</div>
+            ${keyNote ? `<div style="font-size:12px;color:var(--text-secondary)">${escapeHtml(keyNote)}</div>` : ""}
           </td>
           <td><span class="tag ${ks.active_concurrency > 0 ? "ok" : "plain"} mono">${escapeHtml(concText)}</span></td>
           <td class="mono">${fmtInt(ks.total_requests)} <span style="color:var(--text-tertiary)">(${fmtInt(ks.success_requests)}/${fmtInt(ks.failed_requests)})</span></td>
@@ -1787,8 +1789,8 @@
           </td>
         </tr>`;
 
-        if (isExpanded && ks.models) {
-          const mList = Object.values(ks.models).sort((a, b) => (b.total_tokens || 0) - (a.total_tokens || 0));
+        if (isExpanded && validModels.length > 0) {
+          const mList = validModels.slice().sort((a, b) => (b.total_tokens || 0) - (a.total_tokens || 0));
           for (const ms of mList) {
             html += `<tr class="sub-row">
               <td colspan="2">↳ <span class="mono" style="color:var(--text-primary);font-weight:600">${escapeHtml(ms.model)}</span></td>
@@ -1808,10 +1810,11 @@
     // Model Token Leaderboard
     const modelAgg = {};
     let totalModelTokens = 0;
-    for (const ks of Object.values(snapKeys)) {
+    for (const ks of rows) {
       if (!ks.models) continue;
       for (const ms of Object.values(ks.models)) {
-        const m = ms.model || "unknown";
+        const m = (ms && ms.model || "").trim();
+        if (!m || m.toLowerCase() === "unknown") continue;
         if (!modelAgg[m]) {
           modelAgg[m] = {
             model: m,

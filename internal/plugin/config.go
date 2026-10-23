@@ -421,10 +421,21 @@ func MergeDynamicState(seed Config, state *DynamicRulesState, hostAPIKeys ...str
 	keyOrder := make([]string, 0, len(hostAPIKeys)+len(seed.Keys)+len(state.Keys))
 	keyMap := make(map[string]KeyRuleConfig, len(hostAPIKeys)+len(seed.Keys)+len(state.Keys))
 
+	isSampleOrInvalidKey := func(k string) bool {
+		v := strings.TrimSpace(k)
+		if v == "" || v == "__anonymous__" || strings.EqualFold(v, "anonymous") {
+			return true
+		}
+		if v == "sk-tenant-alpha-prod" || v == "sk-tenant-beta-dev" {
+			return true
+		}
+		return false
+	}
+
 	// 1. CPA Global `api-keys` (unified key source)
 	for _, rawKey := range hostAPIKeys {
 		k := strings.TrimSpace(rawKey)
-		if k == "" {
+		if isSampleOrInvalidKey(k) {
 			continue
 		}
 		if _, deleted := deletedKeySet[k]; deleted {
@@ -447,7 +458,7 @@ func MergeDynamicState(seed Config, state *DynamicRulesState, hostAPIKeys ...str
 	// 2. Plugin seed keys (if any)
 	for _, kr := range seed.Keys {
 		k := strings.TrimSpace(kr.APIKey)
-		if k == "" {
+		if isSampleOrInvalidKey(k) {
 			continue
 		}
 		if _, deleted := deletedKeySet[k]; deleted {
@@ -462,7 +473,7 @@ func MergeDynamicState(seed Config, state *DynamicRulesState, hostAPIKeys ...str
 	// 3. Dynamic WebUI governance rules
 	for _, kr := range state.Keys {
 		k := strings.TrimSpace(kr.APIKey)
-		if k == "" {
+		if isSampleOrInvalidKey(k) {
 			continue
 		}
 		if _, exists := keyMap[k]; !exists {

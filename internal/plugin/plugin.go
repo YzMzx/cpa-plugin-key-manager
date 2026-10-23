@@ -21,7 +21,7 @@ import (
 
 const (
 	PluginID      = "cpa-plugin-key"
-	PluginVersion = "0.4.0"
+	PluginVersion = "0.4.1"
 	PluginAuthor  = "YzMzx"
 	PluginRepo    = "https://github.com/YzMzx/cpa-plugin-key"
 	PluginLogoSVG = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%238b8680'/><path d='M24 22a10 10 0 1 0 9.5 13H42v5h6v-5h4v-6H33.5A10 10 0 0 0 24 22zm0 6a4 4 0 1 1 0 8 4 4 0 0 1 0-8z' fill='%23fff'/></svg>"
@@ -739,15 +739,15 @@ func inferModelProvider(modelID string) string {
 	}
 }
 
-// ListAvailableModels aggregates all selectable models from host credentials (`host.auth.models`),
-// observed traffic (`usageStore`), configured key rules, and common standard models.
+// ListAvailableModels returns only existing models registered on active host credentials (`host.auth.models`),
+// excluding any wildcards, sample models, or "unknown" placeholders.
 func (m *Manager) ListAvailableModels(hostCallbackID string, snap usage.PersistedSnapshot) []AvailableModelOption {
 	authModels, _ := m.host.ListAuthModels(hostCallbackID)
 	byModel := make(map[string]*AvailableModelOption)
 
 	addModel := func(id, provider, source string) {
 		clean := strings.TrimSpace(id)
-		if clean == "" || clean == "*" || strings.HasPrefix(clean, "!") {
+		if clean == "" || strings.EqualFold(clean, "unknown") || strings.ContainsAny(clean, "*?!") {
 			return
 		}
 		prov := strings.ToLower(strings.TrimSpace(provider))
@@ -778,7 +778,7 @@ func (m *Manager) ListAvailableModels(hostCallbackID string, snap usage.Persiste
 		}
 	}
 
-	// 1. Models registered on active host credentials via host.auth.models
+	// Only models actually registered on active host credentials via host.auth.models
 	for _, cred := range authModels {
 		src := cred.ID
 		if src == "" {
@@ -789,64 +789,16 @@ func (m *Manager) ListAvailableModels(hostCallbackID string, snap usage.Persiste
 		}
 	}
 
-	// 2. Models observed in usage statistics
-	for _, ks := range snap.Keys {
-		if ks == nil {
-			continue
+	// Fallback if host.auth.models returned no models (e.g. standalone mode): include real non-wildcard models observed in usage
+	if len(byModel) == 0 {
+		for _, ks := range snap.Keys {
+			if ks == nil {
+				continue
+			}
+			for mid := range ks.Models {
+				addModel(mid, "", "usage")
+			}
 		}
-		for mid := range ks.Models {
-			addModel(mid, "", "usage")
-		}
-	}
-
-	// 3. Models already referenced in key rules or custom prices
-	m.mu.RLock()
-	for _, kr := range m.cfg.Keys {
-		for _, mod := range kr.AllowedModels {
-			addModel(mod, "", "rule")
-		}
-	}
-	for _, mod := range m.cfg.DefaultPolicy.AllowedModels {
-		addModel(mod, "", "default_policy")
-	}
-	for mod := range m.cfg.Pricing.CustomPrices {
-		addModel(mod, "", "custom_price")
-	}
-	m.mu.RUnlock()
-
-	// 4. Built-in mainstream models & wildcard family checkboxes so the UI always has rich checkboxes even before credentials are added
-	builtinModels := []struct {
-		id       string
-		provider string
-	}{
-		{"claude-*", "claude"},
-		{"claude-sonnet-4-20250514", "claude"},
-		{"claude-opus-4-20250514", "claude"},
-		{"claude-3-7-sonnet-20250219", "claude"},
-		{"claude-3-5-sonnet-20241022", "claude"},
-		{"claude-3-5-haiku-20241022", "claude"},
-		{"gpt-*", "openai"},
-		{"gpt-5", "openai"},
-		{"gpt-4.1", "openai"},
-		{"gpt-4.1-mini", "openai"},
-		{"gpt-4o", "openai"},
-		{"gpt-4o-mini", "openai"},
-		{"o3", "openai"},
-		{"o3-mini", "openai"},
-		{"o4-mini", "openai"},
-		{"codex-mini-latest", "openai"},
-		{"gemini-*", "gemini"},
-		{"gemini-2.5-pro", "gemini"},
-		{"gemini-2.5-flash", "gemini"},
-		{"gemini-2.0-flash", "gemini"},
-		{"deepseek-*", "deepseek"},
-		{"deepseek-chat", "deepseek"},
-		{"deepseek-reasoner", "deepseek"},
-		{"qwen-*", "qwen"},
-		{"grok-*", "xai"},
-	}
-	for _, bm := range builtinModels {
-		addModel(bm.id, bm.provider, "catalog")
 	}
 
 	out := make([]AvailableModelOption, 0, len(byModel))
@@ -857,13 +809,43 @@ func (m *Manager) ListAvailableModels(hostCallbackID string, snap usage.Persiste
 		if out[i].Provider != out[j].Provider {
 			return out[i].Provider < out[j].Provider
 		}
-		iWild := strings.Contains(out[i].ID, "*")
-		jWild := strings.Contains(out[j].ID, "*")
-		if iWild != jWild {
-			return iWild
-		}
 		return out[i].ID < out[j].ID
 	})
+	return out
+}
+
+func filterAllowedModelsToExisting(allowed []string, available []AvailableModelOption) []string {
+	if len(allowed) == 0 {
+		return []string{"*"}
+	}
+	for _, a := range allowed {
+		if strings.TrimSpace(a) == "*" {
+			return []string{"*"}
+		}
+	}
+	if len(available) == 0 {
+		out := make([]string, 0, len(allowed))
+		for _, a := range allowed {
+			clean := strings.TrimSpace(a)
+			if clean != "" && !strings.EqualFold(clean, "unknown") && !strings.ContainsAny(clean, "*?!") {
+				out = append(out, clean)
+			}
+		}
+		if len(out) == 0 {
+			return []string{"*"}
+		}
+		return out
+	}
+
+	out := make([]string, 0, len(available))
+	for _, m := range available {
+		if authz.AllowsModel(allowed, m.ID, m.ID) {
+			out = append(out, m.ID)
+		}
+	}
+	if len(out) == 0 {
+		return []string{"*"}
+	}
 	return out
 }
 
@@ -926,9 +908,12 @@ func (m *Manager) BuildAdminOverview(hostCallbackID string) map[string]any {
 	cfg := m.cfg
 	keysCopy := make([]KeyRuleConfig, len(cfg.Keys))
 	for i, k := range cfg.Keys {
-		keysCopy[i] = cloneKeyRule(k)
+		cp := cloneKeyRule(k)
+		cp.AllowedModels = filterAllowedModelsToExisting(cp.AllowedModels, availableModels)
+		keysCopy[i] = cp
 	}
 	dpCopy := cfg.DefaultPolicy
+	dpCopy.AllowedModels = filterAllowedModelsToExisting(dpCopy.AllowedModels, availableModels)
 	m.mu.RUnlock()
 
 	var totalCostNano int64
