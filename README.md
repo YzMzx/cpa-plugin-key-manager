@@ -39,17 +39,17 @@
 
 - **Linux / macOS / Git Bash**：
   ```bash
-  curl -LsSf https://raw.githubusercontent.com/YzMzx/cpa-plugin-key/main/install.sh | sh
+  curl -LsSf https://raw.githubusercontent.com/YzMzx/cpa-plugin-key-manager/main/install.sh | sh
   ```
 - **Windows PowerShell**：
   ```powershell
-  irm https://raw.githubusercontent.com/YzMzx/cpa-plugin-key/main/install.ps1 | iex
+  irm https://raw.githubusercontent.com/YzMzx/cpa-plugin-key-manager/main/install.ps1 | iex
   ```
 
 ### 2. 手动安装与自定义数据初始化参数
 ```bash
 # 下载安装脚本
-curl -LsSfO https://raw.githubusercontent.com/YzMzx/cpa-plugin-key/main/install.sh
+curl -LsSfO https://raw.githubusercontent.com/YzMzx/cpa-plugin-key-manager/main/install.sh
 chmod +x install.sh
 
 # 方式 A：指定 CLIProxyAPI 根目录与指定版本安装并初始化数据

@@ -1,10 +1,10 @@
 #!/bin/sh
 # ==============================================================================
 # cpa-plugin-key — One-Click & Manual Installer + Data Initializer
-# Repository: https://github.com/YzMzx/cpa-plugin-key
+# Repository: https://github.com/YzMzx/cpa-plugin-key-manager
 #
 # Quick Install (Online):
-#   curl -LsSf https://raw.githubusercontent.com/YzMzx/cpa-plugin-key/main/install.sh | sh
+#   curl -LsSf https://raw.githubusercontent.com/YzMzx/cpa-plugin-key-manager/main/install.sh | sh
 #
 # Manual / Custom Options:
 #   sh install.sh [--dir /path/to/cpa] [--version v0.2.0] [--local ./cpa-plugin-key.so]
@@ -13,7 +13,7 @@
 
 set -eu
 
-repository="${CPA_PLUGIN_REPO:-YzMzx/cpa-plugin-key}"
+repository="${CPA_PLUGIN_REPO:-YzMzx/cpa-plugin-key-manager}"
 plugin_name="cpa-plugin-key"
 cpa_dir="${CPA_DIR:-$(pwd)}"
 release_tag="${CPA_PLUGIN_VERSION:-}"

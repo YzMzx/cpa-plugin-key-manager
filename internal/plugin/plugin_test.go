@@ -10,7 +10,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
-	"github.com/YzMzx/cpa-plugin-key/internal/handler"
+	"github.com/YzMzx/cpa-plugin-key-manager/internal/handler"
 )
 
 func decodeEnvelope[T any](t *testing.T, raw []byte) T {

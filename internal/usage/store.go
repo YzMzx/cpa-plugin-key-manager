@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
-	"github.com/YzMzx/cpa-plugin-key/internal/pricing"
+	"github.com/YzMzx/cpa-plugin-key-manager/internal/pricing"
 )
 
 // ModelStats stores cumulative usage and USD billing statistics for a single model under an API Key.

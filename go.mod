@@ -1,4 +1,4 @@
-module github.com/YzMzx/cpa-plugin-key
+module github.com/YzMzx/cpa-plugin-key-manager
 
 go 1.26.10
 

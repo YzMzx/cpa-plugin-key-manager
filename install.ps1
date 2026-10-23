@@ -7,7 +7,7 @@
     and initializes .\data\key_guard_rules.json, .\data\key_usage_stats.json,
     .\data\models_dev.json, and config.yaml.
 .EXAMPLE
-    irm https://raw.githubusercontent.com/YzMzx/cpa-plugin-key/main/install.ps1 | iex
+    irm https://raw.githubusercontent.com/YzMzx/cpa-plugin-key-manager/main/install.ps1 | iex
 .EXAMPLE
     .\install.ps1 -Dir "D:\CLIProxyAPI" -Version "v0.2.0"
 #>
@@ -21,7 +21,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$Repo = if ($env:CPA_PLUGIN_REPO) { $env:CPA_PLUGIN_REPO } else { "YzMzx/cpa-plugin-key" }
+$Repo = if ($env:CPA_PLUGIN_REPO) { $env:CPA_PLUGIN_REPO } else { "YzMzx/cpa-plugin-key-manager" }
 $PluginName = "cpa-plugin-key"
 $PluginFile = "$PluginName.dll"
 $PluginDir = Join-Path $Dir "plugins"

@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/YzMzx/cpa-plugin-key/internal/authz"
+	"github.com/YzMzx/cpa-plugin-key-manager/internal/authz"
 )
 
 // NanoUSDPerUSD represents 1 USD in nano-dollars (10^9), providing exact integer arithmetic

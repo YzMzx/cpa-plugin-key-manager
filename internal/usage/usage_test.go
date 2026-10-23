@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
-	"github.com/YzMzx/cpa-plugin-key/internal/pricing"
+	"github.com/YzMzx/cpa-plugin-key-manager/internal/pricing"
 	"github.com/tidwall/gjson"
 )
 

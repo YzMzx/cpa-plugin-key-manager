@@ -60,7 +60,7 @@ import (
 	"unsafe"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
-	"github.com/YzMzx/cpa-plugin-key/internal/plugin"
+	"github.com/YzMzx/cpa-plugin-key-manager/internal/plugin"
 )
 
 var globalManager = plugin.NewManager(invokeHostABI)

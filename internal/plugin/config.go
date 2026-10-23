@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/YzMzx/cpa-plugin-key/internal/authz"
-	"github.com/YzMzx/cpa-plugin-key/internal/pricing"
-	"github.com/YzMzx/cpa-plugin-key/internal/usage"
+	"github.com/YzMzx/cpa-plugin-key-manager/internal/authz"
+	"github.com/YzMzx/cpa-plugin-key-manager/internal/pricing"
+	"github.com/YzMzx/cpa-plugin-key-manager/internal/usage"
 	"gopkg.in/yaml.v3"
 )
 
