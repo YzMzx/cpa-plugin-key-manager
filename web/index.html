@@ -1892,8 +1892,7 @@
       const k = kr.api_key;
       const ks = snapKeys[k] || {};
       const enabled = kr.enabled !== false;
-      const isRevealed = !!revealedKeys[k];
-      const dispKey = isRevealed ? k : maskKeyStr(k);
+      const dispKey = maskKeyStr(k);
       const maxC = kr.max_concurrency || 0;
 
       const existingModelIDs = new Set(getAvailableModels().map(m => m.id));
@@ -1926,8 +1925,7 @@
         </td>
         <td class="cell-nowrap">
           <div class="key-cell">
-            <span class="key-code ${isRevealed ? "revealed" : ""}" title="${escapeHtml(dispKey)}">${escapeHtml(dispKey)}</span>
-            <button type="button" class="btn btn-sm icon-btn" title="${isRevealed ? "隐藏 Key" : "显示 Key"}" onclick="toggleRevealKey('${escapeHtml(k)}')">${isRevealed ? "🙈" : "👁️"}</button>
+            <span class="key-code">${escapeHtml(dispKey)}</span>
             <button type="button" class="btn btn-sm icon-btn" title="复制 Key" onclick="copyText('${escapeHtml(k)}')">📋</button>
           </div>
         </td>
@@ -1949,11 +1947,6 @@
         </td>
       </tr>`;
     }).join("");
-  }
-
-  function toggleRevealKey(k) {
-    revealedKeys[k] = !revealedKeys[k];
-    renderKeysCrudTable();
   }
 
   function copyText(txt) {
