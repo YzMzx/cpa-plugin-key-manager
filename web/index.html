@@ -1212,7 +1212,8 @@
   const API_DEFAULT_POLICY = "/v0/management/key-guard/default-policy";
   const API_USAGE_RESET    = "/v0/management/key-guard/usage/reset";
   const API_CPA_KEYS       = "/v0/management/api-keys";
-  const SESSION_KEY_NAME   = "cpa_plugin_key_mgmt_session";
+  const SESSION_KEY_NAME   = "cpa_plugin_key_manager_mgmt_session";
+  const LEGACY_SESSION_KEY_NAME = "cpa_plugin_key_mgmt_session";
 
   if (window.parent !== window) {
     document.body.classList.add("embedded");
@@ -1432,7 +1433,7 @@
   async function discoverCPAManagementKey() {
     if (activeManagementKey) return activeManagementKey;
     try {
-      const sessKey = sessionStorage.getItem(SESSION_KEY_NAME);
+      const sessKey = sessionStorage.getItem(SESSION_KEY_NAME) || sessionStorage.getItem(LEGACY_SESSION_KEY_NAME);
       if (sessKey && sessKey.trim()) return cleanBearerToken(sessKey);
     } catch (_) {}
 
@@ -1465,7 +1466,10 @@
   function lockAdminWorkspace(errMsg) {
     activeManagementKey = "";
     overviewData = null;
-    try { sessionStorage.removeItem(SESSION_KEY_NAME); } catch (_) {}
+    try {
+      sessionStorage.removeItem(SESSION_KEY_NAME);
+      sessionStorage.removeItem(LEGACY_SESSION_KEY_NAME);
+    } catch (_) {}
     document.getElementById("adminWorkspace").classList.add("hidden");
     document.getElementById("authGateView").classList.remove("hidden");
     const errEl = document.getElementById("authGateError");

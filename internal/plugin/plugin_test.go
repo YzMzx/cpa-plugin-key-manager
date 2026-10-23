@@ -322,10 +322,10 @@ storage:
 		t.Fatalf("expected /ui resource with Menu 'API Key 管控与用量', got: %+v", mgmtReg.Resources)
 	}
 
-	// 2. Verify GET /v0/resource/plugins/cpa-plugin-key/ui renders embedded HTML SPA without Management Key prompt
+	// 2. Verify GET /v0/resource/plugins/cpa-plugin-key-manager/ui renders embedded HTML SPA without Management Key prompt
 	uiReq, _ := json.Marshal(pluginapi.ManagementRequest{
 		Method: http.MethodGet,
-		Path:   "/v0/resource/plugins/cpa-plugin-key/ui",
+		Path:   "/v0/resource/plugins/cpa-plugin-key-manager/ui",
 	})
 	rawUI, err := mgr.HandleRPC(pluginabi.MethodManagementHandle, uiReq)
 	if err != nil {
@@ -336,10 +336,10 @@ storage:
 		t.Fatalf("unexpected /ui HTML response: status=%d", uiResp.StatusCode)
 	}
 
-	// 2a. Verify unauthenticated access to /v0/resource/plugins/cpa-plugin-key/ui?op=overview or /v0/management/key-guard/overview is rejected with 401
+	// 2a. Verify unauthenticated access to /v0/resource/plugins/cpa-plugin-key-manager/ui?op=overview or /v0/management/key-guard/overview is rejected with 401
 	unauthResReq, _ := json.Marshal(pluginapi.ManagementRequest{
 		Method: http.MethodGet,
-		Path:   "/v0/resource/plugins/cpa-plugin-key/ui",
+		Path:   "/v0/resource/plugins/cpa-plugin-key-manager/ui",
 		Query:  url.Values{"op": {"overview"}},
 	})
 	rawUnauthRes, err := mgr.HandleRPC(pluginabi.MethodManagementHandle, unauthResReq)

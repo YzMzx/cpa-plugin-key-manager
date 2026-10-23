@@ -30,7 +30,7 @@ const (
 )
 
 // RegisterManagementEndpoints returns the management routes (`/v0/management/...`) and
-// self-service/dashboard resource routes (`/v0/resource/plugins/cpa-plugin-key/...`).
+// self-service/dashboard resource routes (`/v0/resource/plugins/cpa-plugin-key-manager/...`).
 func RegisterManagementEndpoints() ([]pluginapi.ManagementRoute, []pluginapi.ResourceRoute) {
 	routes := []pluginapi.ManagementRoute{
 		{

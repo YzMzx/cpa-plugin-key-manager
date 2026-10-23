@@ -26,7 +26,7 @@ func RegisterCLIFlags() []pluginapi.CommandLineFlag {
 			Name:         FlagKeyUsage,
 			Type:         "bool",
 			DefaultValue: "false",
-			Usage:        "Print per-API-Key token usage and USD billing report from cpa-plugin-key and exit",
+			Usage:        "Print per-API-Key token usage and USD billing report from cpa-plugin-key-manager and exit",
 		},
 		{
 			Name:         FlagKeyUsageKey,

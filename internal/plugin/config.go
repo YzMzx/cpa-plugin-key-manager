@@ -18,7 +18,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Config represents the plugin configuration under `plugins.configs.cpa-plugin-key` in CLIProxyAPI's config.yaml.
+// Config represents the plugin configuration under `plugins.configs.cpa-plugin-key-manager` in CLIProxyAPI's config.yaml.
 type Config struct {
 	Enabled       bool                `yaml:"enabled" json:"enabled"`
 	Priority      int                 `yaml:"priority" json:"priority"`

@@ -1,4 +1,4 @@
-PLUGIN_NAME := cpa-plugin-key
+PLUGIN_NAME := cpa-plugin-key-manager
 BIN_DIR := ./dist
 
 ifeq ($(OS),Windows_NT)

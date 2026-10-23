@@ -1,15 +1,15 @@
 <#
 .SYNOPSIS
-    cpa-plugin-key — Windows One-Click & Manual Installer + Data Initializer
+    cpa-plugin-key-manager — Windows One-Click & Manual Installer + Data Initializer
 .DESCRIPTION
-    Downloads the latest (or specified) cpa-plugin-key Windows DLL from GitHub Releases,
-    verifies its SHA256 checksum, installs it into .\plugins\cpa-plugin-key.dll,
+    Downloads the latest (or specified) cpa-plugin-key-manager Windows DLL from GitHub Releases,
+    verifies its SHA256 checksum, installs it into .\plugins\cpa-plugin-key-manager.dll,
     and initializes .\data\key_guard_rules.json, .\data\key_usage_stats.json,
     .\data\models_dev.json, and config.yaml.
 .EXAMPLE
     irm https://raw.githubusercontent.com/YzMzx/cpa-plugin-key-manager/main/install.ps1 | iex
 .EXAMPLE
-    .\install.ps1 -Dir "D:\CLIProxyAPI" -Version "v0.2.0"
+    .\install.ps1 -Dir "D:\CLIProxyAPI" -Version "v0.5.0"
 #>
 param(
     [string]$Dir = (Get-Location).Path,
@@ -22,7 +22,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $Repo = if ($env:CPA_PLUGIN_REPO) { $env:CPA_PLUGIN_REPO } else { "YzMzx/cpa-plugin-key-manager" }
-$PluginName = "cpa-plugin-key"
+$PluginName = "cpa-plugin-key-manager"
 $PluginFile = "$PluginName.dll"
 $PluginDir = Join-Path $Dir "plugins"
 $DataDir = Join-Path $Dir "data"
@@ -145,12 +145,12 @@ if ((-not (Test-Path $UsageFile)) -or $ResetData) {
 
 $PluginYamlBlock = @"
 
-# --- Added by cpa-plugin-key installer ---
+# --- Added by cpa-plugin-key-manager installer ---
 plugins:
   enabled: true
   dir: ./plugins
   configs:
-    cpa-plugin-key:
+    cpa-plugin-key-manager:
       enabled: true
       priority: 100
       storage:
@@ -166,25 +166,31 @@ plugins:
 
 if (-not (Test-Path $ConfigFile)) {
     [System.IO.File]::WriteAllText($ConfigFile, $PluginYamlBlock.TrimStart(), (New-Object System.Text.UTF8Encoding($false)))
-    Write-Info "Created initial config.yaml with cpa-plugin-key enabled: $ConfigFile"
+    Write-Info "Created initial config.yaml with cpa-plugin-key-manager enabled: $ConfigFile"
 } else {
     $RawCfg = Get-Content -Path $ConfigFile -Raw
-    if ($RawCfg -match "cpa-plugin-key") {
-        Write-Info "Detected existing cpa-plugin-key configuration in $ConfigFile"
+    if ($RawCfg -match "cpa-plugin-key-manager") {
+        Write-Info "Detected existing cpa-plugin-key-manager configuration in $ConfigFile"
+    } elseif ($RawCfg -match "cpa-plugin-key:") {
+        Write-Info "Migrating legacy cpa-plugin-key configuration to cpa-plugin-key-manager in $ConfigFile"
+        Copy-Item -Path $ConfigFile -Destination "$ConfigFile.bak" -Force
+        $MigratedCfg = $RawCfg -replace "cpa-plugin-key:", "cpa-plugin-key-manager:"
+        [System.IO.File]::WriteAllText($ConfigFile, $MigratedCfg, (New-Object System.Text.UTF8Encoding($false)))
+        Write-Info "Updated config.yaml to cpa-plugin-key-manager (backup saved to $ConfigFile.bak)"
     } elseif ($RawCfg -notmatch "(?m)^plugins:") {
         Copy-Item -Path $ConfigFile -Destination "$ConfigFile.bak" -Force
         Add-Content -Path $ConfigFile -Value $PluginYamlBlock -Encoding UTF8
-        Write-Info "Appended plugins.configs.cpa-plugin-key to $ConfigFile (backup saved to $ConfigFile.bak)"
+        Write-Info "Appended plugins.configs.cpa-plugin-key-manager to $ConfigFile (backup saved to $ConfigFile.bak)"
     } else {
-        Write-Warn "$ConfigFile already contains a 'plugins:' section. Please ensure 'cpa-plugin-key' is configured under plugins.configs."
+        Write-Warn "$ConfigFile already contains a 'plugins:' section. Please ensure 'cpa-plugin-key-manager' is configured under plugins.configs."
     }
 }
 
 Write-Host ""
 Write-Host "==============================================================================" -ForegroundColor Green
-Write-Host "  cpa-plugin-key installation & data initialization completed!" -ForegroundColor Green
+Write-Host "  cpa-plugin-key-manager installation & data initialization completed!" -ForegroundColor Green
 Write-Host "  - Plugin directory : $PluginDir"
 Write-Host "  - Data directory   : $DataDir"
-Write-Host "  - Admin Web UI     : http://127.0.0.1:8317/v0/resource/plugins/cpa-plugin-key/ui"
+Write-Host "  - Admin Web UI     : http://127.0.0.1:8317/v0/resource/plugins/cpa-plugin-key-manager/ui"
 Write-Host "  Restart CLIProxyAPI to load the plugin."
 Write-Host "==============================================================================" -ForegroundColor Green

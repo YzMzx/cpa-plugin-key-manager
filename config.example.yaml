@@ -1,5 +1,5 @@
 # =============================================================================
-# CLIProxyAPI - cpa-plugin-key 插件配置示例
+# CLIProxyAPI - cpa-plugin-key-manager 插件配置示例
 # 将以下 plugins 配置块合入 CLIProxyAPI 的主配置文件 config.yaml 即可启用
 # =============================================================================
 
@@ -7,7 +7,7 @@ plugins:
   enabled: true
   dir: ./plugins
   configs:
-    cpa-plugin-key:
+    cpa-plugin-key-manager:
       enabled: true
       priority: 100
 

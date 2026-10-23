@@ -1,13 +1,13 @@
-# cpa-plugin-key — CLIProxyAPI API Key 精细化管控与 Token 用量统计插件
+# cpa-plugin-key-manager — CLIProxyAPI API Key 精细化管控与 Token 用量统计插件
 
-`cpa-plugin-key` 是基于 [CLIProxyAPI 插件开发规范](https://help.router-for.me/cn/plugin/development.html)（C ABI `c-shared` 动态库架构，`ABIVersion = 1`，`SchemaVersion = 6`）开发的多租户 API Key 治理与实时 Token 用量统计插件。
+`cpa-plugin-key-manager` 是基于 [CLIProxyAPI 插件开发规范](https://help.router-for.me/cn/plugin/development.html)（C ABI `c-shared` 动态库架构，`ABIVersion = 1`，`SchemaVersion = 6`）开发的多租户 API Key 治理与实时 Token 用量统计插件。
 
 ---
 
 ## 核心功能特性
 
 1. **内置可视化管理页（`//go:embed` 零依赖内嵌 SPA，与 [Cli-Proxy-API-Management-Center](https://github.com/router-for-me/Cli-Proxy-API-Management-Center) 深度无缝融合）**
-   - **免密无缝内嵌 & 主题完全同步**：通过 `management.register` 自动在 CLIProxyAPI 管理后台左侧导航栏注入 **「API Key 管控与用量」** 入口（`/v0/resource/plugins/cpa-plugin-key/ui`），进入页面无需再次输入管理密钥，且主题不设独立开关，完全跟随 CPA 管理后台的暖灰浅色、纯白、深色主题实时同步。
+   - **免密无缝内嵌 & 主题完全同步**：通过 `management.register` 自动在 CLIProxyAPI 管理后台左侧导航栏注入 **「API Key 管控与用量」** 入口（`/v0/resource/plugins/cpa-plugin-key-manager/ui`），进入页面无需再次输入管理密钥，且主题不设独立开关，完全跟随 CPA 管理后台的暖灰浅色、纯白、深色主题实时同步。
    - **与 CPA 全局 `api-keys` 统一双向同步（绝不分两套 Key）**：插件自动读取并同步 CLIProxyAPI 主配置 `config.yaml` 中的全局 `api-keys`（以及 `/v0/management/api-keys`）；在插件页面新建、修改或删除 API Key 会自动同步回写 CPA 的 `config.yaml` 与内存配置。
    - **纯复选框（Checkbox）模型白名单与账号凭证绑定**：
      - **模型白名单复选框**：自动聚合宿主已加载凭证注册的模型（`host.auth.models`）、历史调用模型与主流模型库，支持按 Provider 分类筛选与一键全选/清空，无需手动输入模型规则。
@@ -15,7 +15,7 @@
    - **动态持久化与热生效**：网页端增删改查的所有 API Key 规则自动原子落盘至 `./data/key_guard_rules.json` 与宿主 `config.yaml`，修改后立即热生效。
 
 2. **按 API Key 维度的路由与访问控制（Pre-request）**
-   - **模型白名单控制**：每个 API Key 可配置独立的 `allowed_models` 列表，支持精确匹配、`*`/`?` 通配符（如 `claude-3-5-*`、`gpt-4o*`）、`!` 排除规则，并自动兼容带思考后缀（如 `claude-3-7-sonnet-20250219(high)`）与带 Provider 前缀的模型名。越权访问直接短路返回兼容 OpenAI 与 Anthropic SDK 的 `403 Forbidden` JSON 错误，不触发任何上游请求。
+   - **模型白名单控制**：每个 API Key 可配置独立的 `allowed_models` 列表，支持精确匹配、`*`/`?` 通配符（如 `claude-3-5-*`、`gpt-4o*`）、`!` 排除规则，并自动兼容带思考后缀与带 Provider 前缀的模型名。越权访问直接短路返回兼容 OpenAI 与 Anthropic SDK 的 `403 Forbidden` JSON 错误，不触发任何上游请求。
    - **上游凭证绑定与租户隔离**：支持将特定 API Key 绑定至指定的上游凭证或凭证池（`auth_ids`、`credentials`、`providers`、`attributes`），支持池内 `round-robin`（轮询）与 `fill-first`（优先级）调度，以及 `strict: true` 严格租户隔离（当绑定凭证不可用时直接拒绝，防止跨租户借用公共凭证）。
    - **前端鉴权集成**：实现 `frontend_auth_provider` 能力，在插件 `keys` 中配置的 API Key 可直接通过鉴权。
 
@@ -32,10 +32,25 @@
 
 ---
 
+## 升级与数据迁移指南（从 cpa-plugin-key 升级至 cpa-plugin-key-manager）
+
+从旧版 `cpa-plugin-key` 升级到 `cpa-plugin-key-manager` 时，**历史数据完全无损、无缝继承**：
+
+1. **动态规则与用量统计文件无缝兼容**：
+   - 规则文件 `./data/key_guard_rules.json` 与用量统计文件 `./data/key_usage_stats.json` 保持完全兼容，升级时**直接保留原有文件**，无需任何格式转换或手工处理。
+2. **替换插件二进制文件**：
+   - 将 `./plugins/cpa-plugin-key.{dll,so,dylib}` 替换为新的 `./plugins/cpa-plugin-key-manager.{dll,so,dylib}`，并删除旧版文件。
+3. **更新配置文件 `config.yaml` 节点名称**：
+   - 将 `config.yaml` 中 `plugins.configs.cpa-plugin-key` 修改为 `plugins.configs.cpa-plugin-key-manager` 即可（使用一键安装脚本 `install.sh` / `install.ps1` 会自动帮您检测并无缝迁移该节点）。
+4. **管理后台路由地址变更**：
+   - UI 资源路径更新为 `/v0/resource/plugins/cpa-plugin-key-manager/ui`。在 CPA 管理后台左侧菜单点击「API Key 管控与用量」会自动进入最新地址。
+
+---
+
 ## 快速安装与插件数据初始化
 
 ### 1. 一键在线安装并初始化数据（推荐）
-进入您的 `CLIProxyAPI` 运行根目录后执行以下命令，脚本会自动识别系统架构、下载最新 Release 插件、校验 SHA256、安装至 `./plugins/`，并自动初始化 `./data/key_guard_rules.json`、`./data/key_usage_stats.json` 及 `config.yaml`：
+进入您的 `CLIProxyAPI` 运行根目录后执行以下命令，脚本会自动识别系统架构、下载最新 Release 插件、校验 SHA256、安装至 `./plugins/`，并自动初始化或无缝升级 `./data/` 及 `config.yaml`：
 
 - **Linux / macOS / Git Bash**：
   ```bash
@@ -53,10 +68,10 @@ curl -LsSfO https://raw.githubusercontent.com/YzMzx/cpa-plugin-key-manager/main/
 chmod +x install.sh
 
 # 方式 A：指定 CLIProxyAPI 根目录与指定版本安装并初始化数据
-./install.sh --dir /opt/CLIProxyAPI --version v0.4.0
+./install.sh --dir /opt/CLIProxyAPI --version v0.5.0
 
 # 方式 B：使用本地已下载的 Release 压缩包或本地编译的 .so/.dylib/.dll 手动安装并初始化数据
-./install.sh --dir /opt/CLIProxyAPI --local ./cpa-plugin-key-linux-amd64.tar.gz
+./install.sh --dir /opt/CLIProxyAPI --local ./cpa-plugin-key-manager-linux-amd64.tar.gz
 
 # 方式 C：仅初始化/修复插件数据目录 (data/*.json) 与 config.yaml，不重新下载二进制
 ./install.sh --dir /opt/CLIProxyAPI --init-only
@@ -77,15 +92,15 @@ go test -v ./...
 ### 2. 编译动态库插件
 - **Windows (`.dll`)**：
   ```powershell
-  go build -buildmode=c-shared -o cpa-plugin-key.dll .
+  go build -buildmode=c-shared -o cpa-plugin-key-manager.dll .
   ```
 - **Linux (`.so`)**：
   ```bash
-  CGO_ENABLED=1 go build -buildmode=c-shared -o cpa-plugin-key.so .
+  CGO_ENABLED=1 go build -buildmode=c-shared -o cpa-plugin-key-manager.so .
   ```
 - **macOS (`.dylib`)**：
   ```bash
-  CGO_ENABLED=1 go build -buildmode=c-shared -o cpa-plugin-key.dylib .
+  CGO_ENABLED=1 go build -buildmode=c-shared -o cpa-plugin-key-manager.dylib .
   ```
 
 ---
@@ -93,14 +108,14 @@ go test -v ./...
 ## 管理与用量查询方式
 
 1. **CPA 管理后台可视化页面（免输密钥，主题跟随 CPA）**：
-   直接在 CLIProxyAPI 管理后台左侧菜单点击 **「API Key 管控与用量」**，或访问 `http://127.0.0.1:8317/v0/resource/plugins/cpa-plugin-key/ui`。
+   直接在 CLIProxyAPI 管理后台左侧菜单点击 **「API Key 管控与用量」**，或访问 `http://127.0.0.1:8317/v0/resource/plugins/cpa-plugin-key-manager/ui`。
 2. **CLI 命令行报表**：
    ```bash
    # 打印所有 API Key 的 Token 用量统计报表
    ./cli-proxy-api -key-usage
 
    # 查看指定 API Key 的 JSON 统计
-   ./cli-proxy-api -key-usage -key-usage-key sk-tenant-alpha-prod -key-usage-json
+   ./cli-proxy-api -key-usage -key-usage-key sk-your-api-key -key-usage-json
 
    # 重置统计数据
    ./cli-proxy-api -key-usage-reset

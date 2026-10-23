@@ -19,10 +19,10 @@ jobs:
     name: Unit Tests
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout cpa-plugin-key
+      - name: Checkout cpa-plugin-key-manager
         uses: actions/checkout@v4
         with:
-          path: cpa-plugin-key
+          path: cpa-plugin-key-manager
 
       - name: Checkout CLIProxyAPI host repository
         shell: bash
@@ -39,10 +39,10 @@ jobs:
         with:
           go-version-file: CLIProxyAPI/go.mod
           cache: true
-          cache-dependency-path: cpa-plugin-key/go.sum
+          cache-dependency-path: cpa-plugin-key-manager/go.sum
 
       - name: Run unit tests with race detector
-        working-directory: cpa-plugin-key
+        working-directory: cpa-plugin-key-manager
         env:
           CGO_ENABLED: "1"
         run: go test -v -race ./...
@@ -94,10 +94,10 @@ jobs:
             cgo_flags: "-arch x86_64"
 
     steps:
-      - name: Checkout cpa-plugin-key
+      - name: Checkout cpa-plugin-key-manager
         uses: actions/checkout@v4
         with:
-          path: cpa-plugin-key
+          path: cpa-plugin-key-manager
 
       - name: Checkout CLIProxyAPI host repository
         shell: bash
@@ -114,7 +114,7 @@ jobs:
         with:
           go-version-file: CLIProxyAPI/go.mod
           cache: true
-          cache-dependency-path: cpa-plugin-key/go.sum
+          cache-dependency-path: cpa-plugin-key-manager/go.sum
 
       - name: Install ARM64 cross-compiler (Linux ARM64)
         if: matrix.target == 'linux-arm64'
@@ -123,7 +123,7 @@ jobs:
           sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross
 
       - name: Build c-shared plugin binary & package archive
-        working-directory: cpa-plugin-key
+        working-directory: cpa-plugin-key-manager
         shell: bash
         env:
           CGO_ENABLED: "1"
@@ -136,19 +136,19 @@ jobs:
           set -euo pipefail
           mkdir -p dist/stage dist/out
 
-          RAW_LIB="cpa-plugin-key-${{ matrix.target }}.${{ matrix.ext }}"
-          STD_LIB="cpa-plugin-key.${{ matrix.ext }}"
+          RAW_LIB="cpa-plugin-key-manager-${{ matrix.target }}.${{ matrix.ext }}"
+          STD_LIB="cpa-plugin-key-manager.${{ matrix.ext }}"
 
           go build -trimpath -ldflags="-s -w" -buildmode=c-shared -o "dist/out/${RAW_LIB}" .
-          rm -f "dist/out/cpa-plugin-key-${{ matrix.target }}.h"
+          rm -f "dist/out/cpa-plugin-key-manager-${{ matrix.target }}.h"
 
           cp "dist/out/${RAW_LIB}" "dist/stage/${STD_LIB}"
           cp config.example.yaml README.md install.sh install.ps1 dist/stage/
 
           if [ "${{ matrix.archive }}" = "zip" ]; then
-            (cd dist/stage && 7z a -tzip "../out/cpa-plugin-key-${{ matrix.target }}.zip" "${STD_LIB}" config.example.yaml README.md install.sh install.ps1)
+            (cd dist/stage && 7z a -tzip "../out/cpa-plugin-key-manager-${{ matrix.target }}.zip" "${STD_LIB}" config.example.yaml README.md install.sh install.ps1)
           else
-            tar -C dist/stage -czvf "dist/out/cpa-plugin-key-${{ matrix.target }}.tar.gz" "${STD_LIB}" config.example.yaml README.md install.sh install.ps1
+            tar -C dist/stage -czvf "dist/out/cpa-plugin-key-manager-${{ matrix.target }}.tar.gz" "${STD_LIB}" config.example.yaml README.md install.sh install.ps1
           fi
 
           ls -lh dist/out/
@@ -157,7 +157,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.target }}
-          path: cpa-plugin-key/dist/out/*
+          path: cpa-plugin-key-manager/dist/out/*
           if-no-files-found: error
 
   release:
@@ -175,7 +175,7 @@ jobs:
       - name: Generate SHA256SUMS.txt
         working-directory: artifacts
         run: |
-          shasum -a 256 cpa-plugin-key-* > SHA256SUMS.txt
+          shasum -a 256 cpa-plugin-key-manager-* > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
       - name: Create GitHub Release
@@ -185,5 +185,5 @@ jobs:
           name: "Release ${{ github.event.inputs.tag_name || github.ref_name }}"
           generate_release_notes: true
           files: |
-            artifacts/cpa-plugin-key-*
+            artifacts/cpa-plugin-key-manager-*
             artifacts/SHA256SUMS.txt
