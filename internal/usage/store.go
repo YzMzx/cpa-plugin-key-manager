@@ -38,8 +38,11 @@ type KeyStats struct {
 	APIKey             string                 `json:"api_key,omitempty"`
 	MaskedKey          string                 `json:"masked_key"`
 	KeyName            string                 `json:"key_name,omitempty"`
+	Enabled            *bool                  `json:"enabled,omitempty"`
 	ActiveConcurrency  int                    `json:"active_concurrency"`
 	MaxConcurrency     int                    `json:"max_concurrency"`
+	QuotaLimitUSD      float64                `json:"quota_limit_usd,omitempty"`
+	AllowedModels      []string               `json:"allowed_models,omitempty"`
 	TotalRequests      int64                  `json:"total_requests"`
 	SuccessRequests    int64                  `json:"success_requests"`
 	FailedRequests     int64                  `json:"failed_requests"`
@@ -875,6 +878,28 @@ func SortedKeyIDs(m map[string]*KeyStats) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// GetKeyCostUSD returns the accumulated USD cost for a given API key in O(1) time.
+func (s *Store) GetKeyCostUSD(apiKey string) float64 {
+	k := normalizeAPIKey(apiKey)
+	s.mu.Lock()
+	ks, ok := s.keys[k]
+	var nano int64
+	if ok && ks != nil {
+		nano = ks.TotalCostNanoUSD
+	}
+	s.mu.Unlock()
+	if nano <= 0 {
+		return 0
+	}
+	return pricing.NanoToUSD(nano)
+}
+
+// WriteFileAtomically writes data to a temporary file, syncs it, and renames it over targetPath
+// with a lightweight retry loop (3 retries, 20ms sleep each) to prevent transient Windows file lock errors.
+func WriteFileAtomically(targetPath string, data []byte) error {
+	return writeFileAtomicallyWindowsSafe(targetPath, data)
 }
 
 // writeFileAtomicallyWindowsSafe writes data to a temporary file, syncs it, and renames it over targetPath

@@ -6,7 +6,18 @@
 
 ## 核心功能特性
 
-1. **按 API Key 维度的路由与访问控制（Pre-request）**
+1. **内置可视化管理后台与下游用户自查面板（`//go:embed` 零依赖内嵌 SPA）**
+   - **自动注入 CPA 后台导航栏**：通过 `management.register` 自动在 CLIProxyAPI 管理后台左侧菜单注入 **「API Key 计费与管控」** 入口（`/v0/resource/plugins/cpa-plugin-key/ui`），无需修改任何宿主源码。
+   - **管理员模式（CPA 后台内嵌或输入 Management Key）**：
+     - **仪表盘与排行榜**：全局总消耗金额 (USD)、总 Token 数、实时活跃并发数，以及按 API Key / 按模型的消耗排行榜与占比进度条。
+     - **API Key & 并发配额可视化 CRUD**：在网页端直接新建、随机生成、编辑、启用/禁用、删除下游 API Key，配置备注名、最大并发数（`max_concurrency`）、USD 配额上限（`quota_limit_usd`），以及一键重置账单。
+     - **路由规则与上游凭证勾选绑定**：自动调用宿主 `host.auth.list` 列出所有已加载的上游 OAuth / API Key 凭证，支持可视化勾选绑定与 `round-robin` / `fill-first` / `strict` 策略配置。
+     - **模型定价管理**：查看 `models.dev` 同步状态、实时检索官方模型参考价，并直接在网页上新增/修改/删除自定义模型价格覆盖（`custom_prices`）。
+   - **API Key 用户自查模式（`/v0/resource/plugins/cpa-plugin-key/ui#account`）**：
+     - 供普通下游用户使用自己的 API Key 登录，仅展示该 Key 自身的实时并发占用、配额余额进度、授权模型白名单及各模型 Token/USD 消费明细。
+   - **动态持久化与热生效**：网页端增删改查的所有 API Key、规则和自定义价格自动原子落盘至 `./data/key_guard_rules.json`，修改后立即在内存中热生效，同时向下兼容 `config.yaml` 中的初始种子配置。
+
+2. **按 API Key 维度的路由与访问控制（Pre-request）**
    - **模型白名单控制**：每个 API Key 可配置独立的 `allowed_models` 列表，支持精确匹配、`*`/`?` 通配符（如 `claude-3-5-*`、`gpt-4o*`）、`!` 排除规则，并自动兼容带思考后缀（如 `claude-3-7-sonnet-20250219(high)`）与带 Provider 前缀的模型名。越权访问直接短路返回兼容 OpenAI 与 Anthropic SDK 的 `403 Forbidden` JSON 错误，不触发任何上游请求。
    - **上游凭证绑定与租户隔离**：支持将特定 API Key 绑定至指定的上游凭证或凭证池（`auth_ids`、`providers`、`attributes`），支持池内 `round-robin`（轮询）与 `fill-first`（优先级）调度，以及 `strict: true` 严格租户隔离（当绑定凭证不可用时直接拒绝，防止跨租户借用公共凭证）。
    - **前端鉴权集成**：实现 `frontend_auth_provider` 能力，在插件 `keys` 中配置的 API Key 可直接通过鉴权。
@@ -101,11 +112,14 @@ go test -v ./...
   curl -X POST -H "Authorization: Bearer <MANAGEMENT_KEY>" "http://127.0.0.1:8317/v0/management/key-guard/usage/reset?api_key=sk-tenant-alpha-prod"
   ```
 
-### 2. 租户自查接口与可视化面板（Resource Route）
-- 浏览器直接访问：`http://127.0.0.1:8317/v0/resource/plugins/cpa-plugin-key/usage?api_key=sk-tenant-alpha-prod`
-- 客户端通过 Header 自查 JSON 账单：
+### 2. 可视化管理后台与租户自查面板（Resource Route）
+- **管理员可视化控制台**（亦可在 CPA 管理后台左侧菜单「API Key 计费与管控」直接打开）：
+  `http://127.0.0.1:8317/v0/resource/plugins/cpa-plugin-key/ui`
+- **下游 API Key 用户自查页面**：
+  `http://127.0.0.1:8317/v0/resource/plugins/cpa-plugin-key/ui#account`
+- **客户端通过 Header 自查 JSON 账单**：
   ```bash
-  curl -H "Authorization: Bearer sk-tenant-alpha-prod" "http://127.0.0.1:8317/v0/resource/plugins/cpa-plugin-key/usage?format=json"
+  curl -H "X-Api-Key: sk-tenant-alpha-prod" "http://127.0.0.1:8317/v0/resource/plugins/cpa-plugin-key/usage?mode=account&format=json"
   ```
 
 ### 3. CLI 命令行报表

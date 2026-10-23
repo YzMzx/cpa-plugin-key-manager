@@ -258,3 +258,193 @@ keys:
 		t.Fatalf("unexpected CLI output: exit=%d, stdout=%s", cliResp.ExitCode, string(cliResp.Stdout))
 	}
 }
+
+func TestWebUIDynamicCRUDAndQuotaEnforcement(t *testing.T) {
+	tmpDir := t.TempDir()
+	usageFile := filepath.Join(tmpDir, "usage_stats.json")
+	rulesFile := filepath.Join(tmpDir, "key_guard_rules.json")
+	cacheFile := filepath.Join(tmpDir, "models_dev.json")
+
+	// Mock host callback returning upstream auth files for host.auth.list
+	hostInvoker := func(method string, payload []byte) ([]byte, error) {
+		if method == pluginabi.MethodHostAuthList {
+			return okEnvelope(map[string]any{
+				"files": []pluginapi.HostAuthFileEntry{
+					{ID: "claude-team-1.json", Name: "claude-team-1.json", Provider: "claude", Status: "active"},
+					{ID: "openai-tier5.json", Name: "openai-tier5.json", Provider: "openai", Status: "active"},
+				},
+			})
+		}
+		return okEnvelope(struct{}{})
+	}
+
+	mgr := NewManager(hostInvoker)
+	defer mgr.Shutdown()
+
+	cfgYAML := `
+enabled: true
+storage:
+  usage_file: "` + filepath.ToSlash(usageFile) + `"
+  rules_file: "` + filepath.ToSlash(rulesFile) + `"
+  pricing_cache_file: "` + filepath.ToSlash(cacheFile) + `"
+pricing:
+  sync_url: "http://127.0.0.1:1/offline-test"
+  http_timeout_seconds: 1
+`
+	regReq, _ := json.Marshal(lifecycleRequest{
+		ConfigYAML:    []byte(cfgYAML),
+		SchemaVersion: pluginabi.SchemaVersion,
+	})
+	if _, err := mgr.HandleRPC(pluginabi.MethodPluginRegister, regReq); err != nil {
+		t.Fatalf("plugin.register failed: %v", err)
+	}
+
+	// 1. Verify management.register exposes /ui with Menu "API Key 计费与管控"
+	rawMgmtReg, err := mgr.HandleRPC(pluginabi.MethodManagementRegister, nil)
+	if err != nil {
+		t.Fatalf("management.register failed: %v", err)
+	}
+	mgmtReg := decodeEnvelope[managementRegistrationResponse](t, rawMgmtReg)
+	foundUIMenu := false
+	for _, r := range mgmtReg.Resources {
+		if r.Path == "/ui" && r.Menu == "API Key 计费与管控" {
+			foundUIMenu = true
+			break
+		}
+	}
+	if !foundUIMenu {
+		t.Fatalf("expected /ui resource with Menu 'API Key 计费与管控', got: %+v", mgmtReg.Resources)
+	}
+
+	// 2. Verify GET /v0/resource/plugins/cpa-plugin-key/ui renders embedded HTML SPA
+	uiReq, _ := json.Marshal(pluginapi.ManagementRequest{
+		Method: http.MethodGet,
+		Path:   "/v0/resource/plugins/cpa-plugin-key/ui",
+	})
+	rawUI, err := mgr.HandleRPC(pluginabi.MethodManagementHandle, uiReq)
+	if err != nil {
+		t.Fatalf("GET /ui failed: %v", err)
+	}
+	uiResp := decodeEnvelope[pluginapi.ManagementResponse](t, rawUI)
+	if uiResp.StatusCode != http.StatusOK || !strings.Contains(string(uiResp.Body), "API Key 计费与管控中心") {
+		t.Fatalf("unexpected /ui HTML response: status=%d", uiResp.StatusCode)
+	}
+
+	// 3. Dynamically add a custom price override via POST /v0/management/key-guard/pricing/custom
+	priceReq, _ := json.Marshal(pluginapi.ManagementRequest{
+		Method: http.MethodPost,
+		Path:   "/v0/management/key-guard/pricing/custom",
+		Body:   []byte(`{"model":"gpt-4o*","price":{"input":10.0,"output":20.0,"cache_read":0,"cache_write":0}}`),
+	})
+	rawPrice, err := mgr.HandleRPC(pluginabi.MethodManagementHandle, priceReq)
+	if err != nil {
+		t.Fatalf("POST /pricing/custom failed: %v", err)
+	}
+	priceResp := decodeEnvelope[pluginapi.ManagementResponse](t, rawPrice)
+	if priceResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from /pricing/custom, got %d: %s", priceResp.StatusCode, string(priceResp.Body))
+	}
+
+	// 4. Dynamically create a new API Key rule with quota_limit_usd = $0.01 via POST /v0/management/key-guard/keys
+	keyCreateReq, _ := json.Marshal(pluginapi.ManagementRequest{
+		Method: http.MethodPost,
+		Path:   "/v0/management/key-guard/keys",
+		Body: []byte(`{
+			"api_key": "sk-dynamic-user-1",
+			"name": "Dynamic User 1",
+			"enabled": true,
+			"max_concurrency": 2,
+			"quota_limit_usd": 0.01,
+			"allowed_models": ["gpt-4o*"],
+			"upstream_binding": {
+				"strategy": "round-robin",
+				"credentials": ["openai-tier5.json"]
+			}
+		}`),
+	})
+	rawKeyCreate, err := mgr.HandleRPC(pluginabi.MethodManagementHandle, keyCreateReq)
+	if err != nil {
+		t.Fatalf("POST /keys failed: %v", err)
+	}
+	keyCreateResp := decodeEnvelope[pluginapi.ManagementResponse](t, rawKeyCreate)
+	if keyCreateResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from POST /keys, got %d: %s", keyCreateResp.StatusCode, string(keyCreateResp.Body))
+	}
+
+	// 5. Execute a request with sk-dynamic-user-1 consuming 1000 input + 500 output tokens = $0.01 + $0.01 = $0.02 (>= $0.01 quota)
+	req1, _ := json.Marshal(pluginapi.RequestInterceptRequest{
+		RequestID:      "dyn-req-1",
+		SourceFormat:   "openai",
+		Model:          "gpt-4o",
+		RequestedModel: "gpt-4o",
+		Headers:        http.Header{"Authorization": {"Bearer sk-dynamic-user-1"}},
+		Body:           []byte(`{"model":"gpt-4o"}`),
+	})
+	rawInt1, _ := mgr.HandleRPC(pluginabi.MethodRequestInterceptBefore, req1)
+	respInt1 := decodeEnvelope[pluginapi.RequestInterceptResponse](t, rawInt1)
+	if respInt1.Terminate {
+		t.Fatalf("expected first request before quota exhaustion to pass, got: %+v", respInt1)
+	}
+
+	respAfter1, _ := json.Marshal(pluginapi.ResponseInterceptRequest{
+		RequestID:      "dyn-req-1",
+		SourceFormat:   "openai",
+		Model:          "gpt-4o",
+		RequestedModel: "gpt-4o",
+		Body:           []byte(`{"model":"gpt-4o","usage":{"prompt_tokens":1000,"completion_tokens":500,"total_tokens":1500}}`),
+	})
+	_, _ = mgr.HandleRPC(pluginabi.MethodResponseInterceptAfter, respAfter1)
+
+	comp1, _ := json.Marshal(pluginapi.RequestCompletion{
+		RequestID:      "dyn-req-1",
+		Model:          "gpt-4o",
+		RequestedModel: "gpt-4o",
+		Outcome:        pluginapi.RequestCompletionSucceeded,
+		StatusCode:     200,
+	})
+	_, _ = mgr.HandleRPC(pluginabi.MethodRequestComplete, comp1)
+
+	// 6. Second request with sk-dynamic-user-1 must now be rejected with 429 insufficient_quota
+	req2, _ := json.Marshal(pluginapi.RequestInterceptRequest{
+		RequestID:      "dyn-req-2",
+		SourceFormat:   "openai",
+		Model:          "gpt-4o",
+		RequestedModel: "gpt-4o",
+		Headers:        http.Header{"Authorization": {"Bearer sk-dynamic-user-1"}},
+		Body:           []byte(`{"model":"gpt-4o"}`),
+	})
+	rawInt2, _ := mgr.HandleRPC(pluginabi.MethodRequestInterceptBefore, req2)
+	respInt2 := decodeEnvelope[pluginapi.RequestInterceptResponse](t, rawInt2)
+	if !respInt2.Terminate || respInt2.StatusCode != http.StatusTooManyRequests || !strings.Contains(string(respInt2.ResponseBody), "insufficient_quota") {
+		t.Fatalf("expected 429 insufficient_quota on second request, got status=%d body=%s", respInt2.StatusCode, string(respInt2.ResponseBody))
+	}
+
+	// 7. User self-service query (#account mode)
+	selfReq, _ := json.Marshal(pluginapi.ManagementRequest{
+		Method:  http.MethodGet,
+		Path:    "/v0/resource/plugins/cpa-plugin-key/usage",
+		Headers: http.Header{"X-Api-Key": {"sk-dynamic-user-1"}},
+		Query:   url.Values{"mode": {"account"}, "format": {"json"}},
+	})
+	rawSelf, _ := mgr.HandleRPC(pluginabi.MethodManagementHandle, selfReq)
+	selfResp := decodeEnvelope[pluginapi.ManagementResponse](t, rawSelf)
+	if selfResp.StatusCode != http.StatusOK || !strings.Contains(string(selfResp.Body), "Dynamic User 1") || !strings.Contains(string(selfResp.Body), "$0.020000") {
+		t.Fatalf("unexpected self-service account response: %s", string(selfResp.Body))
+	}
+
+	// 8. Verify persistence across new Manager restart (loads key_guard_rules.json from disk)
+	mgr2 := NewManager(hostInvoker)
+	defer mgr2.Shutdown()
+	if _, err := mgr2.HandleRPC(pluginabi.MethodPluginRegister, regReq); err != nil {
+		t.Fatalf("mgr2 register failed: %v", err)
+	}
+	ovReq, _ := json.Marshal(pluginapi.ManagementRequest{
+		Method: http.MethodGet,
+		Path:   "/v0/management/key-guard/overview",
+	})
+	rawOv, _ := mgr2.HandleRPC(pluginabi.MethodManagementHandle, ovReq)
+	ovResp := decodeEnvelope[pluginapi.ManagementResponse](t, rawOv)
+	if ovResp.StatusCode != http.StatusOK || !strings.Contains(string(ovResp.Body), "sk-dynamic-user-1") || !strings.Contains(string(ovResp.Body), "claude-team-1.json") {
+		t.Fatalf("expected persisted dynamic key and host auth files in overview after restart, got: %s", string(ovResp.Body))
+	}
+}

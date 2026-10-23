@@ -3,29 +3,65 @@ package handler
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"html"
 	"net/http"
-	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	"github.com/YzMzx/cpa-plugin-key/internal/pricing"
 	"github.com/YzMzx/cpa-plugin-key/internal/usage"
+	"github.com/YzMzx/cpa-plugin-key/web"
 )
 
 const (
-	RouteManagementUsage     = "/key-guard/usage"
-	RouteManagementReset     = "/key-guard/usage/reset"
-	RouteManagementPricing   = "/key-guard/pricing"
-	RouteManagementPriceSync = "/key-guard/pricing/sync"
-	ResourcePathUsage        = "/usage"
+	RouteManagementOverview      = "/key-guard/overview"
+	RouteManagementKeys          = "/key-guard/keys"
+	RouteManagementDefaultPolicy = "/key-guard/default-policy"
+	RouteManagementAuthFiles     = "/key-guard/auth-files"
+	RouteManagementUsage         = "/key-guard/usage"
+	RouteManagementReset         = "/key-guard/usage/reset"
+	RouteManagementPricing       = "/key-guard/pricing"
+	RouteManagementPriceSync     = "/key-guard/pricing/sync"
+	RouteManagementPriceCustom   = "/key-guard/pricing/custom"
+
+	ResourcePathUI    = "/ui"
+	ResourcePathUsage = "/usage"
 )
 
 // RegisterManagementEndpoints returns the management routes (`/v0/management/...`) and
 // self-service/dashboard resource routes (`/v0/resource/plugins/cpa-plugin-key/...`).
 func RegisterManagementEndpoints() ([]pluginapi.ManagementRoute, []pluginapi.ResourceRoute) {
 	routes := []pluginapi.ManagementRoute{
+		{
+			Method:      http.MethodGet,
+			Path:        RouteManagementOverview,
+			Description: "Return complete admin dashboard state (KPI summary, keys, default_policy, usage, host auth files, pricing status).",
+		},
+		{
+			Method:      http.MethodGet,
+			Path:        RouteManagementKeys,
+			Description: "List all configured API key rules and default policy.",
+		},
+		{
+			Method:      http.MethodPost,
+			Path:        RouteManagementKeys,
+			Description: "Create or update an API key rule and persist to key_guard_rules.json.",
+		},
+		{
+			Method:      http.MethodDelete,
+			Path:        RouteManagementKeys,
+			Description: "Delete an API key rule and persist to key_guard_rules.json.",
+		},
+		{
+			Method:      http.MethodPost,
+			Path:        RouteManagementDefaultPolicy,
+			Description: "Update global default policy for unlisted API keys and persist to key_guard_rules.json.",
+		},
+		{
+			Method:      http.MethodGet,
+			Path:        RouteManagementAuthFiles,
+			Description: "Query available upstream credentials from CLIProxyAPI host via host.auth.list.",
+		},
 		{
 			Method:      http.MethodGet,
 			Path:        RouteManagementUsage,
@@ -39,41 +75,142 @@ func RegisterManagementEndpoints() ([]pluginapi.ManagementRoute, []pluginapi.Res
 		{
 			Method:      http.MethodGet,
 			Path:        RouteManagementPricing,
-			Description: "Inspect models.dev pricing sync status and configured custom model price overrides.",
+			Description: "Inspect models.dev pricing sync status, search reference prices, and view custom model price overrides.",
 		},
 		{
 			Method:      http.MethodPost,
 			Path:        RouteManagementPriceSync,
 			Description: "Trigger an immediate models.dev reference pricing synchronization.",
 		},
+		{
+			Method:      http.MethodPost,
+			Path:        RouteManagementPriceCustom,
+			Description: "Create or update a custom model price override and persist to key_guard_rules.json.",
+		},
+		{
+			Method:      http.MethodDelete,
+			Path:        RouteManagementPriceCustom,
+			Description: "Delete a custom model price override and persist to key_guard_rules.json.",
+		},
 	}
 
 	resources := []pluginapi.ResourceRoute{
 		{
+			Path:        ResourcePathUI,
+			Menu:        "API Key 计费与管控",
+			Description: "可视化管理下游 API Key、并发限流、配额上限、模型白名单、上游凭证绑定及 Token/USD 实时账单（支持 #account 用户自查模式）。",
+		},
+		{
 			Path:        ResourcePathUsage,
-			Menu:        "API Key Billing & Governance",
-			Description: "View per-API-Key concurrency, token usage, and USD billing dashboard (supports ?format=json or ?api_key=...).",
+			Description: "API Key 实时并发、配额与 Token/USD 账单自查接口 (支持 ?format=json 或 #account 自查)。",
 		},
 	}
 	return routes, resources
 }
 
-// SnapshotProvider supplies current snapshots and operations to the HTTP management handler.
+// SnapshotProvider supplies current snapshots and CRUD operations to the HTTP management handler.
 type SnapshotProvider interface {
 	BuildSnapshot(filterAPIKey, filterModel string, maskKeys bool) usage.PersistedSnapshot
 	ResetUsage(apiKey string) error
 	PricingStatus() pricing.Status
 	LookupModelPrice(model string) (pricing.ModelPrice, bool)
+	SearchReferencePrices(query string, limit int) []pricing.ReferenceModelEntry
 	TriggerPricingSync(ctx context.Context) (int, error)
 	ExtractCallerAPIKey(req pluginapi.ManagementRequest) (apiKey string, isAdmin bool)
+
+	BuildAdminOverview(hostCallbackID string) map[string]any
+	ListKeyRulesAndDefaultPolicy() map[string]any
+	UpsertKeyRuleFromJSON(rawBody []byte) (any, error)
+	DeleteKeyRule(apiKey string) error
+	SaveDefaultPolicyFromJSON(rawBody []byte) (any, error)
+	ListHostAuthFiles(hostCallbackID string) ([]pluginapi.HostAuthFileEntry, error)
+	UpsertCustomPrice(model string, price pricing.ModelPrice) error
+	DeleteCustomPrice(model string) error
+	BuildSelfAccountView(apiKey string) (map[string]any, int, error)
 }
 
 // HandleManagementRequest dispatches incoming HTTP requests from `management.handle`.
-func HandleManagementRequest(ctx context.Context, provider SnapshotProvider, req pluginapi.ManagementRequest) pluginapi.ManagementResponse {
+func HandleManagementRequest(ctx context.Context, provider SnapshotProvider, req pluginapi.ManagementRequest, hostCallbackID string) pluginapi.ManagementResponse {
 	path := strings.TrimSpace(req.Path)
 	method := strings.ToUpper(strings.TrimSpace(req.Method))
 
 	switch {
+	case strings.HasSuffix(path, ResourcePathUI):
+		if method != http.MethodGet {
+			return jsonError(http.StatusMethodNotAllowed, "method not allowed")
+		}
+		return textResponse(http.StatusOK, "text/html; charset=utf-8", web.DashboardHTML())
+
+	case strings.HasSuffix(path, RouteManagementOverview):
+		if method != http.MethodGet {
+			return jsonError(http.StatusMethodNotAllowed, "method not allowed")
+		}
+		return jsonResponse(http.StatusOK, provider.BuildAdminOverview(hostCallbackID))
+
+	case strings.HasSuffix(path, RouteManagementKeys):
+		switch method {
+		case http.MethodGet:
+			return jsonResponse(http.StatusOK, provider.ListKeyRulesAndDefaultPolicy())
+		case http.MethodPost, http.MethodPut:
+			rule, err := provider.UpsertKeyRuleFromJSON(req.Body)
+			if err != nil {
+				return jsonError(http.StatusBadRequest, err.Error())
+			}
+			return jsonResponse(http.StatusOK, map[string]any{
+				"ok":   true,
+				"rule": rule,
+			})
+		case http.MethodDelete:
+			targetKey := queryValue(req, "api_key")
+			if targetKey == "" && len(req.Body) > 0 {
+				var body struct {
+					APIKey string `json:"api_key"`
+				}
+				_ = json.Unmarshal(req.Body, &body)
+				targetKey = strings.TrimSpace(body.APIKey)
+			}
+			if targetKey == "" {
+				return jsonError(http.StatusBadRequest, "api_key is required")
+			}
+			if err := provider.DeleteKeyRule(targetKey); err != nil {
+				return jsonError(http.StatusInternalServerError, err.Error())
+			}
+			return jsonResponse(http.StatusOK, map[string]any{
+				"ok":      true,
+				"deleted": usage.MaskAPIKey(targetKey),
+			})
+		default:
+			return jsonError(http.StatusMethodNotAllowed, "method not allowed")
+		}
+
+	case strings.HasSuffix(path, RouteManagementDefaultPolicy):
+		if method != http.MethodPost && method != http.MethodPut {
+			return jsonError(http.StatusMethodNotAllowed, "method not allowed")
+		}
+		policy, err := provider.SaveDefaultPolicyFromJSON(req.Body)
+		if err != nil {
+			return jsonError(http.StatusBadRequest, err.Error())
+		}
+		return jsonResponse(http.StatusOK, map[string]any{
+			"ok":             true,
+			"default_policy": policy,
+		})
+
+	case strings.HasSuffix(path, RouteManagementAuthFiles):
+		if method != http.MethodGet {
+			return jsonError(http.StatusMethodNotAllowed, "method not allowed")
+		}
+		files, err := provider.ListHostAuthFiles(hostCallbackID)
+		if err != nil {
+			return jsonResponse(http.StatusOK, map[string]any{
+				"files":   files,
+				"warning": err.Error(),
+			})
+		}
+		return jsonResponse(http.StatusOK, map[string]any{
+			"files": files,
+		})
+
 	case strings.HasSuffix(path, RouteManagementUsage):
 		if method != http.MethodGet {
 			return jsonError(http.StatusMethodNotAllowed, "method not allowed")
@@ -109,6 +246,52 @@ func HandleManagementRequest(ctx context.Context, provider SnapshotProvider, req
 			"api_key": usage.MaskAPIKey(targetKey),
 		})
 
+	case strings.HasSuffix(path, RouteManagementPriceCustom):
+		switch method {
+		case http.MethodPost, http.MethodPut:
+			var body struct {
+				Model string             `json:"model"`
+				Price pricing.ModelPrice `json:"price"`
+			}
+			if err := json.Unmarshal(req.Body, &body); err != nil {
+				return jsonError(http.StatusBadRequest, "invalid JSON body: "+err.Error())
+			}
+			if strings.TrimSpace(body.Model) == "" {
+				return jsonError(http.StatusBadRequest, "model is required")
+			}
+			if err := provider.UpsertCustomPrice(body.Model, body.Price); err != nil {
+				return jsonError(http.StatusInternalServerError, err.Error())
+			}
+			return jsonResponse(http.StatusOK, map[string]any{
+				"ok":     true,
+				"model":  strings.ToLower(strings.TrimSpace(body.Model)),
+				"price":  body.Price,
+				"status": provider.PricingStatus(),
+			})
+		case http.MethodDelete:
+			targetModel := queryValue(req, "model")
+			if targetModel == "" && len(req.Body) > 0 {
+				var body struct {
+					Model string `json:"model"`
+				}
+				_ = json.Unmarshal(req.Body, &body)
+				targetModel = strings.TrimSpace(body.Model)
+			}
+			if targetModel == "" {
+				return jsonError(http.StatusBadRequest, "model is required")
+			}
+			if err := provider.DeleteCustomPrice(targetModel); err != nil {
+				return jsonError(http.StatusInternalServerError, err.Error())
+			}
+			return jsonResponse(http.StatusOK, map[string]any{
+				"ok":      true,
+				"deleted": strings.ToLower(strings.TrimSpace(targetModel)),
+				"status":  provider.PricingStatus(),
+			})
+		default:
+			return jsonError(http.StatusMethodNotAllowed, "method not allowed")
+		}
+
 	case strings.HasSuffix(path, RouteManagementPricing):
 		if method != http.MethodGet {
 			return jsonError(http.StatusMethodNotAllowed, "method not allowed")
@@ -124,6 +307,20 @@ func HandleManagementRequest(ctx context.Context, provider SnapshotProvider, req
 					"found": found,
 					"price": price,
 				},
+			})
+		}
+		if req.Query != nil && req.Query.Has("search") {
+			searchQuery := queryValue(req, "search")
+			limit := 100
+			if rawLim := queryValue(req, "limit"); rawLim != "" {
+				if parsed, err := strconv.Atoi(rawLim); err == nil && parsed > 0 {
+					limit = parsed
+				}
+			}
+			refModels := provider.SearchReferencePrices(searchQuery, limit)
+			return jsonResponse(http.StatusOK, map[string]any{
+				"status":           status,
+				"reference_models": refModels,
 			})
 		}
 		return jsonResponse(http.StatusOK, status)
@@ -148,10 +345,21 @@ func HandleManagementRequest(ctx context.Context, provider SnapshotProvider, req
 
 	case strings.HasSuffix(path, ResourcePathUsage):
 		callerKey, isAdmin := provider.ExtractCallerAPIKey(req)
+		mode := strings.ToLower(queryValue(req, "mode"))
+		if mode == "account" && strings.TrimSpace(callerKey) == "" {
+			return jsonError(http.StatusUnauthorized, "请输入有效的下游 API Key")
+		}
+		if mode == "account" {
+			selfView, status, err := provider.BuildSelfAccountView(callerKey)
+			if err != nil {
+				return jsonError(status, err.Error())
+			}
+			return jsonResponse(http.StatusOK, selfView)
+		}
+
 		filterModel := queryValue(req, "model")
 		filterKey := callerKey
 		if isAdmin {
-			// Admin can query all keys or filter by ?api_key=
 			filterKey = queryValue(req, "api_key")
 		}
 		snap := provider.BuildSnapshot(filterKey, filterModel, true)
@@ -161,12 +369,20 @@ func HandleManagementRequest(ctx context.Context, provider SnapshotProvider, req
 			accept = strings.ToLower(req.Headers.Get("Accept"))
 		}
 		if format == "json" || strings.Contains(accept, "application/json") {
+			if callerKey != "" && !isAdmin {
+				if selfView, status, err := provider.BuildSelfAccountView(callerKey); err == nil && status == http.StatusOK {
+					selfView["version"] = snap.Version
+					selfView["updated_at"] = snap.UpdatedAt
+					selfView["keys"] = snap.Keys
+					return jsonResponse(http.StatusOK, selfView)
+				}
+			}
 			return jsonResponse(http.StatusOK, snap)
 		}
 		if format == "table" || format == "text" {
 			return textResponse(http.StatusOK, "text/plain; charset=utf-8", RenderUsageTable(snap))
 		}
-		return textResponse(http.StatusOK, "text/html; charset=utf-8", renderHTMLDashboard(snap, provider.PricingStatus()))
+		return textResponse(http.StatusOK, "text/html; charset=utf-8", web.DashboardHTML())
 
 	default:
 		return jsonError(http.StatusNotFound, "unknown endpoint: "+path)
@@ -212,115 +428,4 @@ func textResponse(statusCode int, contentType, body string) pluginapi.Management
 		},
 		Body: []byte(body),
 	}
-}
-
-func renderHTMLDashboard(snap usage.PersistedSnapshot, pStatus pricing.Status) string {
-	var b strings.Builder
-	b.WriteString(`<!doctype html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<title>API Key Governance & Billing</title>
-<style>
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 24px; background: #0f172a; color: #e2e8f0; }
-  h1 { font-size: 20px; margin-bottom: 6px; color: #f8fafc; }
-  .meta { font-size: 13px; color: #94a3b8; margin-bottom: 20px; }
-  table { width: 100%; border-collapse: collapse; background: #1e293b; border-radius: 8px; overflow: hidden; margin-bottom: 20px; }
-  th, td { padding: 10px 14px; text-align: left; border-bottom: 1px solid #334155; font-size: 13px; }
-  th { background: #0f172a; color: #94a3b8; font-weight: 600; text-transform: uppercase; font-size: 11px; }
-  .model-row td { color: #cbd5e1; background: #172033; padding-left: 28px; font-size: 12px; }
-  .cost { color: #38bdf8; font-weight: 600; font-family: monospace; }
-  .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; background: #334155; font-size: 12px; }
-</style>
-</head>
-<body>
-<h1>CLIProxyAPI - API Key Governance & Billing</h1>
-`)
-	fmt.Fprintf(&b, `<div class="meta">Updated: %s | models.dev Synced Keys: %d | Last Sync: %s</div>`,
-		html.EscapeString(snap.UpdatedAt),
-		pStatus.SyncedModelKeys,
-		html.EscapeString(pStatus.LastSyncAt),
-	)
-	b.WriteString(`<table>
-<thead>
-  <tr>
-    <th>API Key / Model</th>
-    <th>Name</th>
-    <th>Concurrency</th>
-    <th>Requests (OK / Err)</th>
-    <th>Input Tokens</th>
-    <th>Output Tokens</th>
-    <th>Cache (Read / Write)</th>
-    <th>Total Tokens</th>
-    <th>Cost (USD)</th>
-  </tr>
-</thead>
-<tbody>
-`)
-	keyIDs := usage.SortedKeyIDs(snap.Keys)
-	if len(keyIDs) == 0 {
-		b.WriteString(`<tr><td colspan="9">No API Key usage records yet.</td></tr>`)
-	}
-	for _, k := range keyIDs {
-		ks := snap.Keys[k]
-		if ks == nil {
-			continue
-		}
-		conc := fmt.Sprintf("%d / ∞", ks.ActiveConcurrency)
-		if ks.MaxConcurrency > 0 {
-			conc = fmt.Sprintf("%d / %d", ks.ActiveConcurrency, ks.MaxConcurrency)
-		}
-		fmt.Fprintf(&b, `<tr>
-  <td><strong>%s</strong></td>
-  <td>%s</td>
-  <td><span class="badge">%s</span></td>
-  <td>%d (%d / %d)</td>
-  <td>%d</td>
-  <td>%d</td>
-  <td>%d / %d</td>
-  <td>%d</td>
-  <td class="cost">%s</td>
-</tr>`,
-			html.EscapeString(ks.MaskedKey),
-			html.EscapeString(ks.KeyName),
-			html.EscapeString(conc),
-			ks.TotalRequests, ks.SuccessRequests, ks.FailedRequests,
-			ks.InputTokens, ks.OutputTokens,
-			ks.CacheReadTokens, ks.CacheWriteTokens,
-			ks.TotalTokens,
-			html.EscapeString(ks.TotalCostFormatted),
-		)
-
-		if len(ks.Models) > 0 {
-			models := make([]string, 0, len(ks.Models))
-			for m := range ks.Models {
-				models = append(models, m)
-			}
-			sort.Strings(models)
-			for _, m := range models {
-				ms := ks.Models[m]
-				fmt.Fprintf(&b, `<tr class="model-row">
-  <td>↳ %s</td>
-  <td><small>price: $%.2f/$%.2f (%s)</small></td>
-  <td>-</td>
-  <td>%d (%d / %d)</td>
-  <td>%d</td>
-  <td>%d</td>
-  <td>%d / %d</td>
-  <td>%d</td>
-  <td class="cost">%s</td>
-</tr>`,
-					html.EscapeString(ms.Model),
-					ms.UnitPricePer1M.Input, ms.UnitPricePer1M.Output, html.EscapeString(ms.UnitPricePer1M.Source),
-					ms.Requests, ms.SuccessRequests, ms.FailedRequests,
-					ms.InputTokens, ms.OutputTokens,
-					ms.CacheReadTokens, ms.CacheWriteTokens,
-					ms.TotalTokens,
-					html.EscapeString(ms.CostFormatted),
-				)
-			}
-		}
-	}
-	b.WriteString(`</tbody></table></body></html>`)
-	return b.String()
 }

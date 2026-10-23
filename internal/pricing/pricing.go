@@ -349,6 +349,13 @@ type Status struct {
 	LastSyncError    string                `json:"last_sync_error,omitempty"`
 	SyncSource       string                `json:"sync_source,omitempty"`
 	CustomPrices     map[string]ModelPrice `json:"custom_prices,omitempty"`
+	DefaultPrice     *ModelPrice           `json:"default_price,omitempty"`
+}
+
+// ReferenceModelEntry represents a single model price entry in the synced models.dev catalog.
+type ReferenceModelEntry struct {
+	Model string     `json:"model"`
+	Price ModelPrice `json:"price"`
 }
 
 // Status returns a snapshot of the pricing engine status.
@@ -367,6 +374,11 @@ func (e *Engine) Status() Status {
 	if !e.lastSyncAt.IsZero() {
 		lastSync = e.lastSyncAt.UTC().Format(time.RFC3339)
 	}
+	var defPrice *ModelPrice
+	if e.defaultPrice != nil {
+		cp := *e.defaultPrice
+		defPrice = &cp
+	}
 	return Status{
 		SyncedModelKeys:  len(e.modelsDevMap),
 		CustomExactCount: len(e.customExact),
@@ -375,7 +387,37 @@ func (e *Engine) Status() Status {
 		LastSyncError:    e.lastSyncError,
 		SyncSource:       e.syncSource,
 		CustomPrices:     customAll,
+		DefaultPrice:     defPrice,
 	}
+}
+
+// SearchReferencePrices searches synced models.dev prices by substring query and returns up to limit sorted entries.
+func (e *Engine) SearchReferencePrices(query string, limit int) []ReferenceModelEntry {
+	q := strings.ToLower(strings.TrimSpace(query))
+	if limit <= 0 {
+		limit = 200
+	}
+
+	e.mu.RLock()
+	keys := make([]string, 0, len(e.modelsDevMap))
+	for k := range e.modelsDevMap {
+		if q == "" || strings.Contains(k, q) {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	if len(keys) > limit {
+		keys = keys[:limit]
+	}
+	out := make([]ReferenceModelEntry, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, ReferenceModelEntry{
+			Model: k,
+			Price: e.modelsDevMap[k],
+		})
+	}
+	e.mu.RUnlock()
+	return out
 }
 
 type modelsDevProvider struct {

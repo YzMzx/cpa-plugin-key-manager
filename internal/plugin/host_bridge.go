@@ -100,3 +100,53 @@ func (b *HostBridge) FetchURL(ctx context.Context, url string, timeout time.Dura
 	// Fallback to standard Go net/http client (e.g. when called from a background goroutine without active host_callback_id)
 	return pricing.DefaultHTTPFetcher(ctx, url, timeout)
 }
+
+type hostAuthListResponse struct {
+	Files []pluginapi.HostAuthFileEntry `json:"files"`
+}
+
+// ListAuthFiles calls `host.auth.list` on the CLIProxyAPI host to retrieve all available upstream credentials.
+func (b *HostBridge) ListAuthFiles(hostCallbackID string) ([]pluginapi.HostAuthFileEntry, error) {
+	b.mu.RLock()
+	inv := b.invoker
+	b.mu.RUnlock()
+	if inv == nil {
+		return []pluginapi.HostAuthFileEntry{}, nil
+	}
+
+	payload := map[string]any{}
+	if hostCallbackID != "" {
+		payload["host_callback_id"] = hostCallbackID
+	}
+	rawReq, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	rawResp, errCall := inv(pluginabi.MethodHostAuthList, rawReq)
+	if errCall != nil {
+		return nil, errCall
+	}
+	if len(rawResp) == 0 {
+		return []pluginapi.HostAuthFileEntry{}, nil
+	}
+	var env pluginabi.Envelope
+	if errEnv := json.Unmarshal(rawResp, &env); errEnv != nil {
+		return nil, errEnv
+	}
+	if !env.OK {
+		if env.Error != nil {
+			return nil, fmt.Errorf("%s: %s", env.Error.Code, env.Error.Message)
+		}
+		return nil, fmt.Errorf("host.auth.list failed")
+	}
+	var resp hostAuthListResponse
+	if len(env.Result) > 0 {
+		if errDec := json.Unmarshal(env.Result, &resp); errDec != nil {
+			return nil, errDec
+		}
+	}
+	if resp.Files == nil {
+		resp.Files = []pluginapi.HostAuthFileEntry{}
+	}
+	return resp.Files, nil
+}

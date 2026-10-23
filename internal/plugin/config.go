@@ -3,12 +3,18 @@ package plugin
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/YzMzx/cpa-plugin-key/internal/authz"
 	"github.com/YzMzx/cpa-plugin-key/internal/pricing"
+	"github.com/YzMzx/cpa-plugin-key/internal/usage"
 	"gopkg.in/yaml.v3"
 )
 
@@ -32,6 +38,7 @@ type StorageConfig struct {
 	UsageFile            string `yaml:"usage_file" json:"usage_file"`
 	FlushIntervalSeconds int    `yaml:"flush_interval_seconds" json:"flush_interval_seconds"`
 	PricingCacheFile     string `yaml:"pricing_cache_file" json:"pricing_cache_file"`
+	RulesFile            string `yaml:"rules_file" json:"rules_file"`
 }
 
 // PricingConfig defines models.dev synchronization and local price overrides.
@@ -48,18 +55,35 @@ type PricingConfig struct {
 type DefaultPolicyConfig struct {
 	AllowUnlistedKeys *bool                 `yaml:"allow_unlisted_keys" json:"allow_unlisted_keys,omitempty"`
 	MaxConcurrency    int                   `yaml:"max_concurrency" json:"max_concurrency"`
+	QuotaLimitUSD     float64               `yaml:"quota_limit_usd" json:"quota_limit_usd"`
 	AllowedModels     []string              `yaml:"allowed_models" json:"allowed_models"`
 	UpstreamBinding   authz.UpstreamBinding `yaml:"upstream_binding" json:"upstream_binding"`
 }
 
-// KeyRuleConfig defines governance, routing, and concurrency policies for a specific API Key.
+// KeyRuleConfig defines governance, routing, quota, and concurrency policies for a specific API Key.
 type KeyRuleConfig struct {
 	APIKey          string                `yaml:"api_key" json:"api_key"`
 	Name            string                `yaml:"name" json:"name,omitempty"`
 	Enabled         *bool                 `yaml:"enabled" json:"enabled,omitempty"`
 	MaxConcurrency  int                   `yaml:"max_concurrency" json:"max_concurrency"`
+	QuotaLimitUSD   float64               `yaml:"quota_limit_usd" json:"quota_limit_usd"`
 	AllowedModels   []string              `yaml:"allowed_models" json:"allowed_models"`
 	UpstreamBinding authz.UpstreamBinding `yaml:"upstream_binding" json:"upstream_binding"`
+	CreatedAt       string                `yaml:"created_at,omitempty" json:"created_at,omitempty"`
+	UpdatedAt       string                `yaml:"updated_at,omitempty" json:"updated_at,omitempty"`
+}
+
+// DynamicRulesState is persisted to `storage.rules_file` (default `./data/key_guard_rules.json`)
+// whenever rules, keys, or custom prices are modified via the Web UI / Management API.
+type DynamicRulesState struct {
+	Version       int                           `json:"version"`
+	UpdatedAt     string                        `json:"updated_at"`
+	DefaultPolicy *DefaultPolicyConfig          `json:"default_policy,omitempty"`
+	Keys          []KeyRuleConfig               `json:"keys"`
+	DeletedKeys   []string                      `json:"deleted_keys,omitempty"`
+	CustomPrices  map[string]pricing.ModelPrice `json:"custom_prices,omitempty"`
+	DeletedPrices []string                      `json:"deleted_prices,omitempty"`
+	DefaultPrice  *pricing.ModelPrice           `json:"default_price,omitempty"`
 }
 
 // IsEnabled returns true unless Enabled was explicitly set to false.
@@ -122,6 +146,14 @@ func (c *Config) Normalize() {
 	if strings.TrimSpace(c.Storage.PricingCacheFile) == "" {
 		c.Storage.PricingCacheFile = "./data/models_dev.json"
 	}
+	if strings.TrimSpace(c.Storage.RulesFile) == "" {
+		dir := filepath.Dir(filepath.Clean(c.Storage.UsageFile))
+		if dir == "" || dir == "." {
+			c.Storage.RulesFile = "./data/key_guard_rules.json"
+		} else {
+			c.Storage.RulesFile = filepath.Join(dir, "key_guard_rules.json")
+		}
+	}
 	if strings.TrimSpace(c.Pricing.SyncURL) == "" {
 		c.Pricing.SyncURL = "https://models.dev/api.json"
 	}
@@ -134,6 +166,9 @@ func (c *Config) Normalize() {
 	if c.Pricing.AutoInjectIncludeUsage == nil {
 		v := true
 		c.Pricing.AutoInjectIncludeUsage = &v
+	}
+	if c.Pricing.CustomPrices == nil {
+		c.Pricing.CustomPrices = make(map[string]pricing.ModelPrice)
 	}
 	if c.DefaultPolicy.AllowUnlistedKeys == nil {
 		v := true
@@ -192,9 +227,163 @@ func (c *Config) ResolveKeyRule(apiKey string) (rule KeyRuleConfig, listed bool)
 		Name:            "",
 		Enabled:         &enabled,
 		MaxConcurrency:  c.DefaultPolicy.MaxConcurrency,
+		QuotaLimitUSD:   c.DefaultPolicy.QuotaLimitUSD,
 		AllowedModels:   c.DefaultPolicy.AllowedModels,
 		UpstreamBinding: c.DefaultPolicy.UpstreamBinding,
 	}, false
+}
+
+// LoadDynamicRulesFile loads the persisted DynamicRulesState from disk if it exists.
+func LoadDynamicRulesFile(filePath string) (*DynamicRulesState, error) {
+	cleanPath := strings.TrimSpace(filePath)
+	if cleanPath == "" {
+		return &DynamicRulesState{Version: 1, CustomPrices: make(map[string]pricing.ModelPrice)}, nil
+	}
+	raw, err := os.ReadFile(cleanPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &DynamicRulesState{Version: 1, CustomPrices: make(map[string]pricing.ModelPrice)}, nil
+		}
+		return nil, err
+	}
+	if len(strings.TrimSpace(string(raw))) == 0 {
+		return &DynamicRulesState{Version: 1, CustomPrices: make(map[string]pricing.ModelPrice)}, nil
+	}
+	var state DynamicRulesState
+	if err := json.Unmarshal(raw, &state); err != nil {
+		return nil, fmt.Errorf("unmarshal dynamic rules from %s: %w", cleanPath, err)
+	}
+	if state.Version == 0 {
+		state.Version = 1
+	}
+	if state.CustomPrices == nil {
+		state.CustomPrices = make(map[string]pricing.ModelPrice)
+	}
+	return &state, nil
+}
+
+// SaveDynamicRulesFile atomically writes DynamicRulesState to disk.
+func SaveDynamicRulesFile(filePath string, state *DynamicRulesState) error {
+	cleanPath := strings.TrimSpace(filePath)
+	if cleanPath == "" || state == nil {
+		return nil
+	}
+	state.Version = 1
+	state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	raw, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
+	}
+	return usage.WriteFileAtomically(cleanPath, raw)
+}
+
+// MergeDynamicState combines the base config.yaml seed with dynamic Web UI changes from DynamicRulesState.
+func MergeDynamicState(seed Config, state *DynamicRulesState) Config {
+	out := seed
+	if state == nil {
+		out.Normalize()
+		return out
+	}
+
+	if state.DefaultPolicy != nil {
+		dp := *state.DefaultPolicy
+		dp.AllowedModels = append([]string(nil), state.DefaultPolicy.AllowedModels...)
+		dp.UpstreamBinding.AuthIDs = append([]string(nil), state.DefaultPolicy.UpstreamBinding.AuthIDs...)
+		dp.UpstreamBinding.Credentials = append([]string(nil), state.DefaultPolicy.UpstreamBinding.Credentials...)
+		out.DefaultPolicy = dp
+	}
+
+	deletedKeySet := make(map[string]struct{}, len(state.DeletedKeys))
+	for _, dk := range state.DeletedKeys {
+		k := strings.TrimSpace(dk)
+		if k != "" {
+			deletedKeySet[k] = struct{}{}
+		}
+	}
+
+	keyOrder := make([]string, 0, len(seed.Keys)+len(state.Keys))
+	keyMap := make(map[string]KeyRuleConfig, len(seed.Keys)+len(state.Keys))
+
+	for _, kr := range seed.Keys {
+		k := strings.TrimSpace(kr.APIKey)
+		if k == "" {
+			continue
+		}
+		if _, deleted := deletedKeySet[k]; deleted {
+			continue
+		}
+		if _, exists := keyMap[k]; !exists {
+			keyOrder = append(keyOrder, k)
+		}
+		keyMap[k] = cloneKeyRule(kr)
+	}
+
+	for _, kr := range state.Keys {
+		k := strings.TrimSpace(kr.APIKey)
+		if k == "" {
+			continue
+		}
+		if _, exists := keyMap[k]; !exists {
+			keyOrder = append(keyOrder, k)
+		}
+		keyMap[k] = cloneKeyRule(kr)
+	}
+
+	mergedKeys := make([]KeyRuleConfig, 0, len(keyOrder))
+	for _, k := range keyOrder {
+		if r, ok := keyMap[k]; ok {
+			mergedKeys = append(mergedKeys, r)
+		}
+	}
+	out.Keys = mergedKeys
+
+	deletedPriceSet := make(map[string]struct{}, len(state.DeletedPrices))
+	for _, dp := range state.DeletedPrices {
+		p := strings.ToLower(strings.TrimSpace(dp))
+		if p != "" {
+			deletedPriceSet[p] = struct{}{}
+		}
+	}
+
+	mergedPrices := make(map[string]pricing.ModelPrice, len(seed.Pricing.CustomPrices)+len(state.CustomPrices))
+	for m, p := range seed.Pricing.CustomPrices {
+		norm := strings.ToLower(strings.TrimSpace(m))
+		if norm == "" {
+			continue
+		}
+		if _, deleted := deletedPriceSet[norm]; deleted {
+			continue
+		}
+		mergedPrices[norm] = p
+	}
+	for m, p := range state.CustomPrices {
+		norm := strings.ToLower(strings.TrimSpace(m))
+		if norm == "" {
+			continue
+		}
+		mergedPrices[norm] = p
+	}
+	out.Pricing.CustomPrices = mergedPrices
+
+	if state.DefaultPrice != nil {
+		cp := *state.DefaultPrice
+		out.Pricing.DefaultPrice = &cp
+	}
+
+	out.Normalize()
+	return out
+}
+
+func cloneKeyRule(kr KeyRuleConfig) KeyRuleConfig {
+	cp := kr
+	if kr.Enabled != nil {
+		b := *kr.Enabled
+		cp.Enabled = &b
+	}
+	cp.AllowedModels = append([]string(nil), kr.AllowedModels...)
+	cp.UpstreamBinding.AuthIDs = append([]string(nil), kr.UpstreamBinding.AuthIDs...)
+	cp.UpstreamBinding.Credentials = append([]string(nil), kr.UpstreamBinding.Credentials...)
+	return cp
 }
 
 // ResolveAPIKeyFromContext extracts the client API key from HTTP headers, URL query, or CPA `caller_scope` metadata.

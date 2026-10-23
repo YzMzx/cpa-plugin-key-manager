@@ -14,11 +14,13 @@ import (
 type UpstreamBinding struct {
 	// AuthIDs lists allowed credential IDs, file names, labels, or prefixes (supports '*' wildcard).
 	AuthIDs []string `yaml:"auth_ids" json:"auth_ids,omitempty"`
+	// Credentials is an alias for AuthIDs used by Web UI / JSON configurations.
+	Credentials []string `yaml:"credentials,omitempty" json:"credentials,omitempty"`
 	// Providers optionally restricts allowed upstream provider types (e.g. ["claude", "openai"]).
 	Providers []string `yaml:"providers" json:"providers,omitempty"`
 	// Attributes optionally matches candidate Attributes key-value pairs (supports '*' wildcard).
 	Attributes map[string]string `yaml:"attributes" json:"attributes,omitempty"`
-	// Strategy selects among multiple matching candidates: "round-robin" (default) or "fill-first".
+	// Strategy selects among multiple matching candidates: "round-robin" (default), "fill-first", or "strict".
 	Strategy string `yaml:"strategy" json:"strategy,omitempty"`
 	// Strict controls behavior when no bound candidate is available:
 	// when true (default if binding is configured), reject selection instead of falling back to shared pool.
@@ -27,11 +29,14 @@ type UpstreamBinding struct {
 
 // HasRules reports whether any upstream credential binding constraint is configured.
 func (b UpstreamBinding) HasRules() bool {
-	return len(b.AuthIDs) > 0 || len(b.Providers) > 0 || len(b.Attributes) > 0
+	return len(b.AuthIDs) > 0 || len(b.Credentials) > 0 || len(b.Providers) > 0 || len(b.Attributes) > 0
 }
 
 // IsStrict returns true unless Strict was explicitly set to false.
 func (b UpstreamBinding) IsStrict() bool {
+	if strings.EqualFold(strings.TrimSpace(b.Strategy), "strict") {
+		return true
+	}
 	if b.Strict == nil {
 		return true
 	}
@@ -137,11 +142,14 @@ func candidateMatches(binding UpstreamBinding, cand pluginapi.SchedulerAuthCandi
 		}
 	}
 
-	// 2. Check AuthIDs filter if specified (matches ID, filename without .json, label, or prefix attribute)
-	if len(binding.AuthIDs) > 0 {
+	// 2. Check AuthIDs / Credentials filter if specified (matches ID, filename without .json, label, or prefix attribute)
+	allPatterns := make([]string, 0, len(binding.AuthIDs)+len(binding.Credentials))
+	allPatterns = append(allPatterns, binding.AuthIDs...)
+	allPatterns = append(allPatterns, binding.Credentials...)
+	if len(allPatterns) > 0 {
 		idMatched := false
 		candTokens := candidateIdentityTokens(cand)
-		for _, pattern := range binding.AuthIDs {
+		for _, pattern := range allPatterns {
 			pat := strings.TrimSpace(pattern)
 			if pat == "" {
 				continue

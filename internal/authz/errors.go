@@ -114,3 +114,16 @@ func NewConcurrencyLimitResponse(maxConcurrency int) pluginapi.RequestInterceptR
 		ResponseBody:    BuildErrorBody(http.StatusTooManyRequests, "rate_limit_error", "rate_limit_exceeded", msg),
 	}
 }
+
+// NewQuotaExceededResponse returns a terminated RequestInterceptResponse with HTTP 429 Too Many Requests when USD quota is exhausted.
+func NewQuotaExceededResponse(usedUSD, quotaLimitUSD float64) pluginapi.RequestInterceptResponse {
+	msg := fmt.Sprintf("API key billing quota exceeded (used=$%.6f, limit=$%.6f).", usedUSD, quotaLimitUSD)
+	headers := make(http.Header)
+	headers.Set("Content-Type", "application/json; charset=utf-8")
+	return pluginapi.RequestInterceptResponse{
+		Terminate:       true,
+		StatusCode:      http.StatusTooManyRequests,
+		ResponseHeaders: headers,
+		ResponseBody:    BuildErrorBody(http.StatusTooManyRequests, "insufficient_quota", "insufficient_quota", msg),
+	}
+}

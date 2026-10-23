@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -20,9 +21,10 @@ import (
 
 const (
 	PluginID      = "cpa-plugin-key"
-	PluginVersion = "0.1.0"
+	PluginVersion = "0.2.0"
 	PluginAuthor  = "YzMzx"
 	PluginRepo    = "https://github.com/YzMzx/cpa-plugin-key"
+	PluginLogoSVG = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%230284c7'/><path d='M24 22a10 10 0 1 0 9.5 13H42v5h6v-5h4v-6H33.5A10 10 0 0 0 24 22zm0 6a4 4 0 1 1 0 8 4 4 0 0 1 0-8z' fill='%23fff'/></svg>"
 )
 
 type lifecycleRequest struct {
@@ -55,12 +57,15 @@ type managementRegistrationResponse struct {
 }
 
 // Manager is the central runtime coordinator for cpa-plugin-key.
-// It is safe for concurrent use and preserves in-flight concurrency slots and
-// accumulated usage across `plugin.reconfigure` hot-reloads.
+// It is safe for concurrent use and preserves in-flight concurrency slots,
+// dynamic Web UI rules, and accumulated usage across `plugin.reconfigure` hot-reloads.
 type Manager struct {
 	mu            sync.RWMutex
+	seedCfg       Config
+	dynamicState  *DynamicRulesState
 	cfg           Config
 	lastSyncKey   string
+	seenAuthFiles map[string]pluginapi.HostAuthFileEntry
 	host          *HostBridge
 	scheduler     *authz.Scheduler
 	limiter       *limiter.Limiter
@@ -75,9 +80,13 @@ func NewManager(invoker HostInvoker) *Manager {
 	pricingEng := pricing.NewEngine()
 	syncer := pricing.NewSyncer(pricingEng, hostBridge.FetchURL, hostBridge.Log)
 	store := usage.NewStore(pricingEng)
+	defCfg := DefaultConfig()
 
 	return &Manager{
-		cfg:           DefaultConfig(),
+		seedCfg:       defCfg,
+		dynamicState:  &DynamicRulesState{Version: 1, CustomPrices: make(map[string]pricing.ModelPrice)},
+		cfg:           defCfg,
+		seenAuthFiles: make(map[string]pluginapi.HostAuthFileEntry),
 		host:          hostBridge,
 		scheduler:     authz.NewScheduler(),
 		limiter:       limiter.New(),
@@ -160,7 +169,8 @@ func (m *Manager) HandleRPC(method string, request []byte) ([]byte, error) {
 }
 
 // Configure parses and applies configuration from `plugin.register` or `plugin.reconfigure`.
-// Hot-reloading preserves all active concurrency slots (`m.limiter`) and accumulated billing data (`m.usageStore`).
+// Hot-reloading preserves all active concurrency slots (`m.limiter`), dynamic rules (`key_guard_rules.json`),
+// and accumulated billing data (`m.usageStore`).
 func (m *Manager) Configure(raw []byte) error {
 	var req lifecycleRequest
 	if len(raw) > 0 {
@@ -169,11 +179,21 @@ func (m *Manager) Configure(raw []byte) error {
 		}
 	}
 
-	cfg, err := ParseConfigYAML(req.ConfigYAML)
+	seedCfg, err := ParseConfigYAML(req.ConfigYAML)
 	if err != nil {
 		return fmt.Errorf("parse plugin config YAML: %w", err)
 	}
 
+	dynState, errDyn := LoadDynamicRulesFile(seedCfg.Storage.RulesFile)
+	if errDyn != nil {
+		m.host.Log("warn", "failed to load dynamic rules file, using config.yaml seed", map[string]any{
+			"file":  seedCfg.Storage.RulesFile,
+			"error": errDyn.Error(),
+		})
+		dynState = &DynamicRulesState{Version: 1, CustomPrices: make(map[string]pricing.ModelPrice)}
+	}
+
+	cfg := MergeDynamicState(seedCfg, dynState)
 	m.pricingEngine.SetCustomPrices(cfg.Pricing.CustomPrices, cfg.Pricing.DefaultPrice)
 
 	flushDur := time.Duration(cfg.Storage.FlushIntervalSeconds) * time.Second
@@ -193,6 +213,8 @@ func (m *Manager) Configure(raw []byte) error {
 
 	m.mu.Lock()
 	needRestartSync := m.lastSyncKey != syncKey
+	m.seedCfg = seedCfg
+	m.dynamicState = dynState
 	m.cfg = cfg
 	m.lastSyncKey = syncKey
 	m.mu.Unlock()
@@ -223,11 +245,12 @@ func (m *Manager) registrationPayload() registrationResponse {
 			Version:          PluginVersion,
 			Author:           PluginAuthor,
 			GitHubRepository: PluginRepo,
+			Logo:             PluginLogoSVG,
 			ConfigFields: []pluginapi.ConfigField{
 				{
 					Name:        "storage",
 					Type:        pluginapi.ConfigFieldTypeObject,
-					Description: "Persistence paths for usage statistics JSON and models.dev pricing cache.",
+					Description: "Persistence paths for usage statistics JSON, dynamic rules JSON, and models.dev pricing cache.",
 				},
 				{
 					Name:        "pricing",
@@ -237,12 +260,12 @@ func (m *Manager) registrationPayload() registrationResponse {
 				{
 					Name:        "default_policy",
 					Type:        pluginapi.ConfigFieldTypeObject,
-					Description: "Default concurrency, model whitelist, and upstream binding policy for unlisted API keys.",
+					Description: "Default concurrency, quota limit, model whitelist, and upstream binding policy for unlisted API keys.",
 				},
 				{
 					Name:        "keys",
 					Type:        pluginapi.ConfigFieldTypeArray,
-					Description: "Per-API-Key rules (allowed_models, max_concurrency, upstream_binding).",
+					Description: "Per-API-Key rules (allowed_models, max_concurrency, quota_limit_usd, upstream_binding).",
 				},
 			},
 		},
@@ -317,7 +340,15 @@ func (m *Manager) handleRequestInterceptBefore(raw []byte) ([]byte, error) {
 		return okEnvelope(authz.NewForbiddenModelResponse(displayModel))
 	}
 
-	// 3. Check and acquire per-API-Key concurrency slot (tracked by RequestID)
+	// 3. Check per-API-Key cumulative USD quota limit (if quota_limit_usd > 0)
+	if rule.QuotaLimitUSD > 0 {
+		usedUSD := m.usageStore.GetKeyCostUSD(apiKey)
+		if usedUSD >= rule.QuotaLimitUSD {
+			return okEnvelope(authz.NewQuotaExceededResponse(usedUSD, rule.QuotaLimitUSD))
+		}
+	}
+
+	// 4. Check and acquire per-API-Key concurrency slot (tracked by RequestID)
 	acquired, _ := m.limiter.TryAcquire(limiter.SlotInfo{
 		RequestID:      req.RequestID,
 		APIKey:         apiKey,
@@ -331,10 +362,10 @@ func (m *Manager) handleRequestInterceptBefore(raw []byte) ([]byte, error) {
 		return okEnvelope(authz.NewConcurrencyLimitResponse(rule.MaxConcurrency))
 	}
 
-	// 4. Register in usage store for lifecycle tracking
+	// 5. Register in usage store for lifecycle tracking
 	m.usageStore.BeginRequest(req.RequestID, apiKey, rule.Name, req.Model, req.RequestedModel, req.SourceFormat, req.Stream)
 
-	// 5. Protocol-guarded auto-injection of `stream_options.include_usage = true` for OpenAI Chat Completions streams
+	// 6. Protocol-guarded auto-injection of `stream_options.include_usage = true` for OpenAI Chat Completions streams
 	body := req.Body
 	if req.Stream && cfg.ShouldAutoInjectIncludeUsage() {
 		var reqPath string
@@ -371,9 +402,29 @@ func (m *Manager) handleSchedulerPick(raw []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	m.mu.RLock()
+	m.mu.Lock()
 	cfg := m.cfg
-	m.mu.RUnlock()
+	for _, cand := range req.Candidates {
+		id := strings.TrimSpace(cand.ID)
+		if id == "" {
+			continue
+		}
+		name := id
+		if fn := strings.TrimSpace(cand.Attributes["filename"]); fn != "" {
+			name = fn
+		}
+		m.seenAuthFiles[id] = pluginapi.HostAuthFileEntry{
+			ID:       id,
+			Name:     name,
+			Provider: cand.Provider,
+			Status:   cand.Status,
+			Priority: cand.Priority,
+			Email:    cand.Attributes["email"],
+			Account:  cand.Attributes["account"],
+			Label:    cand.Attributes["label"],
+		}
+	}
+	m.mu.Unlock()
 
 	apiKey := cfg.ResolveAPIKeyFromContext(http.Header(req.Options.Headers), nil, req.Options.Metadata)
 	rule, _ := cfg.ResolveKeyRule(apiKey)
@@ -447,11 +498,14 @@ func (m *Manager) handleUsageRecord(raw []byte) ([]byte, error) {
 }
 
 func (m *Manager) handleManagement(raw []byte) ([]byte, error) {
-	var req pluginapi.ManagementRequest
+	var req struct {
+		pluginapi.ManagementRequest
+		HostCallbackID string `json:"host_callback_id,omitempty"`
+	}
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return nil, err
 	}
-	resp := handler.HandleManagementRequest(context.Background(), m, req)
+	resp := handler.HandleManagementRequest(context.Background(), m, req.ManagementRequest, req.HostCallbackID)
 	return okEnvelope(resp)
 }
 
@@ -526,14 +580,29 @@ func (m *Manager) BuildSnapshot(filterAPIKey, filterModel string, maskKeys bool)
 	activeByKey := m.limiter.SnapshotByKey()
 	maxConcByKey := make(map[string]int, len(cfg.Keys))
 	keyNames := make(map[string]string, len(cfg.Keys))
+	ruleByKey := make(map[string]KeyRuleConfig, len(cfg.Keys))
 	for _, k := range cfg.Keys {
 		maxConcByKey[k.APIKey] = k.MaxConcurrency
 		if k.Name != "" {
 			keyNames[k.APIKey] = k.Name
 		}
+		ruleByKey[k.APIKey] = k
 	}
 
-	return m.usageStore.Snapshot(filterAPIKey, filterModel, activeByKey, maxConcByKey, keyNames, maskKeys)
+	snap := m.usageStore.Snapshot(filterAPIKey, filterModel, activeByKey, maxConcByKey, keyNames, maskKeys)
+	for mapKey, ks := range snap.Keys {
+		rawKey := ks.APIKey
+		if rawKey == "" {
+			rawKey = mapKey
+		}
+		if r, ok := ruleByKey[rawKey]; ok {
+			ks.QuotaLimitUSD = r.QuotaLimitUSD
+			enabled := r.IsEnabled()
+			ks.Enabled = &enabled
+			ks.AllowedModels = append([]string(nil), r.AllowedModels...)
+		}
+	}
+	return snap
 }
 
 // ResetUsage clears accumulated usage statistics (for a single key or globally) and flushes to disk.
@@ -549,6 +618,11 @@ func (m *Manager) PricingStatus() pricing.Status {
 // LookupModelPrice looks up the effective per-1M-token price for a given model name.
 func (m *Manager) LookupModelPrice(model string) (pricing.ModelPrice, bool) {
 	return m.pricingEngine.Lookup(model)
+}
+
+// SearchReferencePrices searches synced models.dev prices by substring query.
+func (m *Manager) SearchReferencePrices(query string, limit int) []pricing.ReferenceModelEntry {
+	return m.pricingEngine.SearchReferencePrices(query, limit)
 }
 
 // TriggerPricingSync runs an immediate synchronization with models.dev.
@@ -570,6 +644,388 @@ func (m *Manager) ExtractCallerAPIKey(req pluginapi.ManagementRequest) (apiKey s
 		return "", true
 	}
 	return token, false
+}
+
+// ListHostAuthFiles calls `host.auth.list` and merges any candidates observed during scheduling.
+func (m *Manager) ListHostAuthFiles(hostCallbackID string) ([]pluginapi.HostAuthFileEntry, error) {
+	hostFiles, err := m.host.ListAuthFiles(hostCallbackID)
+	if len(hostFiles) > 0 {
+		return hostFiles, err
+	}
+
+	m.mu.RLock()
+	fallback := make([]pluginapi.HostAuthFileEntry, 0, len(m.seenAuthFiles))
+	for _, f := range m.seenAuthFiles {
+		fallback = append(fallback, f)
+	}
+	m.mu.RUnlock()
+
+	sort.Slice(fallback, func(i, j int) bool {
+		return fallback[i].Name < fallback[j].Name
+	})
+	return fallback, err
+}
+
+// BuildAdminOverview returns the complete state needed by the Admin Dashboard in a single call.
+func (m *Manager) BuildAdminOverview(hostCallbackID string) map[string]any {
+	snap := m.BuildSnapshot("", "", false)
+	authFiles, _ := m.ListHostAuthFiles(hostCallbackID)
+	pStatus := m.PricingStatus()
+
+	m.mu.RLock()
+	cfg := m.cfg
+	keysCopy := make([]KeyRuleConfig, len(cfg.Keys))
+	for i, k := range cfg.Keys {
+		keysCopy[i] = cloneKeyRule(k)
+	}
+	dpCopy := cfg.DefaultPolicy
+	m.mu.RUnlock()
+
+	var totalCostNano int64
+	var totalTokens, inTokens, outTokens, reasonTokens, readTokens, writeTokens int64
+	var totalReq, okReq, errReq int64
+	var activeConc int
+
+	for _, ks := range snap.Keys {
+		if ks == nil {
+			continue
+		}
+		totalCostNano += ks.TotalCostNanoUSD
+		totalTokens += ks.TotalTokens
+		inTokens += ks.InputTokens
+		outTokens += ks.OutputTokens
+		reasonTokens += ks.ReasoningTokens
+		readTokens += ks.CacheReadTokens
+		writeTokens += ks.CacheWriteTokens
+		totalReq += ks.TotalRequests
+		okReq += ks.SuccessRequests
+		errReq += ks.FailedRequests
+		activeConc += ks.ActiveConcurrency
+	}
+
+	summary := map[string]any{
+		"total_cost_usd":       pricing.NanoToUSD(totalCostNano),
+		"total_cost_formatted": pricing.FormatUSD(totalCostNano),
+		"total_tokens":         totalTokens,
+		"input_tokens":         inTokens,
+		"output_tokens":        outTokens,
+		"reasoning_tokens":     reasonTokens,
+		"cache_read_tokens":    readTokens,
+		"cache_write_tokens":   writeTokens,
+		"total_requests":       totalReq,
+		"success_requests":     okReq,
+		"failed_requests":      errReq,
+		"active_concurrency":   activeConc,
+		"configured_keys":      len(keysCopy),
+	}
+
+	return map[string]any{
+		"summary":        summary,
+		"keys":           keysCopy,
+		"default_policy": dpCopy,
+		"usage":          snap,
+		"auth_files":     authFiles,
+		"pricing_status": pStatus,
+		"rules_file":     cfg.Storage.RulesFile,
+	}
+}
+
+// ListKeyRulesAndDefaultPolicy returns all configured API key rules and default_policy.
+func (m *Manager) ListKeyRulesAndDefaultPolicy() map[string]any {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	keysCopy := make([]KeyRuleConfig, len(m.cfg.Keys))
+	for i, k := range m.cfg.Keys {
+		keysCopy[i] = cloneKeyRule(k)
+	}
+	return map[string]any{
+		"keys":           keysCopy,
+		"default_policy": m.cfg.DefaultPolicy,
+		"rules_file":     m.cfg.Storage.RulesFile,
+	}
+}
+
+// UpsertKeyRuleFromJSON creates or updates a KeyRuleConfig, hot-reloads in-memory rules, and persists to `key_guard_rules.json`.
+func (m *Manager) UpsertKeyRuleFromJSON(rawBody []byte) (any, error) {
+	var rule KeyRuleConfig
+	if err := json.Unmarshal(rawBody, &rule); err != nil {
+		return nil, fmt.Errorf("invalid key rule JSON: %w", err)
+	}
+	rule.APIKey = strings.TrimSpace(rule.APIKey)
+	if rule.APIKey == "" {
+		return nil, fmt.Errorf("api_key is required")
+	}
+	if rule.MaxConcurrency < 0 {
+		rule.MaxConcurrency = 0
+	}
+	if rule.QuotaLimitUSD < 0 {
+		rule.QuotaLimitUSD = 0
+	}
+	if rule.Enabled == nil {
+		v := true
+		rule.Enabled = &v
+	}
+	if len(rule.AllowedModels) == 0 {
+		rule.AllowedModels = []string{"*"}
+	}
+	nowStr := time.Now().UTC().Format(time.RFC3339)
+	rule.UpdatedAt = nowStr
+
+	m.mu.Lock()
+	if m.dynamicState == nil {
+		m.dynamicState = &DynamicRulesState{Version: 1, CustomPrices: make(map[string]pricing.ModelPrice)}
+	}
+	// Remove from DeletedKeys if previously deleted
+	filteredDel := make([]string, 0, len(m.dynamicState.DeletedKeys))
+	for _, dk := range m.dynamicState.DeletedKeys {
+		if strings.TrimSpace(dk) != rule.APIKey {
+			filteredDel = append(filteredDel, dk)
+		}
+	}
+	m.dynamicState.DeletedKeys = filteredDel
+
+	replaced := false
+	for i := range m.dynamicState.Keys {
+		if m.dynamicState.Keys[i].APIKey == rule.APIKey {
+			if rule.CreatedAt == "" {
+				rule.CreatedAt = m.dynamicState.Keys[i].CreatedAt
+			}
+			m.dynamicState.Keys[i] = cloneKeyRule(rule)
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		if rule.CreatedAt == "" {
+			rule.CreatedAt = nowStr
+		}
+		m.dynamicState.Keys = append(m.dynamicState.Keys, cloneKeyRule(rule))
+	}
+
+	m.cfg = MergeDynamicState(m.seedCfg, m.dynamicState)
+	rulesFile := m.cfg.Storage.RulesFile
+	errSave := SaveDynamicRulesFile(rulesFile, m.dynamicState)
+	m.mu.Unlock()
+
+	if errSave != nil {
+		return nil, fmt.Errorf("failed to persist rules to %s: %w", rulesFile, errSave)
+	}
+	return rule, nil
+}
+
+// DeleteKeyRule removes a KeyRuleConfig, hot-reloads in-memory rules, and persists to `key_guard_rules.json`.
+func (m *Manager) DeleteKeyRule(apiKey string) error {
+	target := strings.TrimSpace(apiKey)
+	if target == "" {
+		return fmt.Errorf("api_key is required")
+	}
+
+	m.mu.Lock()
+	if m.dynamicState == nil {
+		m.dynamicState = &DynamicRulesState{Version: 1, CustomPrices: make(map[string]pricing.ModelPrice)}
+	}
+	nextKeys := make([]KeyRuleConfig, 0, len(m.dynamicState.Keys))
+	for _, kr := range m.dynamicState.Keys {
+		if kr.APIKey != target {
+			nextKeys = append(nextKeys, kr)
+		}
+	}
+	m.dynamicState.Keys = nextKeys
+
+	alreadyDeleted := false
+	for _, dk := range m.dynamicState.DeletedKeys {
+		if dk == target {
+			alreadyDeleted = true
+			break
+		}
+	}
+	if !alreadyDeleted {
+		m.dynamicState.DeletedKeys = append(m.dynamicState.DeletedKeys, target)
+	}
+
+	m.cfg = MergeDynamicState(m.seedCfg, m.dynamicState)
+	rulesFile := m.cfg.Storage.RulesFile
+	errSave := SaveDynamicRulesFile(rulesFile, m.dynamicState)
+	m.mu.Unlock()
+
+	return errSave
+}
+
+// SaveDefaultPolicyFromJSON updates the global DefaultPolicy, hot-reloads in-memory rules, and persists to `key_guard_rules.json`.
+func (m *Manager) SaveDefaultPolicyFromJSON(rawBody []byte) (any, error) {
+	var dp DefaultPolicyConfig
+	if err := json.Unmarshal(rawBody, &dp); err != nil {
+		return nil, fmt.Errorf("invalid default_policy JSON: %w", err)
+	}
+	if dp.AllowUnlistedKeys == nil {
+		v := true
+		dp.AllowUnlistedKeys = &v
+	}
+	if dp.MaxConcurrency < 0 {
+		dp.MaxConcurrency = 0
+	}
+	if dp.QuotaLimitUSD < 0 {
+		dp.QuotaLimitUSD = 0
+	}
+	if len(dp.AllowedModels) == 0 {
+		dp.AllowedModels = []string{"*"}
+	}
+
+	m.mu.Lock()
+	if m.dynamicState == nil {
+		m.dynamicState = &DynamicRulesState{Version: 1, CustomPrices: make(map[string]pricing.ModelPrice)}
+	}
+	dpCopy := dp
+	m.dynamicState.DefaultPolicy = &dpCopy
+	m.cfg = MergeDynamicState(m.seedCfg, m.dynamicState)
+	rulesFile := m.cfg.Storage.RulesFile
+	errSave := SaveDynamicRulesFile(rulesFile, m.dynamicState)
+	m.mu.Unlock()
+
+	if errSave != nil {
+		return nil, errSave
+	}
+	return dp, nil
+}
+
+// UpsertCustomPrice adds or updates a custom model price override, hot-reloads the pricing engine, and persists to `key_guard_rules.json`.
+func (m *Manager) UpsertCustomPrice(model string, price pricing.ModelPrice) error {
+	norm := strings.ToLower(strings.TrimSpace(model))
+	if norm == "" {
+		return fmt.Errorf("model is required")
+	}
+
+	m.mu.Lock()
+	if m.dynamicState == nil {
+		m.dynamicState = &DynamicRulesState{Version: 1, CustomPrices: make(map[string]pricing.ModelPrice)}
+	}
+	if m.dynamicState.CustomPrices == nil {
+		m.dynamicState.CustomPrices = make(map[string]pricing.ModelPrice)
+	}
+
+	if norm == "__default__" {
+		cp := price
+		m.dynamicState.DefaultPrice = &cp
+	} else {
+		m.dynamicState.CustomPrices[norm] = price
+		filteredDel := make([]string, 0, len(m.dynamicState.DeletedPrices))
+		for _, dp := range m.dynamicState.DeletedPrices {
+			if strings.ToLower(strings.TrimSpace(dp)) != norm {
+				filteredDel = append(filteredDel, dp)
+			}
+		}
+		m.dynamicState.DeletedPrices = filteredDel
+	}
+
+	m.cfg = MergeDynamicState(m.seedCfg, m.dynamicState)
+	m.pricingEngine.SetCustomPrices(m.cfg.Pricing.CustomPrices, m.cfg.Pricing.DefaultPrice)
+	rulesFile := m.cfg.Storage.RulesFile
+	errSave := SaveDynamicRulesFile(rulesFile, m.dynamicState)
+	m.mu.Unlock()
+
+	return errSave
+}
+
+// DeleteCustomPrice removes a custom model price override, hot-reloads the pricing engine, and persists to `key_guard_rules.json`.
+func (m *Manager) DeleteCustomPrice(model string) error {
+	norm := strings.ToLower(strings.TrimSpace(model))
+	if norm == "" {
+		return fmt.Errorf("model is required")
+	}
+
+	m.mu.Lock()
+	if m.dynamicState == nil {
+		m.dynamicState = &DynamicRulesState{Version: 1, CustomPrices: make(map[string]pricing.ModelPrice)}
+	}
+	if m.dynamicState.CustomPrices != nil {
+		delete(m.dynamicState.CustomPrices, norm)
+	}
+	alreadyDeleted := false
+	for _, dp := range m.dynamicState.DeletedPrices {
+		if strings.ToLower(strings.TrimSpace(dp)) == norm {
+			alreadyDeleted = true
+			break
+		}
+	}
+	if !alreadyDeleted {
+		m.dynamicState.DeletedPrices = append(m.dynamicState.DeletedPrices, norm)
+	}
+
+	m.cfg = MergeDynamicState(m.seedCfg, m.dynamicState)
+	m.pricingEngine.SetCustomPrices(m.cfg.Pricing.CustomPrices, m.cfg.Pricing.DefaultPrice)
+	rulesFile := m.cfg.Storage.RulesFile
+	errSave := SaveDynamicRulesFile(rulesFile, m.dynamicState)
+	m.mu.Unlock()
+
+	return errSave
+}
+
+// BuildSelfAccountView constructs the self-service response for a downstream user querying their own API Key (`#account`).
+func (m *Manager) BuildSelfAccountView(apiKey string) (map[string]any, int, error) {
+	k := strings.TrimSpace(apiKey)
+	if k == "" {
+		return nil, http.StatusUnauthorized, fmt.Errorf("API key is required")
+	}
+
+	m.mu.RLock()
+	cfg := m.cfg
+	m.mu.RUnlock()
+
+	rule, listed := cfg.ResolveKeyRule(k)
+	snap := m.BuildSnapshot(k, "", true)
+	var ks *usage.KeyStats
+	for _, item := range snap.Keys {
+		ks = item
+		break
+	}
+	if ks == nil {
+		ks = &usage.KeyStats{
+			MaskedKey:          usage.MaskAPIKey(k),
+			KeyName:            rule.Name,
+			ActiveConcurrency:  m.limiter.ActiveCountForKey(k),
+			MaxConcurrency:     rule.MaxConcurrency,
+			QuotaLimitUSD:      rule.QuotaLimitUSD,
+			TotalCostFormatted: "$0.000000",
+			Models:             make(map[string]*usage.ModelStats),
+		}
+	}
+
+	if !listed && !cfg.AllowUnlisted() && ks.TotalRequests == 0 {
+		return nil, http.StatusForbidden, fmt.Errorf("该 API Key 未在系统中授权或不存在")
+	}
+
+	usedUSD := ks.TotalCostUSD
+	var remainingUSD float64
+	if rule.QuotaLimitUSD > 0 {
+		remainingUSD = rule.QuotaLimitUSD - usedUSD
+		if remainingUSD < 0 {
+			remainingUSD = 0
+		}
+	}
+
+	selfAccount := map[string]any{
+		"api_key_masked":     usage.MaskAPIKey(k),
+		"key_name":           rule.Name,
+		"listed":             listed,
+		"enabled":            rule.IsEnabled(),
+		"active_concurrency": m.limiter.ActiveCountForKey(k),
+		"max_concurrency":    rule.MaxConcurrency,
+		"quota_limit_usd":    rule.QuotaLimitUSD,
+		"used_cost_usd":      usedUSD,
+		"used_cost_formatted": ks.TotalCostFormatted,
+		"remaining_quota_usd": remainingUSD,
+		"allowed_models":     rule.AllowedModels,
+		"upstream_binding": map[string]any{
+			"strategy":    rule.UpstreamBinding.Strategy,
+			"credentials": append(append([]string(nil), rule.UpstreamBinding.AuthIDs...), rule.UpstreamBinding.Credentials...),
+		},
+		"stats": ks,
+	}
+
+	return map[string]any{
+		"ok":           true,
+		"self_account": selfAccount,
+	}, http.StatusOK, nil
 }
 
 func okEnvelope(v any) ([]byte, error) {

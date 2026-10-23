@@ -20,6 +20,8 @@ plugins:
       storage:
         # 累计 Token 消耗与 USD 账单持久化文件路径（采用临时文件 + fsync + 原子重命名机制）
         usage_file: "./data/key_usage_stats.json"
+        # 网页端动态增删改查的 API Key、路由规则与自定义模型单价持久化文件路径（修改后立即内存热生效）
+        rules_file: "./data/key_guard_rules.json"
         # 定时落盘间隔（秒），同时在 plugin.shutdown / plugin.quiesce 时会自动触发刷盘
         flush_interval_seconds: 10
         # models.dev 远端参考价格本地离线缓存文件
@@ -75,12 +77,15 @@ plugins:
         allow_unlisted_keys: true
         # 默认最大并发数（0 表示不限制并发）
         max_concurrency: 0
+        # 默认单 Key 累计金额配额上限（USD，0 表示不限额度）
+        quota_limit_usd: 0
         # 默认允许访问的模型白名单
         allowed_models:
           - "*"
 
       # -----------------------------------------------------------------------
-      # 4. 按 API Key 维度的精细化路由、并发限制与凭证隔离策略
+      # 4. 按 API Key 维度的精细化路由、并发限制、配额上限与凭证隔离策略
+      # （也可直接在后台网页 /v0/resource/plugins/cpa-plugin-key/ui 可视化动态增删改查）
       # -----------------------------------------------------------------------
       keys:
         - api_key: "sk-tenant-alpha-prod"
@@ -88,6 +93,8 @@ plugins:
           enabled: true
           # 最大并发请求数（非流式在响应结束释放；SSE 流式在 [DONE] / 连接关闭 / context.Canceled 时释放）
           max_concurrency: 5
+          # 累计消耗金额上限（USD，0 表示不限额；达到上限后自动拦截返回 429 insufficient_quota）
+          quota_limit_usd: 50.00
           # 允许调用的模型白名单（支持精确匹配、* 通配符、以及 ! 前缀排除规则）
           allowed_models:
             - "claude-3-5-*"
