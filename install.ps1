@@ -1,0 +1,214 @@
+<#
+.SYNOPSIS
+    cpa-plugin-key — Windows One-Click & Manual Installer + Data Initializer
+.DESCRIPTION
+    Downloads the latest (or specified) cpa-plugin-key Windows DLL from GitHub Releases,
+    verifies its SHA256 checksum, installs it into .\plugins\cpa-plugin-key.dll,
+    and initializes .\data\key_guard_rules.json, .\data\key_usage_stats.json,
+    .\data\models_dev.json, and config.yaml.
+.EXAMPLE
+    irm https://raw.githubusercontent.com/YzMzx/cpa-plugin-key/main/install.ps1 | iex
+.EXAMPLE
+    .\install.ps1 -Dir "D:\CLIProxyAPI" -Version "v0.2.0"
+#>
+param(
+    [string]$Dir = (Get-Location).Path,
+    [string]$Version = "",
+    [string]$Local = "",
+    [switch]$InitOnly,
+    [switch]$ResetData,
+    [switch]$SkipModelsSync
+)
+
+$ErrorActionPreference = "Stop"
+$Repo = if ($env:CPA_PLUGIN_REPO) { $env:CPA_PLUGIN_REPO } else { "YzMzx/cpa-plugin-key" }
+$PluginName = "cpa-plugin-key"
+$PluginFile = "$PluginName.dll"
+$PluginDir = Join-Path $Dir "plugins"
+$DataDir = Join-Path $Dir "data"
+$ConfigFile = Join-Path $Dir "config.yaml"
+
+function Write-Info([string]$Message) {
+    Write-Host "[$PluginName] $Message" -ForegroundColor Cyan
+}
+
+function Write-Warn([string]$Message) {
+    Write-Host "[$PluginName] WARN: $Message" -ForegroundColor Yellow
+}
+
+if (-not $InitOnly) {
+    New-Item -ItemType Directory -Force -Path $PluginDir | Out-Null
+    $TargetPath = Join-Path $PluginDir $PluginFile
+    $StagedPath = Join-Path $PluginDir ".$PluginFile.tmp.$PID"
+
+    if ($Local -ne "") {
+        if (-not (Test-Path $Local)) {
+            throw "Local file not found: $Local"
+        }
+        Write-Info "Installing from local file: $Local"
+        Copy-Item -Path $Local -Destination $StagedPath -Force
+        Move-Item -Path $StagedPath -Destination $TargetPath -Force
+    } else {
+        if ($Version -eq "") {
+            Write-Info "Resolving latest release from github.com/$Repo..."
+            $RelResp = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -Method Get
+            $Version = $RelResp.tag_name
+        }
+        if ($Version -notmatch '^v') {
+            $Version = "v$Version"
+        }
+
+        $Asset = "$PluginName-windows-amd64.dll"
+        $DownloadUrl = "https://github.com/$Repo/releases/download/$Version/$Asset"
+        $ChecksumsUrl = "https://github.com/$Repo/releases/download/$Version/SHA256SUMS.txt"
+
+        $TmpDir = Join-Path ([System.IO.Path]::GetTempPath()) "$PluginName-$PID"
+        New-Item -ItemType Directory -Force -Path $TmpDir | Out-Null
+        try {
+            $TmpDll = Join-Path $TmpDir $Asset
+            $TmpSums = Join-Path $TmpDir "SHA256SUMS.txt"
+
+            Write-Info "Downloading $Asset ($Version)..."
+            Invoke-WebRequest -Uri $DownloadUrl -OutFile $TmpDll -UseBasicParsing
+
+            Write-Info "Verifying SHA256 checksum..."
+            Invoke-WebRequest -Uri $ChecksumsUrl -OutFile $TmpSums -UseBasicParsing
+
+            $Expected = ""
+            foreach ($line in (Get-Content $TmpSums)) {
+                if ($line -match "^([0-9a-fA-F]{64})\s+\*?$([regex]::Escape($Asset))$") {
+                    $Expected = $Matches[1].ToLower()
+                    break
+                }
+            }
+            if ($Expected -eq "") {
+                throw "SHA256SUMS.txt does not contain an entry for $Asset"
+            }
+            $Actual = (Get-FileHash -Path $TmpDll -Algorithm SHA256).Hash.ToLower()
+            if ($Actual -ne $Expected) {
+                throw "SHA256 checksum mismatch for $Asset (expected $Expected, got $Actual)"
+            }
+
+            Copy-Item -Path $TmpDll -Destination $StagedPath -Force
+            Move-Item -Path $StagedPath -Destination $TargetPath -Force
+            Write-Info "Installed plugin binary: $TargetPath"
+        } finally {
+            if (Test-Path $TmpDir) {
+                Remove-Item -Path $TmpDir -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+}
+
+New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
+$NowUtc = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+
+$RulesFile = Join-Path $DataDir "key_guard_rules.json"
+if ((-not (Test-Path $RulesFile)) -or $ResetData) {
+    $RulesJson = @"
+{
+  "version": 1,
+  "updated_at": "$NowUtc",
+  "default_policy": {
+    "allow_unlisted_keys": true,
+    "max_concurrency": 0,
+    "quota_limit_usd": 0,
+    "allowed_models": [
+      "*"
+    ],
+    "upstream_binding": {
+      "strategy": "round-robin"
+    }
+  },
+  "keys": [],
+  "custom_prices": {}
+}
+"@
+    [System.IO.File]::WriteAllText($RulesFile, $RulesJson, (New-Object System.Text.UTF8Encoding($false)))
+    Write-Info "Initialized dynamic rules store: $RulesFile"
+} else {
+    Write-Info "Preserved existing dynamic rules store: $RulesFile"
+}
+
+$UsageFile = Join-Path $DataDir "key_usage_stats.json"
+if ((-not (Test-Path $UsageFile)) -or $ResetData) {
+    $UsageJson = @"
+{
+  "version": 1,
+  "updated_at": "$NowUtc",
+  "keys": {}
+}
+"@
+    [System.IO.File]::WriteAllText($UsageFile, $UsageJson, (New-Object System.Text.UTF8Encoding($false)))
+    Write-Info "Initialized usage billing store: $UsageFile"
+} else {
+    Write-Info "Preserved existing usage billing store: $UsageFile"
+}
+
+$ModelsCache = Join-Path $DataDir "models_dev.json"
+if ((-not $SkipModelsSync) -and ((-not (Test-Path $ModelsCache)) -or $ResetData)) {
+    Write-Info "Pre-fetching reference model pricing from https://models.dev/api.json..."
+    try {
+        Invoke-WebRequest -Uri "https://models.dev/api.json" -OutFile $ModelsCache -TimeoutSec 15 -UseBasicParsing
+        Write-Info "Initialized models.dev pricing cache: $ModelsCache"
+    } catch {
+        if (-not (Test-Path $ModelsCache)) {
+            [System.IO.File]::WriteAllText($ModelsCache, "{}`n", (New-Object System.Text.UTF8Encoding($false)))
+        }
+        Write-Warn "Could not reach models.dev right now; plugin will sync automatically in the background."
+    }
+}
+
+$PluginYamlBlock = @"
+
+# --- Added by cpa-plugin-key installer ---
+plugins:
+  enabled: true
+  dir: ./plugins
+  configs:
+    cpa-plugin-key:
+      enabled: true
+      priority: 100
+      storage:
+        usage_file: "./data/key_usage_stats.json"
+        rules_file: "./data/key_guard_rules.json"
+        flush_interval_seconds: 10
+        pricing_cache_file: "./data/models_dev.json"
+      pricing:
+        sync_url: "https://models.dev/api.json"
+        sync_interval_hours: 24
+        http_timeout_seconds: 30
+        auto_inject_include_usage: true
+      default_policy:
+        allow_unlisted_keys: true
+        max_concurrency: 0
+        quota_limit_usd: 0
+        allowed_models:
+          - "*"
+"@
+
+if (-not (Test-Path $ConfigFile)) {
+    [System.IO.File]::WriteAllText($ConfigFile, $PluginYamlBlock.TrimStart(), (New-Object System.Text.UTF8Encoding($false)))
+    Write-Info "Created initial config.yaml with cpa-plugin-key enabled: $ConfigFile"
+} else {
+    $RawCfg = Get-Content -Path $ConfigFile -Raw
+    if ($RawCfg -match "cpa-plugin-key") {
+        Write-Info "Detected existing cpa-plugin-key configuration in $ConfigFile"
+    } elseif ($RawCfg -notmatch "(?m)^plugins:") {
+        Copy-Item -Path $ConfigFile -Destination "$ConfigFile.bak" -Force
+        Add-Content -Path $ConfigFile -Value $PluginYamlBlock -Encoding UTF8
+        Write-Info "Appended plugins.configs.cpa-plugin-key to $ConfigFile (backup saved to $ConfigFile.bak)"
+    } else {
+        Write-Warn "$ConfigFile already contains a 'plugins:' section. Please ensure 'cpa-plugin-key' is configured under plugins.configs."
+    }
+}
+
+Write-Host ""
+Write-Host "==============================================================================" -ForegroundColor Green
+Write-Host "  cpa-plugin-key installation & data initialization completed!" -ForegroundColor Green
+Write-Host "  - Plugin directory : $PluginDir"
+Write-Host "  - Data directory   : $DataDir"
+Write-Host "  - Admin Web UI     : http://127.0.0.1:8317/v0/resource/plugins/cpa-plugin-key/ui"
+Write-Host "  - Key Self-Query   : http://127.0.0.1:8317/v0/resource/plugins/cpa-plugin-key/ui#account"
+Write-Host "  Restart CLIProxyAPI to load the plugin."
+Write-Host "==============================================================================" -ForegroundColor Green

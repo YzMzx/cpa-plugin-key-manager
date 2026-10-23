@@ -143,12 +143,12 @@ jobs:
           rm -f "dist/out/cpa-plugin-key-${{ matrix.target }}.h"
 
           cp "dist/out/${RAW_LIB}" "dist/stage/${STD_LIB}"
-          cp config.example.yaml README.md dist/stage/
+          cp config.example.yaml README.md install.sh install.ps1 dist/stage/
 
           if [ "${{ matrix.archive }}" = "zip" ]; then
-            (cd dist/stage && 7z a -tzip "../out/cpa-plugin-key-${{ matrix.target }}.zip" "${STD_LIB}" config.example.yaml README.md)
+            (cd dist/stage && 7z a -tzip "../out/cpa-plugin-key-${{ matrix.target }}.zip" "${STD_LIB}" config.example.yaml README.md install.sh install.ps1)
           else
-            tar -C dist/stage -czvf "dist/out/cpa-plugin-key-${{ matrix.target }}.tar.gz" "${STD_LIB}" config.example.yaml README.md
+            tar -C dist/stage -czvf "dist/out/cpa-plugin-key-${{ matrix.target }}.tar.gz" "${STD_LIB}" config.example.yaml README.md install.sh install.ps1
           fi
 
           ls -lh dist/out/

@@ -63,7 +63,43 @@ cpa-plugin-key/
 
 ---
 
-## 编译与安装
+## 快速安装与插件数据初始化
+
+### 1. 一键在线安装并初始化数据（推荐）
+进入您的 `CLIProxyAPI` 运行根目录后执行以下命令，脚本会自动识别系统架构、下载最新 Release 插件、校验 SHA256、安装至 `./plugins/`，并自动初始化 `./data/key_guard_rules.json`、`./data/key_usage_stats.json`、`./data/models_dev.json` 及 `config.yaml`：
+
+- **Linux / macOS / Git Bash**：
+  ```bash
+  curl -LsSf https://raw.githubusercontent.com/YzMzx/cpa-plugin-key/main/install.sh | sh
+  ```
+- **Windows PowerShell**：
+  ```powershell
+  irm https://raw.githubusercontent.com/YzMzx/cpa-plugin-key/main/install.ps1 | iex
+  ```
+
+### 2. 手动安装与自定义数据初始化参数
+您也可以将 `install.sh`（或 `install.ps1`）下载到本地，配合离线包、指定目录或重置数据选项使用：
+```bash
+# 下载安装脚本
+curl -LsSfO https://raw.githubusercontent.com/YzMzx/cpa-plugin-key/main/install.sh
+chmod +x install.sh
+
+# 方式 A：指定 CLIProxyAPI 根目录与指定版本安装并初始化数据
+./install.sh --dir /opt/CLIProxyAPI --version v0.2.0
+
+# 方式 B：使用本地已下载的 Release 压缩包或本地编译的 .so/.dylib/.dll 手动安装并初始化数据
+./install.sh --dir /opt/CLIProxyAPI --local ./cpa-plugin-key-linux-amd64.tar.gz
+
+# 方式 C：仅初始化/修复插件数据目录 (data/*.json) 与 config.yaml，不重新下载二进制
+./install.sh --dir /opt/CLIProxyAPI --init-only
+
+# 方式 D：重置所有动态规则与账单统计数据为初始空白状态
+./install.sh --dir /opt/CLIProxyAPI --init-only --reset-data
+```
+
+---
+
+## 源码编译
 
 ### 1. 运行单元测试
 ```bash
