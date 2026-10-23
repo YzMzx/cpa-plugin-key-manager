@@ -772,16 +772,16 @@
 </head>
 <body>
 <div class="wrap">
-  <!-- Authentication Gate (Default visible until verified against /v0/management/key-guard/overview) -->
+  <!-- Authentication Gate -->
   <div id="authGateView" class="auth-gate-wrap">
     <div class="auth-gate-card">
-      <h2 class="auth-gate-title">🔒 需要 CLIProxyAPI 管理密钥授权</h2>
+      <h2 class="auth-gate-title">🔒 需要管理密钥授权</h2>
       <p class="auth-gate-desc" id="authGateDesc">
-        未经授权无法查看或修改任何 API Key 配置。请先在 CLIProxyAPI 管理中心登录，或在此输入 Management Key 解锁访问。
+        请先在管理中心登录，或输入 Management Key 解锁访问。
       </p>
       <div class="form-group">
         <label class="form-label" for="authGateKeyInput">Management Key</label>
-        <input type="password" class="input mono" id="authGateKeyInput" placeholder="输入 CLIProxyAPI Management Key" autocomplete="off" onkeydown="if(event.key==='Enter')submitAuthGateKey()">
+        <input type="password" class="input mono" id="authGateKeyInput" placeholder="输入 Management Key" autocomplete="off" onkeydown="if(event.key==='Enter')submitAuthGateKey()">
       </div>
       <div class="input-row" style="justify-content:space-between;margin-top:14px">
         <a href="/management.html" target="_top" class="btn btn-sm" style="text-decoration:none">前往管理中心登录</a>
@@ -791,13 +791,12 @@
     </div>
   </div>
 
-  <!-- Admin Workspace (Strictly hidden until Management Key is verified by backend) -->
+  <!-- Admin Workspace -->
   <div id="adminWorkspace" class="hidden">
   <!-- Header -->
   <header class="app-header">
     <div class="app-title">
       <h1>API Key 管控与 Token 用量</h1>
-      <p class="app-subtitle">与 CLIProxyAPI 全局 API Key 统一同步 · 复选框模型白名单 · 复选框账号凭证绑定 · 多协议 Token 用量统计</p>
     </div>
     <div class="header-actions">
       <button type="button" class="btn btn-primary btn-sm" onclick="loadAdminOverview()">🔄 刷新数据</button>
@@ -821,7 +820,7 @@
       <div class="kpi-sub" id="kpiTokenSub">输入: 0 · 输出: 0 · 推理: 0</div>
     </div>
     <div class="kpi-card">
-      <div class="kpi-label">缓存 Token 用量 (Cache Read / Write)</div>
+      <div class="kpi-label">缓存 Token 用量</div>
       <div class="kpi-value" id="kpiCacheTokens">0</div>
       <div class="kpi-sub" id="kpiCacheSub">缓存读取: 0 · 缓存写入: 0</div>
     </div>
@@ -831,9 +830,9 @@
       <div class="kpi-sub" id="kpiReqSub">成功: 0 · 失败: 0 (100.0%)</div>
     </div>
     <div class="kpi-card">
-      <div class="kpi-label">实时活跃并发 / 统一 Key 总数</div>
+      <div class="kpi-label">实时活跃并发 / Key 总数</div>
       <div class="kpi-value" id="kpiActiveConc">0</div>
-      <div class="kpi-sub" id="kpiKeyCountSub">CPA 统一 API Key: 0 个</div>
+      <div class="kpi-sub" id="kpiKeyCountSub">API Key: 0 个</div>
     </div>
   </div>
 
@@ -842,8 +841,7 @@
     <div class="card">
       <div class="card-header">
         <div>
-          <h2 class="card-title">统一 API Key 列表与并发、模型白名单、凭证绑定管控</h2>
-          <div class="card-hint">此处列表与 CLIProxyAPI 主配置 <code>api-keys</code> 全局统一同步；新建或删除 Key 将同时更新 CPA 全局配置与插件规则。</div>
+          <h2 class="card-title">API Key 列表</h2>
         </div>
         <div class="input-row">
           <input type="text" class="input" style="width:220px" id="crudKeySearch" placeholder="搜索 API Key 或备注名称..." oninput="renderKeysCrudTable()">
@@ -855,11 +853,11 @@
           <thead>
             <tr>
               <th>状态</th>
-              <th>API Key (与 CPA 全局同步)</th>
+              <th>API Key</th>
               <th>备注名称</th>
-              <th>并发限制 (活跃/上限)</th>
-              <th>请求数 (成功/失败)</th>
-              <th>累计总 Tokens (输入/输出)</th>
+              <th>并发限制</th>
+              <th>请求数</th>
+              <th>累计总 Tokens</th>
               <th>模型白名单规则</th>
               <th>绑定账号凭证</th>
               <th>操作</th>
@@ -878,8 +876,7 @@
     <div class="card">
       <div class="card-header">
         <div>
-          <h2 class="card-title">按 API Key 统计的 Token 用量排行与模型明细</h2>
-          <div class="card-hint">点击「展开明细」可查看单个 API Key 在各个模型上的输入、输出、推理及缓存 Token 消耗明细。</div>
+          <h2 class="card-title">按 API Key 统计的 Token 用量排行</h2>
         </div>
         <div class="input-row">
           <input type="text" class="input" style="width:210px" id="dashKeySearch" placeholder="搜索 Key 或备注..." oninput="renderDashboardTables()">
@@ -892,10 +889,10 @@
             <tr>
               <th>API Key / 备注</th>
               <th>实时并发</th>
-              <th>请求数 (成功/失败)</th>
+              <th>请求数</th>
               <th>Input Tokens</th>
-              <th>Output (含推理)</th>
-              <th>Cache (读 / 写)</th>
+              <th>Output Tokens</th>
+              <th>Cache Tokens</th>
               <th>总 Tokens</th>
               <th>Token 占比</th>
               <th>操作</th>
@@ -910,18 +907,18 @@
 
     <div class="card">
       <div class="card-header">
-        <h2 class="card-title">按模型 (Model) 全局 Token 用量排行</h2>
+        <h2 class="card-title">按模型全局 Token 用量排行</h2>
       </div>
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
-              <th>模型名称 (Model)</th>
-              <th>请求数 (成功/失败)</th>
+              <th>模型名称</th>
+              <th>请求数</th>
               <th>Input Tokens</th>
               <th>Output Tokens</th>
               <th>Reasoning Tokens</th>
-              <th>Cache (读 / 写)</th>
+              <th>Cache Tokens</th>
               <th>总 Tokens</th>
               <th>Token 占比</th>
             </tr>
@@ -939,30 +936,29 @@
     <div class="card">
       <div class="card-header">
         <div>
-          <h2 class="card-title">全局默认策略 (Default Policy)</h2>
-          <div class="card-hint">当 CPA 中的 API Key 未单独定制专属规则时，默认适用以下并发上限及模型/账号凭证复选框范围。</div>
+          <h2 class="card-title">全局默认策略</h2>
         </div>
         <button type="button" class="btn btn-primary" onclick="saveDefaultPolicy()">💾 保存全局默认策略</button>
       </div>
 
       <div class="form-grid">
         <div class="form-group">
-          <label class="form-label">未单独定制规则的 CPA Key 访问策略</label>
+          <label class="form-label">未单独定制规则的 Key 访问策略</label>
           <select id="dpAllowUnlisted">
-            <option value="true">允许访问（适用下方默认策略）</option>
-            <option value="false">禁止访问（必须开启专属规则才可调用）</option>
+            <option value="true">允许访问</option>
+            <option value="false">禁止访问</option>
           </select>
         </div>
         <div class="form-group">
-          <label class="form-label">默认单 Key 最大并发数 (Max Concurrency)</label>
+          <label class="form-label">默认单 Key 最大并发数</label>
           <input type="number" min="0" class="input" id="dpMaxConcurrency" placeholder="0 表示不限并发">
         </div>
         <div class="form-group">
           <label class="form-label">默认上游账号凭证调度策略</label>
           <select id="dpBindStrategy">
-            <option value="round-robin">round-robin (在勾选凭证间轮询负载均衡)</option>
-            <option value="fill-first">fill-first (按优先级顺序依次使用)</option>
-            <option value="strict">strict (严格隔离：勾选凭证不可用时直接拒绝)</option>
+            <option value="round-robin">round-robin</option>
+            <option value="fill-first">fill-first</option>
+            <option value="strict">strict</option>
           </select>
         </div>
       </div>
@@ -970,14 +966,14 @@
       <!-- Default Policy Model Checkboxes -->
       <div class="form-group">
         <label class="form-label">
-          <span>默认模型白名单规则（复选框选择）</span>
+          <span>默认模型白名单规则</span>
           <span class="tag plain" id="dpModelCountBadge">全部已有模型</span>
         </label>
         <div class="selector-box">
           <div class="selector-mode-bar">
             <label class="master-check-label">
               <input type="checkbox" id="dpAllModelsCheck" checked onchange="onToggleAllModels('dp')">
-              <span>允许访问全部已有模型（不限制模型）</span>
+              <span>允许访问全部已有模型</span>
             </label>
             <div class="input-row">
               <button type="button" class="btn btn-sm" onclick="batchCheckModels('dp', true)">全选当前列表</button>
@@ -997,14 +993,14 @@
       <!-- Default Policy Credential Checkboxes -->
       <div class="form-group" style="margin-bottom:0">
         <label class="form-label">
-          <span>默认绑定上游账号凭证（复选框选择）</span>
+          <span>默认绑定上游账号凭证</span>
           <span class="tag plain" id="dpCredCountBadge">全部可用凭证</span>
         </label>
         <div class="selector-box">
           <div class="selector-mode-bar">
             <label class="master-check-label">
               <input type="checkbox" id="dpAllCredsCheck" checked onchange="onToggleAllCreds('dp')">
-              <span>使用全部可用账号凭证（公共池自动负载均衡）</span>
+              <span>使用全部可用账号凭证</span>
             </label>
             <div class="input-row">
               <button type="button" class="btn btn-sm" onclick="batchCheckCreds('dp', true)">全选凭证</button>
@@ -1025,8 +1021,7 @@
     <div class="card">
       <div class="card-header">
         <div>
-          <h2 class="card-title">宿主已加载的上游账号凭证列表 (Host Auth Files)</h2>
-          <div class="card-hint">实时同步自 CLIProxyAPI 宿主 <code>host.auth.list</code> 与 <code>host.auth.models</code>。</div>
+          <h2 class="card-title">上游账号凭证列表</h2>
         </div>
         <button type="button" class="btn btn-sm" onclick="loadAdminOverview()">🔄 刷新凭证</button>
       </div>
@@ -1064,7 +1059,7 @@
       <input type="hidden" id="kmOriginalApiKey" value="">
       <div class="form-grid">
         <div class="form-group">
-          <label class="form-label">API Key (将同步写入 CPA 全局 <code>api-keys</code>) *</label>
+          <label class="form-label">API Key *</label>
           <div class="input-row">
             <input type="text" class="input mono" style="flex:1" id="kmApiKey" placeholder="sk-...">
             <button type="button" class="btn btn-sm" onclick="generateRandomSkKey()">🎲 随机生成</button>
@@ -1078,15 +1073,14 @@
 
       <div class="form-grid">
         <div class="form-group">
-          <label class="form-label">最大并发数限制 (Max Concurrency)</label>
-          <input type="number" min="0" class="input" id="kmMaxConcurrency" value="0">
-          <div class="form-hint">0 表示不限并发；超出时返回 429</div>
+          <label class="form-label">最大并发数限制</label>
+          <input type="number" min="0" class="input" id="kmMaxConcurrency" value="0" placeholder="0 表示不限并发">
         </div>
         <div class="form-group">
           <label class="form-label">启用状态</label>
           <select id="kmEnabled">
-            <option value="true">启用 (Enabled)</option>
-            <option value="false">禁用 (Disabled - 立即拦截返回 403)</option>
+            <option value="true">启用</option>
+            <option value="false">禁用</option>
           </select>
         </div>
       </div>
@@ -1094,14 +1088,14 @@
       <!-- Pure Checkbox Model Whitelist Selector -->
       <div class="form-group">
         <label class="form-label">
-          <span>模型白名单规则（复选框选择已有模型）</span>
+          <span>模型白名单规则</span>
           <span class="tag plain" id="kmModelCountBadge">全部已有模型</span>
         </label>
         <div class="selector-box">
           <div class="selector-mode-bar">
             <label class="master-check-label">
               <input type="checkbox" id="kmAllModelsCheck" checked onchange="onToggleAllModels('km')">
-              <span>允许访问全部已有模型（不限制模型）</span>
+              <span>允许访问全部已有模型</span>
             </label>
             <div class="input-row">
               <button type="button" class="btn btn-sm" onclick="batchCheckModels('km', true)">全选当前列表</button>
@@ -1121,20 +1115,20 @@
       <!-- Pure Checkbox Upstream Credential Selector -->
       <div class="form-group" style="margin-bottom:0">
         <label class="form-label">
-          <span>绑定上游账号凭证（复选框选择）</span>
+          <span>绑定上游账号凭证</span>
           <span class="tag plain" id="kmCredCountBadge">全部可用凭证</span>
         </label>
         <div class="selector-box">
           <div class="selector-mode-bar">
             <label class="master-check-label">
               <input type="checkbox" id="kmAllCredsCheck" checked onchange="onToggleAllCreds('km')">
-              <span>允许使用全部可用账号凭证（公共池自动负载均衡）</span>
+              <span>允许使用全部可用账号凭证</span>
             </label>
             <div class="input-row">
               <select id="kmBindStrategy" style="width:auto;min-height:28px;padding:2px 8px;font-size:12px">
-                <option value="round-robin">策略: round-robin (轮询)</option>
-                <option value="fill-first">策略: fill-first (优先级)</option>
-                <option value="strict">策略: strict (严格隔离)</option>
+                <option value="round-robin">策略: round-robin</option>
+                <option value="fill-first">策略: fill-first</option>
+                <option value="strict">策略: strict</option>
               </select>
               <button type="button" class="btn btn-sm" onclick="batchCheckCreds('km', true)">全选凭证</button>
               <button type="button" class="btn btn-sm" onclick="batchCheckCreds('km', false)">清空勾选</button>
@@ -1578,7 +1572,7 @@
       `成功: ${fmtInt(s.success_requests)} · 失败: ${fmtInt(s.failed_requests)} (${rate}%)`;
     document.getElementById("kpiActiveConc").textContent = fmtInt(s.active_concurrency || 0);
     document.getElementById("kpiKeyCountSub").textContent =
-      `CPA 统一 API Key: ${fmtInt((data.keys || []).length)} 个`;
+      `API Key: ${fmtInt((data.keys || []).length)} 个`;
   }
 
   // ==================== PURE CHECKBOX SELECTORS (MODELS & CREDENTIALS) ====================
@@ -1652,7 +1646,7 @@
 
     const cBadge = document.getElementById(prefix + "CredCountBadge");
     if (st.allCreds) {
-      cBadge.textContent = "全部可用凭证 (公共池)";
+      cBadge.textContent = "全部可用凭证";
       cBadge.className = "tag ok";
     } else {
       cBadge.textContent = `已勾选 ${st.selectedCreds.size} 个凭证`;
@@ -1840,7 +1834,7 @@
 
     const tbody = document.getElementById("crudKeysTableBody");
     if (filtered.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;color:var(--text-tertiary)">暂无 API Key，点击右上角「新建 API Key」创建并自动同步至 CPA</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;color:var(--text-tertiary)">暂无 API Key</td></tr>`;
       return;
     }
 
@@ -2016,7 +2010,7 @@
   }
 
   async function deleteKeyRule(apiKey) {
-    if (!confirm(`确定要删除 API Key [${maskKeyStr(apiKey)}] 吗？（将同时从 CPA 全局 api-keys 与插件中移除）`)) return;
+    if (!confirm(`确定要删除 API Key [${maskKeyStr(apiKey)}] 吗？`)) return;
     try {
       const currentKeys = ((overviewData && overviewData.keys) || []).map(k => k.api_key).filter(k => k !== apiKey);
       await writeCPAGlobalKeysSilent(currentKeys);
