@@ -156,3 +156,58 @@ func TestSchedulerPickAndStrictTenantIsolation(t *testing.T) {
 		t.Fatalf("expected strict rejection when bound auth is unavailable, got %+v", pickGamma)
 	}
 }
+
+func TestFilterModelCatalogJSON(t *testing.T) {
+	openaiPayload := []byte(`{
+		"object": "list",
+		"data": [
+			{"id": "gpt-4o", "object": "model", "owned_by": "openai"},
+			{"id": "gpt-4o-mini", "object": "model", "owned_by": "openai"},
+			{"id": "claude-3-5-sonnet", "object": "model", "owned_by": "anthropic"},
+			{"id": "deepseek-r1", "object": "model", "owned_by": "deepseek"}
+		]
+	}`)
+
+	patterns := []string{"gpt-4o*", "!gpt-4o-mini"}
+	filtered, ok := FilterModelCatalogJSON(openaiPayload, patterns)
+	if !ok {
+		t.Fatalf("expected FilterModelCatalogJSON to succeed")
+	}
+	var root map[string]any
+	if err := json.Unmarshal(filtered, &root); err != nil {
+		t.Fatalf("unmarshal filtered json: %v", err)
+	}
+	data := root["data"].([]any)
+	if len(data) != 1 {
+		t.Fatalf("expected 1 model in data, got %d: %s", len(data), string(filtered))
+	}
+	first := data[0].(map[string]any)
+	if first["id"] != "gpt-4o" {
+		t.Fatalf("expected gpt-4o, got %v", first["id"])
+	}
+
+	// Test codex format {"models": [...]}
+	codexPayload := []byte(`{"models":[{"slug":"gpt-4o"},{"slug":"deepseek-chat"}]}`)
+	filteredCodex, okCodex := FilterModelCatalogJSON(codexPayload, []string{"deepseek*"})
+	if !okCodex {
+		t.Fatalf("expected codex filter to succeed")
+	}
+	var codexRoot map[string]any
+	_ = json.Unmarshal(filteredCodex, &codexRoot)
+	modelsList := codexRoot["models"].([]any)
+	if len(modelsList) != 1 || modelsList[0].(map[string]any)["slug"] != "deepseek-chat" {
+		t.Fatalf("unexpected codex filtered output: %s", string(filteredCodex))
+	}
+
+	// Test empty whitelist (none allowed)
+	emptyFiltered, okEmpty := FilterModelCatalogJSON(openaiPayload, []string{})
+	if !okEmpty {
+		t.Fatalf("expected empty filter to succeed")
+	}
+	var emptyRoot map[string]any
+	_ = json.Unmarshal(emptyFiltered, &emptyRoot)
+	if len(emptyRoot["data"].([]any)) != 0 {
+		t.Fatalf("expected empty data list, got %v", emptyRoot["data"])
+	}
+}
+

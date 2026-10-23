@@ -456,4 +456,44 @@ storage:
 	if ovResp.StatusCode != http.StatusOK || !strings.Contains(string(ovResp.Body), "sk-dynamic-user-1") || !strings.Contains(string(ovResp.Body), "claude-team-1.json") {
 		t.Fatalf("expected persisted dynamic key and host auth files in overview after restart, got: %s", string(ovResp.Body))
 	}
+
+	// 6. Verify Model List Filtering on Response Intercept (/v1/models) for restricted API keys
+	modelCatalogRaw := []byte(`{
+		"object": "list",
+		"data": [
+			{"id": "gpt-4o", "object": "model"},
+			{"id": "claude-3-5-sonnet", "object": "model"},
+			{"id": "gemini-2.0-flash", "object": "model"}
+		]
+	}`)
+
+	modelsReq, _ := json.Marshal(pluginapi.ResponseInterceptRequest{
+		RequestID:    "models-req-1",
+		SourceFormat: "openai",
+		RequestHeaders: http.Header{
+			"Authorization": []string{"Bearer sk-dynamic-user-1"},
+		},
+		Body:       modelCatalogRaw,
+		StatusCode: 200,
+	})
+	rawModelsResp, err := mgr.HandleRPC(pluginabi.MethodResponseInterceptAfter, modelsReq)
+	if err != nil {
+		t.Fatalf("handle models response intercept failed: %v", err)
+	}
+	modelsInterceptResp := decodeEnvelope[pluginapi.ResponseInterceptResponse](t, rawModelsResp)
+	if len(modelsInterceptResp.Body) == 0 {
+		t.Fatalf("expected filtered model catalog body to be returned")
+	}
+	var filteredCatalog struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(modelsInterceptResp.Body, &filteredCatalog); err != nil {
+		t.Fatalf("unmarshal filtered model catalog failed: %v", err)
+	}
+	// sk-dynamic-user-1 was configured with allowed_models = ["gpt-4o"]
+	if len(filteredCatalog.Data) != 1 || filteredCatalog.Data[0].ID != "gpt-4o" {
+		t.Fatalf("expected only gpt-4o in filtered catalog, got: %+v", filteredCatalog.Data)
+	}
 }

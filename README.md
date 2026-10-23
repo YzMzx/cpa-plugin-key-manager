@@ -14,8 +14,9 @@
      - **上游账号凭证复选框**：自动调用 `host.auth.list` 与 `host.auth.models` 列出所有可用账号凭证，全复选框勾选绑定并支持 `round-robin` / `fill-first` / `strict` 策略。
    - **动态持久化与热生效**：网页端增删改查的所有 API Key 规则自动原子落盘至 `./data/key_guard_rules.json` 与宿主 `config.yaml`，修改后立即热生效。
 
-2. **按 API Key 维度的路由与访问控制（Pre-request）**
-   - **模型白名单控制**：每个 API Key 可配置独立的 `allowed_models` 列表，支持精确匹配、`*`/`?` 通配符（如 `claude-3-5-*`、`gpt-4o*`）、`!` 排除规则，并自动兼容带思考后缀与带 Provider 前缀的模型名。越权访问直接短路返回兼容 OpenAI 与 Anthropic SDK 的 `403 Forbidden` JSON 错误，不触发任何上游请求。
+2. **按 API Key 维度的路由与访问控制（Pre-request & Response Filter）**
+   - **模型白名单访问控制**：每个 API Key 可配置独立的 `allowed_models` 列表，支持精确匹配、`*`/`?` 通配符（如 `claude-3-5-*`、`gpt-4o*`）、`!` 排除规则，并自动兼容带思考后缀与带 Provider 前缀的模型名。越权调用直接短路返回兼容 OpenAI 与 Anthropic SDK 的 `403 Forbidden` JSON 错误，不触发任何上游请求。
+   - **模型列表拉取智能过滤（`/v1/models`）**：客户端使用特定 API Key 请求模型列表时，插件自动识别其鉴权身份并拦截过滤响应，**仅向该 Key 返回其白名单所允许的模型**，未授权的模型列表自动脱敏隐匿。
    - **上游凭证绑定与租户隔离**：支持将特定 API Key 绑定至指定的上游凭证或凭证池（`auth_ids`、`credentials`、`providers`、`attributes`），支持池内 `round-robin`（轮询）与 `fill-first`（优先级）调度，以及 `strict: true` 严格租户隔离（当绑定凭证不可用时直接拒绝，防止跨租户借用公共凭证）。
    - **前端鉴权集成**：实现 `frontend_auth_provider` 能力，在插件 `keys` 中配置的 API Key 可直接通过鉴权。
 
