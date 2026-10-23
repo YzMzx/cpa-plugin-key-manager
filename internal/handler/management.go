@@ -16,6 +16,7 @@ import (
 const (
 	RouteManagementOverview      = "/key-guard/overview"
 	RouteManagementKeys          = "/key-guard/keys"
+	RouteManagementKeysSync      = "/key-guard/keys/sync"
 	RouteManagementDefaultPolicy = "/key-guard/default-policy"
 	RouteManagementAuthFiles     = "/key-guard/auth-files"
 	RouteManagementUsage         = "/key-guard/usage"
@@ -35,7 +36,7 @@ func RegisterManagementEndpoints() ([]pluginapi.ManagementRoute, []pluginapi.Res
 		{
 			Method:      http.MethodGet,
 			Path:        RouteManagementOverview,
-			Description: "Return complete admin dashboard state (KPI summary, keys, default_policy, usage, host auth files, pricing status).",
+			Description: "Return complete admin dashboard state (KPI summary, keys, default_policy, usage, host auth files, available models, pricing status).",
 		},
 		{
 			Method:      http.MethodGet,
@@ -51,6 +52,11 @@ func RegisterManagementEndpoints() ([]pluginapi.ManagementRoute, []pluginapi.Res
 			Method:      http.MethodDelete,
 			Path:        RouteManagementKeys,
 			Description: "Delete an API key rule and persist to key_guard_rules.json.",
+		},
+		{
+			Method:      http.MethodPost,
+			Path:        RouteManagementKeysSync,
+			Description: "Synchronize global API keys from CLIProxyAPI config.yaml (/v0/management/api-keys) with plugin governance rules.",
 		},
 		{
 			Method:      http.MethodPost,
@@ -120,6 +126,7 @@ type SnapshotProvider interface {
 
 	BuildAdminOverview(hostCallbackID string) map[string]any
 	ListKeyRulesAndDefaultPolicy() map[string]any
+	SyncHostAPIKeys(keys []string) error
 	UpsertKeyRuleFromJSON(rawBody []byte) (any, error)
 	DeleteKeyRule(apiKey string) error
 	SaveDefaultPolicyFromJSON(rawBody []byte) (any, error)
@@ -144,6 +151,23 @@ func HandleManagementRequest(ctx context.Context, provider SnapshotProvider, req
 	case strings.HasSuffix(path, RouteManagementOverview):
 		if method != http.MethodGet {
 			return jsonError(http.StatusMethodNotAllowed, "method not allowed")
+		}
+		return jsonResponse(http.StatusOK, provider.BuildAdminOverview(hostCallbackID))
+
+	case strings.HasSuffix(path, RouteManagementKeysSync):
+		if method != http.MethodPost && method != http.MethodPut {
+			return jsonError(http.StatusMethodNotAllowed, "method not allowed")
+		}
+		var body struct {
+			Keys []string `json:"keys"`
+		}
+		if len(req.Body) > 0 {
+			if err := json.Unmarshal(req.Body, &body); err != nil {
+				return jsonError(http.StatusBadRequest, "invalid JSON body: "+err.Error())
+			}
+		}
+		if err := provider.SyncHostAPIKeys(body.Keys); err != nil {
+			return jsonError(http.StatusInternalServerError, err.Error())
 		}
 		return jsonResponse(http.StatusOK, provider.BuildAdminOverview(hostCallbackID))
 

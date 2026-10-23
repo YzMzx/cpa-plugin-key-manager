@@ -277,12 +277,49 @@ func SaveDynamicRulesFile(filePath string, state *DynamicRulesState) error {
 	return usage.WriteFileAtomically(cleanPath, raw)
 }
 
-// MergeDynamicState combines the base config.yaml seed with dynamic Web UI changes from DynamicRulesState.
-func MergeDynamicState(seed Config, state *DynamicRulesState) Config {
+// ReadHostConfigAPIKeys reads global client `api-keys` (or `access.api-keys`) from CLIProxyAPI's config.yaml on disk.
+func ReadHostConfigAPIKeys(configPath string) []string {
+	if strings.TrimSpace(configPath) == "" {
+		configPath = os.Getenv("CPA_CONFIG_FILE")
+		if strings.TrimSpace(configPath) == "" {
+			configPath = "config.yaml"
+		}
+	}
+	raw, err := os.ReadFile(configPath)
+	if err != nil || len(raw) == 0 {
+		return nil
+	}
+	var root struct {
+		APIKeys []string `yaml:"api-keys"`
+		Access  struct {
+			APIKeys []string `yaml:"api-keys"`
+		} `yaml:"access"`
+	}
+	if err := yaml.Unmarshal(raw, &root); err != nil {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	out := make([]string, 0, len(root.APIKeys)+len(root.Access.APIKeys))
+	for _, list := range [][]string{root.APIKeys, root.Access.APIKeys} {
+		for _, item := range list {
+			k := strings.TrimSpace(item)
+			if k == "" {
+				continue
+			}
+			if _, ok := seen[k]; !ok {
+				seen[k] = struct{}{}
+				out = append(out, k)
+			}
+		}
+	}
+	return out
+}
+
+// MergeDynamicState combines CPA's global `api-keys`, the base config.yaml seed, and dynamic Web UI changes from DynamicRulesState.
+func MergeDynamicState(seed Config, state *DynamicRulesState, hostAPIKeys ...string) Config {
 	out := seed
 	if state == nil {
-		out.Normalize()
-		return out
+		state = &DynamicRulesState{Version: 1, CustomPrices: make(map[string]pricing.ModelPrice)}
 	}
 
 	if state.DefaultPolicy != nil {
@@ -301,9 +338,33 @@ func MergeDynamicState(seed Config, state *DynamicRulesState) Config {
 		}
 	}
 
-	keyOrder := make([]string, 0, len(seed.Keys)+len(state.Keys))
-	keyMap := make(map[string]KeyRuleConfig, len(seed.Keys)+len(state.Keys))
+	keyOrder := make([]string, 0, len(hostAPIKeys)+len(seed.Keys)+len(state.Keys))
+	keyMap := make(map[string]KeyRuleConfig, len(hostAPIKeys)+len(seed.Keys)+len(state.Keys))
 
+	// 1. CPA Global `api-keys` (unified key source)
+	for _, rawKey := range hostAPIKeys {
+		k := strings.TrimSpace(rawKey)
+		if k == "" {
+			continue
+		}
+		if _, deleted := deletedKeySet[k]; deleted {
+			continue
+		}
+		if _, exists := keyMap[k]; !exists {
+			keyOrder = append(keyOrder, k)
+		}
+		enabled := true
+		keyMap[k] = KeyRuleConfig{
+			APIKey:          k,
+			Enabled:         &enabled,
+			MaxConcurrency:  out.DefaultPolicy.MaxConcurrency,
+			QuotaLimitUSD:   out.DefaultPolicy.QuotaLimitUSD,
+			AllowedModels:   append([]string(nil), out.DefaultPolicy.AllowedModels...),
+			UpstreamBinding: out.DefaultPolicy.UpstreamBinding,
+		}
+	}
+
+	// 2. Plugin seed keys (if any)
 	for _, kr := range seed.Keys {
 		k := strings.TrimSpace(kr.APIKey)
 		if k == "" {
@@ -318,6 +379,7 @@ func MergeDynamicState(seed Config, state *DynamicRulesState) Config {
 		keyMap[k] = cloneKeyRule(kr)
 	}
 
+	// 3. Dynamic WebUI governance rules
 	for _, kr := range state.Keys {
 		k := strings.TrimSpace(kr.APIKey)
 		if k == "" {

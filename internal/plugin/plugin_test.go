@@ -265,13 +265,21 @@ func TestWebUIDynamicCRUDAndQuotaEnforcement(t *testing.T) {
 	rulesFile := filepath.Join(tmpDir, "key_guard_rules.json")
 	cacheFile := filepath.Join(tmpDir, "models_dev.json")
 
-	// Mock host callback returning upstream auth files for host.auth.list
+	// Mock host callback returning upstream auth files and registered models
 	hostInvoker := func(method string, payload []byte) ([]byte, error) {
-		if method == pluginabi.MethodHostAuthList {
+		switch method {
+		case pluginabi.MethodHostAuthList:
 			return okEnvelope(map[string]any{
 				"files": []pluginapi.HostAuthFileEntry{
 					{ID: "claude-team-1.json", Name: "claude-team-1.json", Provider: "claude", Status: "active"},
 					{ID: "openai-tier5.json", Name: "openai-tier5.json", Provider: "openai", Status: "active"},
+				},
+			})
+		case pluginabi.MethodHostAuthModels:
+			return okEnvelope(map[string]any{
+				"credentials": []pluginapi.HostAuthModels{
+					{ID: "claude-team-1.json", Provider: "claude", Models: []string{"claude-sonnet-4-20250514", "claude-3-7-sonnet-20250219"}},
+					{ID: "openai-tier5.json", Provider: "openai", Models: []string{"gpt-4o", "o3-mini"}},
 				},
 			})
 		}
@@ -326,8 +334,23 @@ pricing:
 		t.Fatalf("GET /ui failed: %v", err)
 	}
 	uiResp := decodeEnvelope[pluginapi.ManagementResponse](t, rawUI)
-	if uiResp.StatusCode != http.StatusOK || !strings.Contains(string(uiResp.Body), "API Key 计费与管控中心") {
+	if uiResp.StatusCode != http.StatusOK || !strings.Contains(string(uiResp.Body), "API Key 计费与管控") {
 		t.Fatalf("unexpected /ui HTML response: status=%d", uiResp.StatusCode)
+	}
+
+	// 2b. Verify POST /v0/management/key-guard/keys/sync unifies CPA global api-keys with plugin
+	syncKeysReq, _ := json.Marshal(pluginapi.ManagementRequest{
+		Method: http.MethodPost,
+		Path:   "/v0/management/key-guard/keys/sync",
+		Body:   []byte(`{"keys":["sk-cpa-global-1","sk-cpa-global-2"]}`),
+	})
+	rawSyncKeys, err := mgr.HandleRPC(pluginabi.MethodManagementHandle, syncKeysReq)
+	if err != nil {
+		t.Fatalf("POST /keys/sync failed: %v", err)
+	}
+	syncKeysResp := decodeEnvelope[pluginapi.ManagementResponse](t, rawSyncKeys)
+	if syncKeysResp.StatusCode != http.StatusOK || !strings.Contains(string(syncKeysResp.Body), "sk-cpa-global-1") || !strings.Contains(string(syncKeysResp.Body), "claude-sonnet-4-20250514") {
+		t.Fatalf("unexpected /keys/sync response: status=%d body=%s", syncKeysResp.StatusCode, string(syncKeysResp.Body))
 	}
 
 	// 3. Dynamically add a custom price override via POST /v0/management/key-guard/pricing/custom

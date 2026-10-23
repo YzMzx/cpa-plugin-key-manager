@@ -6,16 +6,15 @@
 
 ## 核心功能特性
 
-1. **内置可视化管理后台与下游用户自查面板（`//go:embed` 零依赖内嵌 SPA）**
-   - **自动注入 CPA 后台导航栏**：通过 `management.register` 自动在 CLIProxyAPI 管理后台左侧菜单注入 **「API Key 计费与管控」** 入口（`/v0/resource/plugins/cpa-plugin-key/ui`），无需修改任何宿主源码。
-   - **管理员模式（CPA 后台内嵌或输入 Management Key）**：
-     - **仪表盘与排行榜**：全局总消耗金额 (USD)、总 Token 数、实时活跃并发数，以及按 API Key / 按模型的消耗排行榜与占比进度条。
-     - **API Key & 并发配额可视化 CRUD**：在网页端直接新建、随机生成、编辑、启用/禁用、删除下游 API Key，配置备注名、最大并发数（`max_concurrency`）、USD 配额上限（`quota_limit_usd`），以及一键重置账单。
-     - **路由规则与上游凭证勾选绑定**：自动调用宿主 `host.auth.list` 列出所有已加载的上游 OAuth / API Key 凭证，支持可视化勾选绑定与 `round-robin` / `fill-first` / `strict` 策略配置。
-     - **模型定价管理**：查看 `models.dev` 同步状态、实时检索官方模型参考价，并直接在网页上新增/修改/删除自定义模型价格覆盖（`custom_prices`）。
+1. **内置可视化管理后台与下游用户自查面板（`//go:embed` 零依赖内嵌 SPA，与 [Cli-Proxy-API-Management-Center](https://github.com/router-for-me/Cli-Proxy-API-Management-Center) 视觉设计完全一致）**
+   - **自动注入 CPA 后台导航栏 & 主题无缝联动**：通过 `management.register` 自动在 CLIProxyAPI 管理后台左侧菜单注入 **「API Key 计费与管控」** 入口（`/v0/resource/plugins/cpa-plugin-key/ui`），自动读取宿主登录密钥（`cli-proxy-auth`）并实时同步暖灰浅色、纯白、深色三套主题（`cli-proxy-theme`）。
+   - **与 CPA 全局 `api-keys` 统一双向同步（绝不分两套 Key）**：插件自动读取并同步 CLIProxyAPI 主配置 `config.yaml` 中的全局 `api-keys`（以及 `/v0/management/api-keys`）；在插件页面新建、修改或删除 API Key 会自动同步回写 CPA 全局 `api-keys`。
+   - **纯复选框（Checkbox）模型白名单与账号凭证绑定**：
+     - **模型白名单复选框**：自动聚合宿主已加载凭证注册的模型（`host.auth.models`）、历史调用模型与主流模型库，支持按 Provider 分类筛选与一键全选/清空，无需手动输入模型规则。
+     - **上游账号凭证复选框**：自动调用 `host.auth.list` 与 `host.auth.models` 列出所有可用账号凭证，全复选框勾选绑定并支持 `round-robin` / `fill-first` / `strict` 策略。
    - **API Key 用户自查模式（`/v0/resource/plugins/cpa-plugin-key/ui#account`）**：
      - 供普通下游用户使用自己的 API Key 登录，仅展示该 Key 自身的实时并发占用、配额余额进度、授权模型白名单及各模型 Token/USD 消费明细。
-   - **动态持久化与热生效**：网页端增删改查的所有 API Key、规则和自定义价格自动原子落盘至 `./data/key_guard_rules.json`，修改后立即在内存中热生效，同时向下兼容 `config.yaml` 中的初始种子配置。
+   - **动态持久化与热生效**：网页端增删改查的所有 API Key 规则和自定义价格自动原子落盘至 `./data/key_guard_rules.json`，修改后立即在内存中热生效。
 
 2. **按 API Key 维度的路由与访问控制（Pre-request）**
    - **模型白名单控制**：每个 API Key 可配置独立的 `allowed_models` 列表，支持精确匹配、`*`/`?` 通配符（如 `claude-3-5-*`、`gpt-4o*`）、`!` 排除规则，并自动兼容带思考后缀（如 `claude-3-7-sonnet-20250219(high)`）与带 Provider 前缀的模型名。越权访问直接短路返回兼容 OpenAI 与 Anthropic SDK 的 `403 Forbidden` JSON 错误，不触发任何上游请求。

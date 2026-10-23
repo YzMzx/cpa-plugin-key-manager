@@ -150,3 +150,49 @@ func (b *HostBridge) ListAuthFiles(hostCallbackID string) ([]pluginapi.HostAuthF
 	}
 	return resp.Files, nil
 }
+
+// ListAuthModels calls `host.auth.models` on the CLIProxyAPI host to retrieve all credentials and their registered models.
+func (b *HostBridge) ListAuthModels(hostCallbackID string) ([]pluginapi.HostAuthModels, error) {
+	b.mu.RLock()
+	inv := b.invoker
+	b.mu.RUnlock()
+	if inv == nil {
+		return []pluginapi.HostAuthModels{}, nil
+	}
+
+	payload := map[string]any{}
+	if hostCallbackID != "" {
+		payload["host_callback_id"] = hostCallbackID
+	}
+	rawReq, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	rawResp, errCall := inv(pluginabi.MethodHostAuthModels, rawReq)
+	if errCall != nil {
+		return nil, errCall
+	}
+	if len(rawResp) == 0 {
+		return []pluginapi.HostAuthModels{}, nil
+	}
+	var env pluginabi.Envelope
+	if errEnv := json.Unmarshal(rawResp, &env); errEnv != nil {
+		return nil, errEnv
+	}
+	if !env.OK {
+		if env.Error != nil {
+			return nil, fmt.Errorf("%s: %s", env.Error.Code, env.Error.Message)
+		}
+		return nil, fmt.Errorf("host.auth.models failed")
+	}
+	var resp pluginapi.HostAuthModelsResponse
+	if len(env.Result) > 0 {
+		if errDec := json.Unmarshal(env.Result, &resp); errDec != nil {
+			return nil, errDec
+		}
+	}
+	if resp.Credentials == nil {
+		resp.Credentials = []pluginapi.HostAuthModels{}
+	}
+	return resp.Credentials, nil
+}

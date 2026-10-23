@@ -3,176 +3,346 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>API Key 计费与管控 - CLIProxyAPI Plugin</title>
+<title>API Key 计费与管控 - CLIProxyAPI</title>
 <style>
+  /* ==========================================================================
+   * CLI-Proxy-API-Management-Center (CPAMC) Unified Design System & Theme Tokens
+   * Reference: https://github.com/router-for-me/Cli-Proxy-API-Management-Center
+   * ========================================================================== */
   :root {
-    --bg-base: #0b1120;
-    --bg-surface: #111827;
-    --bg-elevated: #1e293b;
-    --bg-hover: #26334d;
-    --border-color: #293548;
-    --text-primary: #f8fafc;
-    --text-secondary: #94a3b8;
-    --text-muted: #64748b;
-    --accent: #38bdf8;
-    --accent-hover: #0284c7;
-    --accent-soft: rgba(56, 189, 248, 0.14);
-    --success: #10b981;
-    --success-soft: rgba(16, 185, 129, 0.15);
-    --warning: #f59e0b;
-    --warning-soft: rgba(245, 158, 11, 0.15);
-    --danger: #ef4444;
-    --danger-soft: rgba(239, 68, 68, 0.15);
-    --purple: #a855f7;
-    --purple-soft: rgba(168, 85, 247, 0.15);
-    --radius: 10px;
-    --font-mono: "JetBrains Mono", "Fira Code", Consolas, monospace;
+    /* 极简暖灰：浅色模式（默认，与 CPAMC 完全一致） */
+    --bg-secondary: #faf9f5;
+    --bg-primary: #f0eee8;
+    --bg-tertiary: #e9e6df;
+    --bg-hover: var(--bg-tertiary);
+    --bg-quinary: #f6f4ee;
+    --bg-error-light: rgba(198, 87, 70, 0.1);
+    --floating-surface: #fffdf9;
+    --floating-shadow: 0 12px 26px rgba(0, 0, 0, 0.14);
+
+    --text-primary: #2d2a26;
+    --text-secondary: #6d6760;
+    --text-tertiary: #a29c95;
+    --text-quaternary: #c0bab3;
+    --text-muted: var(--text-tertiary);
+
+    --border-color: #e3e1db;
+    --border-secondary: var(--border-color);
+    --border-primary: #d5d2cb;
+    --border-hover: #cecac4;
+
+    --primary-color: #766858;
+    --primary-hover: #655747;
+    --primary-active: #5a4d3f;
+    --primary-contrast: #ffffff;
+
+    --success-color: #10b981;
+    --quota-medium-color: #e0aa14;
+    --warning-color: #c65746;
+    --error-color: #c65746;
+    --danger-color: var(--error-color);
+
+    --success-badge-bg: #d1fae5;
+    --success-badge-text: #065f46;
+    --success-badge-border: #6ee7b7;
+
+    --failure-badge-bg: rgba(198, 87, 70, 0.14);
+    --failure-badge-text: #8a3a30;
+    --failure-badge-border: rgba(198, 87, 70, 0.35);
+
+    --count-badge-bg: rgba(139, 134, 128, 0.18);
+    --count-badge-text: #5a4d3f;
+
+    --amber-color: #d97706;
+    --amber-text: #92400e;
+    --amber-10: rgba(217, 119, 6, 0.12);
+    --amber-30: rgba(217, 119, 6, 0.32);
+
+    --shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.08);
+    --shadow-lg: 0 10px 18px -3px rgba(0, 0, 0, 0.1);
+    --radius-md: 8px;
+    --radius-lg: 12px;
+    --page-gap: 16px;
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   }
+
+  /* 纯白主题 [data-theme="white"] */
+  [data-theme="white"] {
+    --bg-secondary: #ffffff;
+    --bg-primary: #ffffff;
+    --bg-tertiary: #f6f6f6;
+    --bg-hover: var(--bg-tertiary);
+    --bg-quinary: #ffffff;
+    --floating-surface: #ffffff;
+    --floating-shadow: 0 12px 26px rgba(0, 0, 0, 0.12);
+
+    --text-primary: #2d2a26;
+    --text-secondary: #6d6760;
+    --text-tertiary: #a29c95;
+
+    --border-color: #e5e5e5;
+    --border-primary: #d9d9d9;
+    --border-hover: #cccccc;
+  }
+
+  /* 深色主题 [data-theme="dark"] */
+  [data-theme="dark"] {
+    --bg-secondary: #151412;
+    --bg-primary: #1d1b18;
+    --bg-tertiary: #262320;
+    --bg-hover: #2e2a26;
+    --bg-quinary: #191714;
+    --bg-error-light: rgba(198, 87, 70, 0.18);
+    --floating-surface: #2a2723;
+    --floating-shadow: 0 14px 30px rgba(0, 0, 0, 0.45);
+
+    --text-primary: #f6f4f1;
+    --text-secondary: #c9c3bb;
+    --text-tertiary: #9c958d;
+    --text-quaternary: #6f6962;
+
+    --border-color: #3a3530;
+    --border-primary: #4a453f;
+    --border-hover: #5a544d;
+
+    --primary-color: #c3b4a1;
+    --primary-hover: #d2c4b2;
+    --primary-active: #d2c4b2;
+    --primary-contrast: #201d19;
+
+    --success-badge-bg: rgba(6, 78, 59, 0.35);
+    --success-badge-text: #6ee7b7;
+    --success-badge-border: #059669;
+
+    --failure-badge-bg: rgba(198, 87, 70, 0.24);
+    --failure-badge-text: #f1b0a6;
+    --failure-badge-border: rgba(198, 87, 70, 0.5);
+
+    --count-badge-bg: rgba(195, 180, 161, 0.22);
+    --count-badge-text: #e4d9cb;
+
+    --amber-color: #f59e0b;
+    --amber-text: #fcd34d;
+    --amber-10: rgba(245, 158, 11, 0.16);
+    --amber-30: rgba(245, 158, 11, 0.38);
+
+    --shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.3);
+    --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.35);
+  }
+
   * { box-sizing: border-box; }
   body {
     margin: 0;
-    padding: 0;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
-    background: var(--bg-base);
+    background-color: var(--bg-secondary);
     color: var(--text-primary);
-    line-height: 1.5;
-    font-size: 14px;
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    transition: background-color 0.25s ease, color 0.25s ease;
   }
-  .app-shell {
-    max-width: 1400px;
+  /* 当内嵌在 CPAMC iframe 中时预留顶部浮动导航栏高度 */
+  body.embedded .wrap {
+    padding-top: 68px;
+  }
+  .wrap {
+    display: flow-root;
+    min-height: 100dvh;
+    max-width: 1360px;
     margin: 0 auto;
-    padding: 20px 24px 48px;
+    padding: 22px clamp(18px, 3vw, 42px) 48px;
   }
+
   /* Header */
-  .top-bar {
+  .app-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
     flex-wrap: wrap;
-    gap: 14px;
-    padding-bottom: 18px;
-    border-bottom: 1px solid var(--border-color);
-    margin-bottom: 20px;
-  }
-  .brand {
-    display: flex;
-    align-items: center;
     gap: 12px;
+    margin-bottom: 18px;
   }
-  .brand-icon {
-    width: 38px;
-    height: 38px;
-    border-radius: 10px;
-    background: linear-gradient(135deg, #0ea5e9 0%, #6366f1 100%);
+  .app-title {
     display: flex;
     align-items: center;
-    justify-content: center;
-    font-weight: 800;
-    font-size: 18px;
-    color: #fff;
-    box-shadow: 0 4px 12px rgba(14, 165, 233, 0.3);
+    gap: 10px;
   }
-  .brand-title {
-    font-size: 18px;
-    font-weight: 700;
-    color: var(--text-primary);
+  .app-title h1 {
     margin: 0;
+    font-size: 21px;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    gap: 10px;
   }
-  .brand-sub {
+  .app-subtitle {
+    margin: 2px 0 0;
     font-size: 12px;
     color: var(--text-secondary);
-    margin: 2px 0 0;
   }
-  .top-actions {
+  .header-actions {
     display: flex;
     align-items: center;
     gap: 8px;
     flex-wrap: wrap;
   }
-  /* Buttons */
-  .btn {
+
+  /* Navigation Tabs (CPAMC Segmented Pill Style) */
+  .page-tabs-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-bottom: 18px;
+  }
+  .tabs {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    padding: 7px 14px;
-    border-radius: 7px;
-    font-size: 13px;
-    font-weight: 500;
+    gap: 4px;
+    padding: 4px;
+    border-radius: 10px;
+    background: var(--bg-primary);
     border: 1px solid var(--border-color);
-    background: var(--bg-elevated);
-    color: var(--text-primary);
-    cursor: pointer;
-    transition: all 0.15s ease;
-    text-decoration: none;
-  }
-  .btn:hover { background: var(--bg-hover); }
-  .btn-primary {
-    background: #0284c7;
-    border-color: #0ea5e9;
-    color: #fff;
-  }
-  .btn-primary:hover { background: #0369a1; }
-  .btn-success {
-    background: #059669;
-    border-color: #10b981;
-    color: #fff;
-  }
-  .btn-success:hover { background: #047857; }
-  .btn-danger {
-    background: var(--danger-soft);
-    border-color: rgba(239, 68, 68, 0.35);
-    color: #fca5a5;
-  }
-  .btn-danger:hover { background: rgba(239, 68, 68, 0.25); }
-  .btn-sm { padding: 4px 10px; font-size: 12px; border-radius: 6px; }
-  /* Navigation Tabs */
-  .nav-tabs {
-    display: flex;
-    gap: 6px;
-    margin-bottom: 20px;
-    border-bottom: 1px solid var(--border-color);
-    padding-bottom: 10px;
     overflow-x: auto;
+    max-width: 100%;
   }
   .tab-btn {
-    padding: 8px 16px;
-    border-radius: 8px;
+    appearance: none;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--text-secondary);
+    font: inherit;
     font-size: 13px;
     font-weight: 600;
-    color: var(--text-secondary);
-    background: transparent;
-    border: 1px solid transparent;
+    padding: 7px 14px;
+    border-radius: 7px;
     cursor: pointer;
     white-space: nowrap;
-    transition: all 0.15s ease;
+    transition: all 0.16s ease;
   }
   .tab-btn:hover {
     color: var(--text-primary);
-    background: var(--bg-surface);
+    background: var(--bg-tertiary);
   }
   .tab-btn.active {
-    color: var(--accent);
-    background: var(--accent-soft);
-    border-color: rgba(56, 189, 248, 0.3);
+    background: var(--floating-surface);
+    color: var(--text-primary);
+    border-color: var(--border-primary);
+    box-shadow: var(--shadow);
   }
+
+  /* Buttons (CPAMC components.scss style) */
+  .btn {
+    appearance: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-height: 35px;
+    padding: 6px 13px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-primary);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    text-decoration: none;
+    white-space: nowrap;
+  }
+  .btn:hover:not(:disabled) {
+    background: var(--bg-hover);
+    border-color: var(--border-hover);
+  }
+  .btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+  .btn-primary {
+    background: var(--primary-color);
+    border-color: var(--primary-color);
+    color: var(--primary-contrast);
+  }
+  .btn-primary:hover:not(:disabled) {
+    background: var(--primary-hover);
+    border-color: var(--primary-hover);
+  }
+  .btn-danger {
+    background: var(--failure-badge-bg);
+    border-color: var(--failure-badge-border);
+    color: var(--failure-badge-text);
+  }
+  .btn-danger:hover:not(:disabled) {
+    background: var(--error-color);
+    border-color: var(--error-color);
+    color: #fff;
+  }
+  .btn-sm {
+    min-height: 28px;
+    padding: 4px 10px;
+    font-size: 12px;
+    font-weight: 500;
+  }
+
+  /* Cards & Inset Cards */
+  .card {
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow);
+    padding: 18px;
+    margin-bottom: var(--page-gap);
+  }
+  .inset-card {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    padding: 14px;
+  }
+  .card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-bottom: 14px;
+  }
+  .card-title {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .card-hint {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-top: 2px;
+  }
+
   /* KPI Grid */
   .kpi-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
-    gap: 14px;
-    margin-bottom: 22px;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 12px;
+    margin-bottom: var(--page-gap);
   }
   .kpi-card {
-    background: var(--bg-surface);
+    background: var(--bg-primary);
     border: 1px solid var(--border-color);
-    border-radius: var(--radius);
-    padding: 16px 18px;
+    border-radius: var(--radius-lg);
+    padding: 15px 16px;
+    box-shadow: var(--shadow);
   }
   .kpi-label {
     font-size: 12px;
+    font-weight: 600;
     color: var(--text-secondary);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
     margin-bottom: 6px;
   }
   .kpi-value {
@@ -180,171 +350,287 @@
     font-weight: 700;
     font-family: var(--font-mono);
     color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
   }
   .kpi-sub {
     font-size: 12px;
-    color: var(--text-muted);
+    color: var(--text-tertiary);
     margin-top: 6px;
   }
-  /* Cards & Tables */
-  .card {
-    background: var(--bg-surface);
+
+  /* Tables */
+  .table-wrap {
+    width: 100%;
+    overflow-x: auto;
     border: 1px solid var(--border-color);
-    border-radius: var(--radius);
-    margin-bottom: 20px;
-    overflow: hidden;
+    border-radius: var(--radius-md);
+    background: var(--bg-secondary);
   }
-  .card-header {
-    padding: 14px 18px;
-    border-bottom: 1px solid var(--border-color);
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    flex-wrap: wrap;
-    gap: 10px;
-  }
-  .card-title {
-    font-size: 15px;
-    font-weight: 600;
-    margin: 0;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .card-body { padding: 18px; }
-  .table-wrap { width: 100%; overflow-x: auto; }
   table {
     width: 100%;
     border-collapse: collapse;
     text-align: left;
   }
   th, td {
-    padding: 11px 14px;
+    padding: 10px 13px;
     border-bottom: 1px solid var(--border-color);
     font-size: 13px;
     vertical-align: middle;
   }
   th {
-    background: rgba(15, 23, 42, 0.75);
+    background: var(--bg-primary);
     color: var(--text-secondary);
     font-weight: 600;
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
+    font-size: 12px;
     white-space: nowrap;
   }
   tr:last-child td { border-bottom: none; }
-  tr:hover td { background: rgba(30, 41, 59, 0.45); }
+  tr:hover td { background: var(--bg-hover); }
   .sub-row td {
-    background: rgba(15, 23, 42, 0.55);
-    padding-left: 30px;
+    background: var(--bg-quinary);
+    padding-left: 28px;
     font-size: 12px;
     color: var(--text-secondary);
   }
-  /* Badges & Tags */
-  .badge {
+
+  /* Tags & Pills (CPAMC .tag style) */
+  .tag {
     display: inline-flex;
     align-items: center;
-    padding: 2px 8px;
+    gap: 4px;
+    padding: 2px 9px;
     border-radius: 999px;
-    font-size: 11px;
-    font-weight: 600;
-    margin: 1px 2px;
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 1.45;
     white-space: nowrap;
+    border: 1px solid transparent;
+    margin: 1px 2px;
   }
-  .badge-info { background: var(--accent-soft); color: var(--accent); }
-  .badge-success { background: var(--success-soft); color: var(--success); }
-  .badge-warning { background: var(--warning-soft); color: var(--warning); }
-  .badge-danger { background: var(--danger-soft); color: var(--danger); }
-  .badge-purple { background: var(--purple-soft); color: #c084fc; }
-  .mono { font-family: var(--font-mono); }
-  .cost-text { font-family: var(--font-mono); font-weight: 700; color: var(--accent); }
+  .tag.ok {
+    background: var(--success-badge-bg);
+    color: var(--success-badge-text);
+    border-color: var(--success-badge-border);
+  }
+  .tag.warn {
+    background: var(--amber-10);
+    color: var(--amber-text);
+    border-color: var(--amber-30);
+  }
+  .tag.bad {
+    background: var(--failure-badge-bg);
+    color: var(--failure-badge-text);
+    border-color: var(--failure-badge-border);
+  }
+  .tag.plain {
+    background: var(--count-badge-bg);
+    color: var(--count-badge-text);
+    border-color: var(--border-primary);
+  }
+  .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+  .cost-val { font-family: var(--font-mono); font-weight: 700; color: var(--text-primary); }
+
   /* Progress Bar */
-  .progress-track {
+  .bar {
     width: 100%;
     min-width: 110px;
-    height: 7px;
-    background: var(--bg-elevated);
+    height: 6px;
+    background: var(--bg-tertiary);
     border-radius: 999px;
     overflow: hidden;
     margin-top: 4px;
   }
-  .progress-fill {
+  .bar-fill {
     height: 100%;
-    background: linear-gradient(90deg, #0ea5e9, #38bdf8);
+    background: var(--success-color);
     border-radius: 999px;
-    transition: width 0.25s ease;
+    transition: width 0.2s ease;
   }
-  .progress-fill.warn { background: var(--warning); }
-  .progress-fill.danger { background: var(--danger); }
+  .bar-fill.warn { background: var(--quota-medium-color); }
+  .bar-fill.danger { background: var(--error-color); }
+
   /* Forms & Inputs */
   .form-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-    gap: 14px;
+    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+    gap: 12px;
   }
-  .form-group { margin-bottom: 14px; }
+  .form-group {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    margin-bottom: 14px;
+  }
   .form-label {
-    display: block;
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 600;
-    color: var(--text-secondary);
-    margin-bottom: 5px;
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
   }
   .form-hint {
-    font-size: 11px;
-    color: var(--text-muted);
-    margin-top: 4px;
+    font-size: 12px;
+    color: var(--text-secondary);
   }
   .input, select, textarea {
     width: 100%;
-    padding: 8px 11px;
-    background: var(--bg-base);
-    border: 1px solid var(--border-color);
-    border-radius: 7px;
+    min-height: 36px;
+    padding: 7px 11px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-primary);
+    background: var(--bg-secondary);
     color: var(--text-primary);
+    font: inherit;
     font-size: 13px;
-    outline: none;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
   }
   .input:focus, select:focus, textarea:focus {
-    border-color: var(--accent);
-    box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.15);
+    outline: none;
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 3px rgba(118, 104, 88, 0.18);
   }
   .input-row {
     display: flex;
-    gap: 8px;
     align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
   }
-  /* Auth Checkbox Selector */
-  .auth-check-list {
-    max-height: 185px;
-    overflow-y: auto;
+
+  /* ==========================================================================
+   * Checkbox Selection Lists (Models & Credentials - Pure Checkbox Mode)
+   * ========================================================================== */
+  .selector-box {
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-md);
+    background: var(--bg-secondary);
+    padding: 10px 12px;
+  }
+  .selector-mode-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border-color);
+    margin-bottom: 8px;
+  }
+  .master-check-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--text-primary);
+    cursor: pointer;
+    user-select: none;
+  }
+  .master-check-label input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--primary-color);
+    cursor: pointer;
+  }
+  .selector-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+  .provider-pills {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-wrap: wrap;
+  }
+  .provider-pill {
+    appearance: none;
+    min-height: 24px;
+    padding: 2px 9px;
+    border-radius: 999px;
     border: 1px solid var(--border-color);
-    border-radius: 7px;
-    background: var(--bg-base);
-    padding: 8px;
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-    gap: 6px;
+    background: var(--bg-primary);
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
   }
-  .auth-check-item {
+  .provider-pill.active {
+    background: var(--primary-color);
+    border-color: var(--primary-color);
+    color: var(--primary-contrast);
+  }
+  .selection-list {
+    max-height: 225px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+    gap: 6px;
+    padding: 4px 2px;
+  }
+  .selection-list.disabled-overlay {
+    opacity: 0.48;
+    pointer-events: none;
+  }
+  .check-item {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 6px 8px;
+    padding: 6px 9px;
     border-radius: 6px;
-    background: var(--bg-surface);
     border: 1px solid var(--border-color);
-    font-size: 12px;
+    background: var(--bg-primary);
+    cursor: pointer;
+    user-select: none;
+    transition: background-color 0.12s ease, border-color 0.12s ease;
+    min-width: 0;
+  }
+  .check-item:hover {
+    background: var(--bg-hover);
+    border-color: var(--border-hover);
+  }
+  .check-item.checked {
+    border-color: var(--primary-color);
+    background: var(--floating-surface);
+  }
+  .check-item input[type="checkbox"] {
+    width: 15px;
+    height: 15px;
+    flex-shrink: 0;
+    accent-color: var(--primary-color);
     cursor: pointer;
   }
-  .auth-check-item:hover { border-color: var(--accent); }
+  .check-item-body {
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
+  }
+  .check-item-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .check-item-sub {
+    font-size: 11px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
   /* Modals */
   .modal-backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(2, 6, 23, 0.78);
-    backdrop-filter: blur(3px);
+    background: rgba(15, 14, 12, 0.58);
+    backdrop-filter: blur(4px);
     display: none;
     align-items: center;
     justify-content: center;
@@ -353,14 +639,14 @@
   }
   .modal-backdrop.open { display: flex; }
   .modal {
-    background: var(--bg-surface);
-    border: 1px solid var(--border-color);
-    border-radius: 12px;
+    background: var(--floating-surface);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-lg);
     width: 100%;
-    max-width: 680px;
-    max-height: 90vh;
+    max-width: 740px;
+    max-height: 92vh;
     overflow-y: auto;
-    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+    box-shadow: var(--floating-shadow);
   }
   .modal-header {
     padding: 16px 20px;
@@ -369,110 +655,208 @@
     align-items: center;
     justify-content: space-between;
   }
-  .modal-body { padding: 20px; }
+  .modal-body { padding: 18px 20px; }
   .modal-footer {
     padding: 14px 20px;
     border-top: 1px solid var(--border-color);
     display: flex;
     justify-content: flex-end;
-    gap: 10px;
+    gap: 8px;
   }
+
   /* Toast */
   .toast-box {
     position: fixed;
-    bottom: 22px;
-    right: 22px;
+    bottom: 20px;
+    right: 20px;
     z-index: 2000;
     display: flex;
     flex-direction: column;
     gap: 8px;
   }
   .toast {
-    padding: 10px 16px;
-    border-radius: 8px;
-    background: var(--bg-elevated);
-    border-left: 4px solid var(--accent);
+    padding: 10px 15px;
+    border-radius: var(--radius-md);
+    background: var(--floating-surface);
+    border: 1px solid var(--border-primary);
+    border-left: 4px solid var(--primary-color);
     color: var(--text-primary);
-    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    box-shadow: var(--floating-shadow);
     font-size: 13px;
   }
   .hidden { display: none !important; }
-  .chip-preset {
-    display: inline-block;
-    padding: 2px 8px;
-    border-radius: 5px;
-    background: var(--bg-elevated);
-    border: 1px solid var(--border-color);
-    font-size: 11px;
-    cursor: pointer;
-    margin-right: 4px;
-    margin-top: 4px;
-    color: var(--text-secondary);
-  }
-  .chip-preset:hover { color: var(--accent); border-color: var(--accent); }
 </style>
+<script>
+  /* Synchronize theme & management key with Cli-Proxy-API-Management-Center (CPAMC) */
+  function cpamcStoredValue(name) {
+    try {
+      let raw = localStorage.getItem(name);
+      if (!raw) return null;
+      const prefix = "enc::v1::";
+      if (raw.startsWith(prefix)) {
+        const secret = new TextEncoder().encode("cli-proxy-api-webui::secure-storage|" + location.host + "|" + navigator.userAgent);
+        const binary = atob(raw.slice(prefix.length));
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i) ^ secret[i % secret.length];
+        raw = new TextDecoder().decode(bytes);
+      }
+      return JSON.parse(raw);
+    } catch (_) { return null; }
+  }
+
+  (function initThemeSync() {
+    const HOST_THEME_KEY = "cli-proxy-theme";
+    const OWN_THEME_KEY = "cpa-plugin-key:theme";
+
+    function parentDoc() {
+      if (window.parent === window) return null;
+      try { return window.parent.document; } catch (_) { return null; }
+    }
+
+    function readHostTheme() {
+      const pdoc = parentDoc();
+      if (pdoc) {
+        return pdoc.documentElement.getAttribute("data-theme") || "";
+      }
+      const own = localStorage.getItem(OWN_THEME_KEY);
+      if (own === "dark" || own === "white" || own === "warm") {
+        return own === "warm" ? "" : own;
+      }
+      const hostStored = cpamcStoredValue(HOST_THEME_KEY)?.state?.theme;
+      if (hostStored === "dark" || hostStored === "white") return hostStored;
+      if (hostStored === "auto" && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) {
+        return "dark";
+      }
+      return "";
+    }
+
+    function applyTheme(t) {
+      const root = document.documentElement;
+      if (t === "dark" || t === "white") {
+        root.setAttribute("data-theme", t);
+      } else {
+        root.removeAttribute("data-theme");
+      }
+      root.style.colorScheme = t === "dark" ? "dark" : "light";
+    }
+
+    const sync = () => applyTheme(readHostTheme());
+    sync();
+
+    const pdoc = parentDoc();
+    if (pdoc) {
+      new MutationObserver(sync).observe(pdoc.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    }
+    window.cyclePluginTheme = function () {
+      const cur = document.documentElement.getAttribute("data-theme") || "";
+      const next = cur === "" ? "white" : (cur === "white" ? "dark" : "");
+      localStorage.setItem(OWN_THEME_KEY, next || "warm");
+      applyTheme(next);
+    };
+  })();
+</script>
 </head>
 <body>
-<div class="app-shell">
-  <!-- Top Bar -->
-  <header class="top-bar">
-    <div class="brand">
-      <div class="brand-icon">🔑</div>
+<div class="wrap">
+  <!-- Header -->
+  <header class="app-header">
+    <div class="app-title">
       <div>
-        <h1 class="brand-title" id="pageTitle">API Key 计费与管控中心</h1>
-        <p class="brand-sub" id="pageSubtitle">CLIProxyAPI 细粒度模型白名单 · 并发限流 · 凭证路由绑定 · Token/USD 实时账单</p>
+        <h1 id="pageTitle">API Key 计费与管控</h1>
+        <p class="app-subtitle" id="pageSubtitle">与 CLIProxyAPI 全局 API Key 统一同步 · 复选框模型白名单 · 复选框凭证路由绑定 · Token/USD 实时账单</p>
       </div>
     </div>
-    <div class="top-actions">
-      <span class="badge badge-info" id="syncBadge">models.dev: 加载中...</span>
-      <button class="btn btn-sm" id="btnCopySelfLink" onclick="copySelfQueryLink()" title="复制下游用户自查页面链接">🔗 复制自查链接</button>
-      <button class="btn btn-sm" id="btnSwitchMode" onclick="toggleMode()">👤 切换至 Key 自查模式</button>
-      <button class="btn btn-sm" id="btnSetMgmtKey" onclick="openMgmtKeyModal()">🛡️ 管理密钥</button>
-      <button class="btn btn-primary btn-sm" onclick="refreshCurrentView()">🔄 刷新数据</button>
+    <div class="header-actions">
+      <span class="tag plain" id="syncBadge">models.dev: 同步就绪</span>
+      <button type="button" class="btn btn-sm" onclick="window.cyclePluginTheme()" title="切换主题 (暖灰 / 纯白 / 深色)">🌓 主题</button>
+      <button type="button" class="btn btn-sm" onclick="copySelfQueryLink()" title="复制给下游用户的账单自查链接">🔗 复制自查链接</button>
+      <button type="button" class="btn btn-sm" id="btnSwitchMode" onclick="toggleMode()">👤 Key 自查模式</button>
+      <button type="button" class="btn btn-sm" id="btnSetMgmtKey" onclick="openMgmtKeyModal()">🛡️ 管理密钥</button>
+      <button type="button" class="btn btn-primary btn-sm" onclick="refreshCurrentView()">🔄 刷新</button>
     </div>
   </header>
 
   <!-- ==================== ADMIN VIEW ==================== -->
   <div id="adminContainer">
-    <nav class="nav-tabs">
-      <button class="tab-btn active" data-tab="tab-dashboard" onclick="switchAdminTab('tab-dashboard')">📊 仪表盘与排行榜</button>
-      <button class="tab-btn" data-tab="tab-keys" onclick="switchAdminTab('tab-keys')">🔑 API Key 与并发配额管理</button>
-      <button class="tab-btn" data-tab="tab-routing" onclick="switchAdminTab('tab-routing')">🧭 默认策略与上游凭证绑定</button>
-      <button class="tab-btn" data-tab="tab-pricing" onclick="switchAdminTab('tab-pricing')">💰 模型定价管理 (models.dev)</button>
-    </nav>
-
-    <!-- TAB 1: DASHBOARD -->
-    <section id="tab-dashboard" class="admin-tab">
-      <div class="kpi-grid">
-        <div class="kpi-card">
-          <div class="kpi-label">全局累计消耗 (USD)</div>
-          <div class="kpi-value cost-text" id="kpiTotalCost">$0.000000</div>
-          <div class="kpi-sub" id="kpiCostSub">基于 models.dev 与自定义单价实时折算</div>
-        </div>
-        <div class="kpi-card">
-          <div class="kpi-label">全局累计 Token 总量</div>
-          <div class="kpi-value" id="kpiTotalTokens">0</div>
-          <div class="kpi-sub" id="kpiTokenSub">输入: 0 | 输出: 0 | 缓存读: 0</div>
-        </div>
-        <div class="kpi-card">
-          <div class="kpi-label">累计请求总数 / 成功率</div>
-          <div class="kpi-value" id="kpiTotalRequests">0</div>
-          <div class="kpi-sub" id="kpiReqSub">成功: 0 | 失败: 0 (100.0%)</div>
-        </div>
-        <div class="kpi-card">
-          <div class="kpi-label">实时活跃并发 / 管控 Key 数</div>
-          <div class="kpi-value" id="kpiActiveConc">0</div>
-          <div class="kpi-sub" id="kpiKeyCountSub">已配置规则 Key: 0 个</div>
-        </div>
+    <div class="page-tabs-row">
+      <div class="tabs" role="tablist">
+        <button type="button" class="tab-btn active" data-tab="tab-keys" onclick="switchAdminTab('tab-keys')">API Key 与规则管控</button>
+        <button type="button" class="tab-btn" data-tab="tab-dashboard" onclick="switchAdminTab('tab-dashboard')">用量排行与账单看板</button>
+        <button type="button" class="tab-btn" data-tab="tab-routing" onclick="switchAdminTab('tab-routing')">全局默认策略与凭证池</button>
+        <button type="button" class="tab-btn" data-tab="tab-pricing" onclick="switchAdminTab('tab-pricing')">模型定价 (models.dev)</button>
       </div>
+    </div>
 
-      <!-- API Key Leaderboard -->
+    <!-- KPI Summary Row (Always visible at top of Admin) -->
+    <div class="kpi-grid">
+      <div class="kpi-card">
+        <div class="kpi-label">全局累计消耗 (USD)</div>
+        <div class="kpi-value" id="kpiTotalCost">$0.000000</div>
+        <div class="kpi-sub" id="kpiCostSub">与 CPA 全局 API Key 实时联动计费</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">累计总 Token 消耗</div>
+        <div class="kpi-value" id="kpiTotalTokens">0</div>
+        <div class="kpi-sub" id="kpiTokenSub">输入: 0 · 输出: 0 · 缓存读: 0</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">累计请求总数 / 成功率</div>
+        <div class="kpi-value" id="kpiTotalRequests">0</div>
+        <div class="kpi-sub" id="kpiReqSub">成功: 0 · 失败: 0 (100.0%)</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">实时活跃并发 / 统一 Key 总数</div>
+        <div class="kpi-value" id="kpiActiveConc">0</div>
+        <div class="kpi-sub" id="kpiKeyCountSub">CPA 统一 API Key: 0 个</div>
+      </div>
+    </div>
+
+    <!-- TAB 1: UNIFIED API KEYS & GOVERNANCE CRUD -->
+    <section id="tab-keys" class="admin-tab">
       <div class="card">
         <div class="card-header">
-          <h2 class="card-title">🏆 按 API Key 消耗排行榜与实时并发</h2>
+          <div>
+            <h2 class="card-title">统一 API Key 列表与并发、配额、模型/凭证复选框管控</h2>
+            <div class="card-hint">此处列表与 CLIProxyAPI 主配置 <code>api-keys</code> 全局双向同步；新建或删除 Key 将同时更新 CPA 全局配置与插件规则。</div>
+          </div>
           <div class="input-row">
-            <input type="text" class="input" style="width:220px;padding:5px 10px" id="dashKeySearch" placeholder="搜索 Key / 备注名称..." oninput="renderDashboardTables()">
-            <button class="btn btn-sm btn-danger" onclick="resetUsageStats('')">🗑️ 清空全部账单</button>
+            <input type="text" class="input" style="width:220px" id="crudKeySearch" placeholder="搜索 API Key 或备注名称..." oninput="renderKeysCrudTable()">
+            <button type="button" class="btn btn-primary" onclick="openKeyModal(null)">➕ 新建 API Key</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>状态</th>
+                <th>API Key (与 CPA 全局同步)</th>
+                <th>备注名称</th>
+                <th>并发限制 (活跃/上限)</th>
+                <th>已用金额 / 配额上限</th>
+                <th>模型白名单规则</th>
+                <th>绑定账号凭证</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="crudKeysTableBody">
+              <tr><td colspan="8" style="text-align:center;color:var(--text-tertiary)">加载中...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 2: DASHBOARD & LEADERBOARDS -->
+    <section id="tab-dashboard" class="admin-tab hidden">
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <h2 class="card-title">按 API Key 消耗排行榜与模型明细</h2>
+            <div class="card-hint">点击「展开明细」可查看单个 API Key 在各个模型上的输入、输出、缓存 Token 与 USD 费用。</div>
+          </div>
+          <div class="input-row">
+            <input type="text" class="input" style="width:210px" id="dashKeySearch" placeholder="搜索 Key 或备注..." oninput="renderDashboardTables()">
+            <button type="button" class="btn btn-sm btn-danger" onclick="resetUsageStats('')">清空全部统计</button>
           </div>
         </div>
         <div class="table-wrap">
@@ -483,24 +867,23 @@
                 <th>实时并发</th>
                 <th>配额进度 (USD)</th>
                 <th>请求数 (成功/失败)</th>
-                <th>Input / Output Tokens</th>
+                <th>Input / Output</th>
                 <th>Cache (读 / 写)</th>
                 <th>总 Tokens</th>
-                <th>累计消耗 (USD)</th>
+                <th>累计费用 (USD)</th>
                 <th>操作</th>
               </tr>
             </thead>
             <tbody id="dashKeyTableBody">
-              <tr><td colspan="9" style="text-align:center;color:var(--text-muted)">加载中...</td></tr>
+              <tr><td colspan="9" style="text-align:center;color:var(--text-tertiary)">加载中...</td></tr>
             </tbody>
           </table>
         </div>
       </div>
 
-      <!-- Model Leaderboard -->
       <div class="card">
         <div class="card-header">
-          <h2 class="card-title">📈 按模型 (Model) 全局消耗排行榜</h2>
+          <h2 class="card-title">按模型 (Model) 全局消耗排行榜</h2>
         </div>
         <div class="table-wrap">
           <table>
@@ -508,164 +891,172 @@
               <tr>
                 <th>模型名称 (Model)</th>
                 <th>生效单价 ($/1M In / Out)</th>
-                <th>请求总数 (成功/失败)</th>
+                <th>请求数 (成功/失败)</th>
                 <th>Input Tokens</th>
                 <th>Output (含推理)</th>
                 <th>Cache (读 / 写)</th>
                 <th>总 Tokens</th>
-                <th>累计金额 (USD)</th>
-                <th>消耗占比</th>
+                <th>累计费用 (USD)</th>
+                <th>费用占比</th>
               </tr>
             </thead>
             <tbody id="dashModelTableBody">
-              <tr><td colspan="9" style="text-align:center;color:var(--text-muted)">加载中...</td></tr>
+              <tr><td colspan="9" style="text-align:center;color:var(--text-tertiary)">加载中...</td></tr>
             </tbody>
           </table>
         </div>
       </div>
     </section>
 
-    <!-- TAB 2: API KEYS & CONCURRENCY CRUD -->
-    <section id="tab-keys" class="admin-tab hidden">
-      <div class="card">
-        <div class="card-header">
-          <div>
-            <h2 class="card-title">🔑 下游 API Key 策略、并发上限与模型路由管理</h2>
-            <div class="form-hint">所有修改实时热生效并自动持久化至 <code>data/key_guard_rules.json</code>，无需重启 CLIProxyAPI。</div>
-          </div>
-          <div class="input-row">
-            <input type="text" class="input" style="width:210px;padding:6px 10px" id="crudKeySearch" placeholder="过滤 API Key 或备注..." oninput="renderKeysCrudTable()">
-            <button class="btn btn-primary" onclick="openKeyModal(null)">➕ 新建 API Key 规则</button>
-          </div>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>状态</th>
-                <th>备注名称</th>
-                <th>API Key</th>
-                <th>并发限制 (活跃/上限)</th>
-                <th>已用金额 / 配额上限</th>
-                <th>模型白名单 (Allowed Models)</th>
-                <th>上游凭证绑定 (Upstream Binding)</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody id="crudKeysTableBody">
-              <tr><td colspan="8" style="text-align:center;color:var(--text-muted)">加载中...</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </section>
-
-    <!-- TAB 3: DEFAULT POLICY & UPSTREAM CREDENTIALS -->
+    <!-- TAB 3: GLOBAL DEFAULT POLICY & UPSTREAM CREDENTIALS -->
     <section id="tab-routing" class="admin-tab hidden">
       <div class="card">
         <div class="card-header">
           <div>
-            <h2 class="card-title">🛡️ 全局默认策略 (Default Policy - 针对未单独列入规则表的 API Key)</h2>
-            <div class="form-hint">当客户端使用的 API Key 未在「API Key 管理」中单独配置时，默认执行以下并发、配额、白名单与路由策略。</div>
+            <h2 class="card-title">全局默认策略 (Default Policy)</h2>
+            <div class="card-hint">当 CPA 中的 API Key 未单独定制专属规则时，默认适用以下并发上限、配额上限及模型/账号凭证复选框范围。</div>
           </div>
-          <button class="btn btn-primary" onclick="saveDefaultPolicy()">💾 保存默认策略</button>
+          <button type="button" class="btn btn-primary" onclick="saveDefaultPolicy()">💾 保存全局默认策略</button>
         </div>
-        <div class="card-body">
-          <div class="form-grid">
-            <div class="form-group">
-              <label class="form-label">未登记 API Key 访问控制</label>
-              <select id="dpAllowUnlisted">
-                <option value="true">允许访问（走下方默认并发/白名单策略）</option>
-                <option value="false">直接拒绝（未在插件登记的 Key 一律返回 403）</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label class="form-label">默认单 Key 最大并发数 (max_concurrency)</label>
-              <input type="number" min="0" class="input" id="dpMaxConcurrency" placeholder="0 表示不限制并发">
-              <div class="form-hint">0 表示不限制并发；大于 0 时超出并发返回 429</div>
-            </div>
-            <div class="form-group">
-              <label class="form-label">默认单 Key 配额上限 (USD, quota_limit_usd)</label>
-              <input type="number" min="0" step="0.01" class="input" id="dpQuotaLimit" placeholder="0 表示不限制金额">
-              <div class="form-hint">0 表示不限额度；大于 0 时累计消耗达到上限自动返回 429</div>
-            </div>
-            <div class="form-group">
-              <label class="form-label">默认上游路由调度策略</label>
-              <select id="dpBindStrategy">
-                <option value="round-robin">round-robin (在绑定凭证间轮询)</option>
-                <option value="fill-first">fill-first (按优先级顺序填满)</option>
-                <option value="strict">strict (严格隔离：凭证不可用时直接拒绝，绝不回退公共池)</option>
-              </select>
-            </div>
+
+        <div class="form-grid">
+          <div class="form-group">
+            <label class="form-label">未单独定制规则的 CPA Key 访问策略</label>
+            <select id="dpAllowUnlisted">
+              <option value="true">允许访问（适用下方默认策略）</option>
+              <option value="false">禁止访问（必须开启专属规则才可调用）</option>
+            </select>
           </div>
           <div class="form-group">
-            <label class="form-label">默认允许的模型白名单 (逗号或换行分隔，支持 <code>*</code> 通配符与 <code>!model</code> 排除)</label>
-            <input type="text" class="input mono" id="dpAllowedModels" placeholder="例如: *, !claude-3-opus*">
+            <label class="form-label">默认单 Key 最大并发数 (Max Concurrency)</label>
+            <input type="number" min="0" class="input" id="dpMaxConcurrency" placeholder="0 表示不限并发">
           </div>
           <div class="form-group">
-            <label class="form-label">默认绑定的上游凭证 (从宿主 <code>host.auth.list</code> 勾选或留空使用全部公共池)</label>
-            <div class="auth-check-list" id="dpAuthCheckList"></div>
+            <label class="form-label">默认单 Key 配额上限 (USD, Quota Limit)</label>
+            <input type="number" min="0" step="0.01" class="input" id="dpQuotaLimit" placeholder="0 表示不限额度">
+          </div>
+          <div class="form-group">
+            <label class="form-label">默认上游账号凭证调度策略</label>
+            <select id="dpBindStrategy">
+              <option value="round-robin">round-robin (在勾选凭证间轮询负载均衡)</option>
+              <option value="fill-first">fill-first (按优先级顺序依次使用)</option>
+              <option value="strict">strict (严格隔离：勾选凭证不可用时直接拒绝)</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Default Policy Model Checkboxes -->
+        <div class="form-group">
+          <label class="form-label">
+            <span>默认模型白名单规则（复选框选择）</span>
+            <span class="tag plain" id="dpModelCountBadge">全部允许 (*)</span>
+          </label>
+          <div class="selector-box">
+            <div class="selector-mode-bar">
+              <label class="master-check-label">
+                <input type="checkbox" id="dpAllModelsCheck" checked onchange="onToggleAllModels('dp')">
+                <span>允许访问全部模型 (<code>*</code>，不限制模型)</span>
+              </label>
+              <div class="input-row">
+                <button type="button" class="btn btn-sm" onclick="batchCheckModels('dp', true)">全选当前列表</button>
+                <button type="button" class="btn btn-sm" onclick="batchCheckModels('dp', false)">清空勾选</button>
+              </div>
+            </div>
+            <div id="dpModelPickerPanel" class="hidden">
+              <div class="selector-toolbar">
+                <div class="provider-pills" id="dpProviderPills"></div>
+                <input type="text" class="input" style="width:220px;min-height:30px;padding:4px 9px" id="dpModelSearch" placeholder="搜索模型名称..." oninput="renderModelCheckList('dp')">
+              </div>
+              <div class="selection-list" id="dpModelCheckList"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Default Policy Credential Checkboxes -->
+        <div class="form-group" style="margin-bottom:0">
+          <label class="form-label">
+            <span>默认绑定上游账号凭证（复选框选择）</span>
+            <span class="tag plain" id="dpCredCountBadge">全部可用凭证</span>
+          </label>
+          <div class="selector-box">
+            <div class="selector-mode-bar">
+              <label class="master-check-label">
+                <input type="checkbox" id="dpAllCredsCheck" checked onchange="onToggleAllCreds('dp')">
+                <span>使用全部可用账号凭证（公共池自动负载均衡）</span>
+              </label>
+              <div class="input-row">
+                <button type="button" class="btn btn-sm" onclick="batchCheckCreds('dp', true)">全选凭证</button>
+                <button type="button" class="btn btn-sm" onclick="batchCheckCreds('dp', false)">清空勾选</button>
+              </div>
+            </div>
+            <div id="dpCredPickerPanel" class="hidden">
+              <div class="selector-toolbar">
+                <input type="text" class="input" style="width:240px;min-height:30px;padding:4px 9px" id="dpCredSearch" placeholder="搜索凭证名称、邮箱或 Provider..." oninput="renderCredCheckList('dp')">
+              </div>
+              <div class="selection-list" id="dpCredCheckList"></div>
+            </div>
           </div>
         </div>
       </div>
 
+      <!-- Host Auth Files Overview Table -->
       <div class="card">
         <div class="card-header">
           <div>
-            <h2 class="card-title">🔌 宿主可用上游凭证列表 (Host Auth Files via <code>host.auth.list</code>)</h2>
-            <div class="form-hint">实时读取 CLIProxyAPI 宿主当前加载的所有 OAuth / API Key 凭证及其被下游 Key 绑定的情况。</div>
+            <h2 class="card-title">宿主已加载的上游账号凭证列表 (Host Auth Files)</h2>
+            <div class="card-hint">实时同步自 CLIProxyAPI 宿主 <code>host.auth.list</code> 与 <code>host.auth.models</code>。</div>
           </div>
-          <button class="btn btn-sm" onclick="loadAdminOverview()">🔄 刷新凭证状态</button>
+          <button type="button" class="btn btn-sm" onclick="loadAdminOverview()">🔄 刷新凭证</button>
         </div>
         <div class="table-wrap">
           <table>
             <thead>
               <tr>
-                <th>凭证名称 (Name / ID)</th>
-                <th>Provider / 类型</th>
+                <th>凭证名称 / ID</th>
+                <th>Provider</th>
                 <th>账号 / 邮箱 / 标签</th>
                 <th>状态</th>
                 <th>优先级</th>
                 <th>成功 / 失败</th>
-                <th>已绑定该凭证的下游 Key</th>
+                <th>已绑定此凭证的 API Key</th>
               </tr>
             </thead>
             <tbody id="hostAuthTableBody">
-              <tr><td colspan="7" style="text-align:center;color:var(--text-muted)">加载中...</td></tr>
+              <tr><td colspan="7" style="text-align:center;color:var(--text-tertiary)">加载中...</td></tr>
             </tbody>
           </table>
         </div>
       </div>
     </section>
 
-    <!-- TAB 4: MODEL PRICING MANAGEMENT -->
+    <!-- TAB 4: MODEL PRICING -->
     <section id="tab-pricing" class="admin-tab hidden">
       <div class="card">
         <div class="card-header">
           <div>
-            <h2 class="card-title">⚡ 自定义模型价格覆盖 (Custom Price Overrides - USD / 1M Tokens)</h2>
-            <div class="form-hint">优先级高于 <code>models.dev</code> 标准价，支持精确模型名或通配符（如 <code>claude-3-7-sonnet-*</code>、<code>gpt-4o*</code>）。</div>
+            <h2 class="card-title">自定义模型单价覆盖 (USD / 1M Tokens)</h2>
+            <div class="card-hint">优先级高于 <code>models.dev</code> 标准价，修改后立即热生效并持久化至 <code>data/key_guard_rules.json</code>。</div>
           </div>
           <div class="input-row">
-            <button class="btn btn-sm" onclick="triggerModelsDevSync()" id="btnSyncPricing">🌐 立即同步 models.dev</button>
-            <button class="btn btn-primary" onclick="openPriceModal('', 0, 0, 0, 0)">➕ 新增自定义模型价格</button>
+            <button type="button" class="btn btn-sm" id="btnSyncPricing" onclick="triggerModelsDevSync()">🌐 立即同步 models.dev</button>
+            <button type="button" class="btn btn-primary" onclick="openPriceModal('', 0, 0, 0, 0)">➕ 新增自定义价格</button>
           </div>
         </div>
         <div class="table-wrap">
           <table>
             <thead>
               <tr>
-                <th>模型匹配规则 (Model / Wildcard)</th>
-                <th>类型</th>
-                <th>Input 单价 ($ / 1M)</th>
-                <th>Output 单价 ($ / 1M)</th>
+                <th>模型名称 / 通配符</th>
+                <th>匹配类型</th>
+                <th>Input ($ / 1M)</th>
+                <th>Output ($ / 1M)</th>
                 <th>Cache Read ($ / 1M)</th>
                 <th>Cache Write ($ / 1M)</th>
                 <th>操作</th>
               </tr>
             </thead>
             <tbody id="customPriceTableBody">
-              <tr><td colspan="7" style="text-align:center;color:var(--text-muted)">暂无自定义价格覆盖</td></tr>
+              <tr><td colspan="7" style="text-align:center;color:var(--text-tertiary)">暂无自定义价格</td></tr>
             </tbody>
           </table>
         </div>
@@ -674,11 +1065,11 @@
       <div class="card">
         <div class="card-header">
           <div>
-            <h2 class="card-title">📚 models.dev 同步参考价格库查询</h2>
-            <div class="form-hint" id="pricingSyncMeta">支持搜索已同步的官方模型价格，点击「覆盖此价格」可一键填入自定义价格表。</div>
+            <h2 class="card-title">models.dev 官方参考价格库</h2>
+            <div class="card-hint" id="pricingSyncMeta">点击「覆盖此价格」可一键填入自定义价格表。</div>
           </div>
           <div class="input-row">
-            <input type="text" class="input" style="width:260px;padding:6px 10px" id="refPriceSearch" placeholder="输入模型关键字 (如 claude, gpt-4o, gemini)..." oninput="searchRefPricesDebounced()">
+            <input type="text" class="input" style="width:260px" id="refPriceSearch" placeholder="搜索模型 (如 claude, gpt-4o, gemini)..." oninput="searchRefPricesDebounced()">
           </div>
         </div>
         <div class="table-wrap">
@@ -694,7 +1085,7 @@
               </tr>
             </thead>
             <tbody id="refPriceTableBody">
-              <tr><td colspan="6" style="text-align:center;color:var(--text-muted)">加载中...</td></tr>
+              <tr><td colspan="6" style="text-align:center;color:var(--text-tertiary)">加载中...</td></tr>
             </tbody>
           </table>
         </div>
@@ -702,21 +1093,19 @@
     </section>
   </div>
 
-  <!-- ==================== USER SELF-SERVICE VIEW (#account) ==================== -->
+  <!-- ==================== USER SELF-QUERY VIEW (#account) ==================== -->
   <div id="accountContainer" class="hidden">
     <div class="card">
       <div class="card-header">
         <div>
-          <h2 class="card-title">🔍 API Key 实时额度、并发与账单自查</h2>
-          <div class="form-hint">请输入您的下游访问 API Key 查询当前实时并发占用、配额余额、授权模型白名单及各模型 Token 消耗明细。</div>
+          <h2 class="card-title">API Key 实时配额、并发与账单自查</h2>
+          <div class="card-hint">输入您的 API Key 查询当前实时并发占用、配额余额、授权模型列表与各模型 Token 消费明细。</div>
         </div>
       </div>
-      <div class="card-body">
-        <div class="input-row" style="max-width:640px">
-          <input type="password" class="input mono" id="selfApiKeyInput" placeholder="请输入您的 API Key (例如 sk-...)" onkeydown="if(event.key==='Enter') querySelfAccount()">
-          <button class="btn" onclick="toggleSelfKeyVisibility()">👁️</button>
-          <button class="btn btn-primary" style="white-space:nowrap" onclick="querySelfAccount()">查询账单</button>
-        </div>
+      <div class="input-row" style="max-width:620px">
+        <input type="password" class="input mono" style="flex:1" id="selfApiKeyInput" placeholder="请输入您的 API Key (例如 sk-...)" onkeydown="if(event.key==='Enter') querySelfAccount()">
+        <button type="button" class="btn" onclick="toggleSelfKeyVisibility()">👁️</button>
+        <button type="button" class="btn btn-primary" onclick="querySelfAccount()">查询账单</button>
       </div>
     </div>
 
@@ -728,9 +1117,9 @@
           <div class="kpi-sub mono" id="selfKeyMasked">-</div>
         </div>
         <div class="kpi-card">
-          <div class="kpi-label">已消耗金额 / 配额上限 (USD)</div>
-          <div class="kpi-value cost-text" id="selfUsedCost">$0.000000</div>
-          <div class="progress-track"><div class="progress-fill" id="selfQuotaBar" style="width:0%"></div></div>
+          <div class="kpi-label">已用金额 / 配额上限 (USD)</div>
+          <div class="kpi-value" id="selfUsedCost">$0.000000</div>
+          <div class="bar"><div class="bar-fill" id="selfQuotaBar" style="width:0%"></div></div>
           <div class="kpi-sub" id="selfQuotaSub">配额上限: 不限额度</div>
         </div>
         <div class="kpi-card">
@@ -741,21 +1130,21 @@
         <div class="kpi-card">
           <div class="kpi-label">累计总 Token 消耗</div>
           <div class="kpi-value" id="selfTotalTokens">0</div>
-          <div class="kpi-sub" id="selfTokenBreakdown">输入: 0 | 输出: 0 | 缓存: 0</div>
+          <div class="kpi-sub" id="selfTokenBreakdown">输入: 0 · 输出: 0 · 缓存: 0</div>
         </div>
       </div>
 
       <div class="card">
         <div class="card-header">
-          <h2 class="card-title">✅ 您的 API Key 授权模型范围与路由策略</h2>
+          <h2 class="card-title">授权模型范围与专属通道路由</h2>
         </div>
-        <div class="card-body">
-          <div style="margin-bottom:10px">
-            <span style="color:var(--text-secondary);font-size:13px;margin-right:8px">允许访问的模型规则:</span>
+        <div class="inset-card" style="display:grid;gap:10px">
+          <div>
+            <span style="color:var(--text-secondary);font-size:13px;margin-right:8px">可用模型范围:</span>
             <span id="selfAllowedModels"></span>
           </div>
           <div>
-            <span style="color:var(--text-secondary);font-size:13px;margin-right:8px">专属上游通道路由:</span>
+            <span style="color:var(--text-secondary);font-size:13px;margin-right:8px">上游账号通道:</span>
             <span id="selfUpstreamInfo"></span>
           </div>
         </div>
@@ -763,7 +1152,7 @@
 
       <div class="card">
         <div class="card-header">
-          <h2 class="card-title">📋 按模型统计的 Token 与 USD 消费明细</h2>
+          <h2 class="card-title">按模型统计的 Token 与 USD 消费明细</h2>
         </div>
         <div class="table-wrap">
           <table>
@@ -771,7 +1160,7 @@
               <tr>
                 <th>模型名称 (Model)</th>
                 <th>计费单价 ($/1M In / Out)</th>
-                <th>请求次数 (成功/失败)</th>
+                <th>请求数 (成功/失败)</th>
                 <th>Input Tokens</th>
                 <th>Output (含推理)</th>
                 <th>Cache (读 / 写)</th>
@@ -781,7 +1170,7 @@
               </tr>
             </thead>
             <tbody id="selfModelsTableBody">
-              <tr><td colspan="9" style="text-align:center;color:var(--text-muted)">暂无调用记录</td></tr>
+              <tr><td colspan="9" style="text-align:center;color:var(--text-tertiary)">暂无调用记录</td></tr>
             </tbody>
           </table>
         </div>
@@ -790,25 +1179,26 @@
   </div>
 </div>
 
-<!-- ==================== MODAL: CREATE / EDIT API KEY ==================== -->
+<!-- ==================== MODAL: CREATE / EDIT UNIFIED API KEY ==================== -->
 <div class="modal-backdrop" id="keyModalBackdrop">
   <div class="modal">
     <div class="modal-header">
       <h3 class="card-title" id="keyModalTitle">新建 / 编辑 API Key 规则</h3>
-      <button class="btn btn-sm" onclick="closeKeyModal()">✕</button>
+      <button type="button" class="btn btn-sm" onclick="closeKeyModal()">✕</button>
     </div>
     <div class="modal-body">
+      <input type="hidden" id="kmOriginalApiKey" value="">
       <div class="form-grid">
         <div class="form-group">
-          <label class="form-label">下游 API Key *</label>
+          <label class="form-label">API Key (将同步写入 CPA 全局 <code>api-keys</code>) *</label>
           <div class="input-row">
-            <input type="text" class="input mono" id="kmApiKey" placeholder="sk-...">
-            <button class="btn btn-sm" type="button" onclick="generateRandomSkKey()" title="随机生成高强度 API Key">🎲 随机生成</button>
+            <input type="text" class="input mono" style="flex:1" id="kmApiKey" placeholder="sk-...">
+            <button type="button" class="btn btn-sm" onclick="generateRandomSkKey()">🎲 随机生成</button>
           </div>
         </div>
         <div class="form-group">
-          <label class="form-label">备注名称 / 租户名称 (Name)</label>
-          <input type="text" class="input" id="kmName" placeholder="例如：研发部-张三 / 生产环境客户端">
+          <label class="form-label">备注名称 / 租户标识</label>
+          <input type="text" class="input" id="kmName" placeholder="例如：研发部-张三 / 生产客户端">
         </div>
       </div>
 
@@ -816,57 +1206,83 @@
         <div class="form-group">
           <label class="form-label">最大并发数限制 (Max Concurrency)</label>
           <input type="number" min="0" class="input" id="kmMaxConcurrency" value="0">
-          <div class="form-hint">0 表示不限并发；设为 N 则同时最多允许 N 个进行中请求</div>
+          <div class="form-hint">0 表示不限并发；超出时返回 429</div>
         </div>
         <div class="form-group">
-          <label class="form-label">累计金额配额上限 (USD, Quota Limit)</label>
+          <label class="form-label">累计配额上限 (USD, Quota Limit)</label>
           <input type="number" min="0" step="0.01" class="input" id="kmQuotaLimit" value="0">
-          <div class="form-hint">0 表示不限额度；达到上限后自动拦截并返回 429 Quota Exceeded</div>
+          <div class="form-hint">0 表示不限额度；耗尽后返回 429</div>
         </div>
         <div class="form-group">
           <label class="form-label">启用状态</label>
           <select id="kmEnabled">
-            <option value="true">✅ 启用 (Enabled)</option>
-            <option value="false">⛔ 禁用 (Disabled - 立即拦截返回 403)</option>
+            <option value="true">启用 (Enabled)</option>
+            <option value="false">禁用 (Disabled - 立即拦截返回 403)</option>
           </select>
         </div>
       </div>
 
+      <!-- Pure Checkbox Model Whitelist Selector -->
       <div class="form-group">
-        <label class="form-label">模型白名单规则 (Allowed Models - 逗号或换行分隔，支持 <code>*</code> 通配与 <code>!</code> 排除)</label>
-        <input type="text" class="input mono" id="kmAllowedModels" value="*">
-        <div>
-          <span class="chip-preset" onclick="addModelPreset('*')">全部允许 (*)</span>
-          <span class="chip-preset" onclick="addModelPreset('claude-*')">Claude 全系 (claude-*)</span>
-          <span class="chip-preset" onclick="addModelPreset('gpt-4o*, o1*, o3*')">OpenAI 主力 (gpt-4o*, o1*, o3*)</span>
-          <span class="chip-preset" onclick="addModelPreset('gemini-2.5-*')">Gemini 2.5 (gemini-2.5-*)</span>
-          <span class="chip-preset" onclick="addModelPreset('!claude-3-opus*')">排除 Opus (!claude-3-opus*)</span>
+        <label class="form-label">
+          <span>模型白名单规则（复选框选择）</span>
+          <span class="tag plain" id="kmModelCountBadge">全部允许 (*)</span>
+        </label>
+        <div class="selector-box">
+          <div class="selector-mode-bar">
+            <label class="master-check-label">
+              <input type="checkbox" id="kmAllModelsCheck" checked onchange="onToggleAllModels('km')">
+              <span>允许访问全部模型 (<code>*</code>，不限制模型)</span>
+            </label>
+            <div class="input-row">
+              <button type="button" class="btn btn-sm" onclick="batchCheckModels('km', true)">全选当前列表</button>
+              <button type="button" class="btn btn-sm" onclick="batchCheckModels('km', false)">清空勾选</button>
+            </div>
+          </div>
+          <div id="kmModelPickerPanel" class="hidden">
+            <div class="selector-toolbar">
+              <div class="provider-pills" id="kmProviderPills"></div>
+              <input type="text" class="input" style="width:210px;min-height:30px;padding:4px 9px" id="kmModelSearch" placeholder="搜索模型名称..." oninput="renderModelCheckList('km')">
+            </div>
+            <div class="selection-list" id="kmModelCheckList"></div>
+          </div>
         </div>
       </div>
 
-      <div class="form-grid">
-        <div class="form-group">
-          <label class="form-label">上游凭证调度策略 (Upstream Binding Strategy)</label>
-          <select id="kmBindStrategy">
-            <option value="round-robin">round-robin (在选中凭证间轮询负载均衡)</option>
-            <option value="fill-first">fill-first (按优先级优先使用第一个可用凭证)</option>
-            <option value="strict">strict (严格租户隔离：选中凭证不可用时直接报错，绝不回退其它凭证)</option>
-          </select>
+      <!-- Pure Checkbox Upstream Credential Selector -->
+      <div class="form-group" style="margin-bottom:0">
+        <label class="form-label">
+          <span>绑定上游账号凭证（复选框选择）</span>
+          <span class="tag plain" id="kmCredCountBadge">全部可用凭证</span>
+        </label>
+        <div class="selector-box">
+          <div class="selector-mode-bar">
+            <label class="master-check-label">
+              <input type="checkbox" id="kmAllCredsCheck" checked onchange="onToggleAllCreds('km')">
+              <span>允许使用全部可用账号凭证（公共池自动负载均衡）</span>
+            </label>
+            <div class="input-row">
+              <select id="kmBindStrategy" style="width:auto;min-height:28px;padding:2px 8px;font-size:12px">
+                <option value="round-robin">策略: round-robin (轮询)</option>
+                <option value="fill-first">策略: fill-first (优先级)</option>
+                <option value="strict">策略: strict (严格隔离)</option>
+              </select>
+              <button type="button" class="btn btn-sm" onclick="batchCheckCreds('km', true)">全选凭证</button>
+              <button type="button" class="btn btn-sm" onclick="batchCheckCreds('km', false)">清空勾选</button>
+            </div>
+          </div>
+          <div id="kmCredPickerPanel" class="hidden">
+            <div class="selector-toolbar">
+              <input type="text" class="input" style="width:230px;min-height:30px;padding:4px 9px" id="kmCredSearch" placeholder="搜索账号凭证、邮箱或 Provider..." oninput="renderCredCheckList('km')">
+            </div>
+            <div class="selection-list" id="kmCredCheckList"></div>
+          </div>
         </div>
-        <div class="form-group">
-          <label class="form-label">手动补充绑定凭证 ID / 文件名 (可选，逗号分隔)</label>
-          <input type="text" class="input mono" id="kmCustomCreds" placeholder="如 claude-pro-1.json, auth-2">
-        </div>
-      </div>
-
-      <div class="form-group">
-        <label class="form-label">勾选绑定的上游凭证 (来自宿主 <code>host.auth.list</code>，不勾选则允许使用全部可用凭证)</label>
-        <div class="auth-check-list" id="kmAuthCheckList"></div>
       </div>
     </div>
     <div class="modal-footer">
-      <button class="btn" onclick="closeKeyModal()">取消</button>
-      <button class="btn btn-primary" onclick="submitKeyModal()">💾 保存并立即热生效</button>
+      <button type="button" class="btn" onclick="closeKeyModal()">取消</button>
+      <button type="button" class="btn btn-primary" onclick="submitKeyModal()">💾 保存并同步至 CPA</button>
     </div>
   </div>
 </div>
@@ -875,37 +1291,38 @@
 <div class="modal-backdrop" id="priceModalBackdrop">
   <div class="modal" style="max-width:500px">
     <div class="modal-header">
-      <h3 class="card-title">💰 新增 / 编辑自定义模型价格 (USD / 1M Tokens)</h3>
-      <button class="btn btn-sm" onclick="closePriceModal()">✕</button>
+      <h3 class="card-title">新增 / 编辑自定义模型价格 (USD / 1M Tokens)</h3>
+      <button type="button" class="btn btn-sm" onclick="closePriceModal()">✕</button>
     </div>
     <div class="modal-body">
       <div class="form-group">
-        <label class="form-label">模型名称或通配符规则 *</label>
-        <input type="text" class="input mono" id="pmModel" placeholder="例如: gpt-4o 或 claude-3-7-sonnet-*">
-        <div class="form-hint">支持精确名称或 <code>*</code> 通配符；填写 <code>__default__</code> 可设置全局兜底默认单价</div>
+        <label class="form-label">选择或输入模型名称 / 通配符规则 *</label>
+        <input type="text" class="input mono" id="pmModel" list="pmModelDatalist" placeholder="例如: gpt-4o 或 claude-*">
+        <datalist id="pmModelDatalist"></datalist>
+        <div class="form-hint">可从下拉列表选择已有模型，或填写 <code>__default__</code> 设置全局兜底单价</div>
       </div>
       <div class="form-grid">
         <div class="form-group">
-          <label class="form-label">Input 输入单价 ($ / 1M Tokens)</label>
+          <label class="form-label">Input 输入单价 ($ / 1M)</label>
           <input type="number" min="0" step="0.0001" class="input mono" id="pmInput" value="0">
         </div>
         <div class="form-group">
-          <label class="form-label">Output 输出单价 ($ / 1M Tokens)</label>
+          <label class="form-label">Output 输出单价 ($ / 1M)</label>
           <input type="number" min="0" step="0.0001" class="input mono" id="pmOutput" value="0">
         </div>
         <div class="form-group">
-          <label class="form-label">Cache Read 缓存读取 ($ / 1M Tokens)</label>
+          <label class="form-label">Cache Read 缓存读取 ($ / 1M)</label>
           <input type="number" min="0" step="0.0001" class="input mono" id="pmCacheRead" value="0">
         </div>
         <div class="form-group">
-          <label class="form-label">Cache Write 缓存写入 ($ / 1M Tokens)</label>
+          <label class="form-label">Cache Write 缓存写入 ($ / 1M)</label>
           <input type="number" min="0" step="0.0001" class="input mono" id="pmCacheWrite" value="0">
         </div>
       </div>
     </div>
     <div class="modal-footer">
-      <button class="btn" onclick="closePriceModal()">取消</button>
-      <button class="btn btn-primary" onclick="submitPriceModal()">💾 保存单价规则</button>
+      <button type="button" class="btn" onclick="closePriceModal()">取消</button>
+      <button type="button" class="btn btn-primary" onclick="submitPriceModal()">💾 保存单价规则</button>
     </div>
   </div>
 </div>
@@ -914,19 +1331,19 @@
 <div class="modal-backdrop" id="mgmtKeyModalBackdrop">
   <div class="modal" style="max-width:440px">
     <div class="modal-header">
-      <h3 class="card-title">🛡️ 输入 CLIProxyAPI 管理密钥 (Management Key)</h3>
-      <button class="btn btn-sm" onclick="closeMgmtKeyModal()">✕</button>
+      <h3 class="card-title">输入 CLIProxyAPI 管理密钥 (Management Key)</h3>
+      <button type="button" class="btn btn-sm" onclick="closeMgmtKeyModal()">✕</button>
     </div>
     <div class="modal-body">
       <div class="form-group">
-        <label class="form-label">Management Secret Key / Admin Token</label>
+        <label class="form-label">Management Secret Key</label>
         <input type="password" class="input mono" id="mgmtKeyInput" placeholder="输入 config.yaml 中的 remote-management.secret-key" onkeydown="if(event.key==='Enter') saveMgmtKey()">
-        <div class="form-hint">密钥仅保存在您当前浏览器的本地存储中，用于调用 <code>/v0/management/key-guard/*</code> 管理接口。如果您是普通用户，请点击下方切换至「API Key 自查模式」。</div>
+        <div class="form-hint">当内嵌在 CPAMC 管理后台时会自动读取登录密钥；独立访问时请输入管理密钥，或切换至「Key 自查模式」。</div>
       </div>
     </div>
     <div class="modal-footer">
-      <button class="btn" onclick="switchToAccountModeFromModal()">👤 我是普通用户，去查 Key 账单</button>
-      <button class="btn btn-primary" onclick="saveMgmtKey()">解锁管理后台</button>
+      <button type="button" class="btn" onclick="switchToAccountModeFromModal()">👤 我是普通用户，去查 Key 账单</button>
+      <button type="button" class="btn btn-primary" onclick="saveMgmtKey()">解锁管理控制台</button>
     </div>
   </div>
 </div>
@@ -934,207 +1351,276 @@
 <div class="toast-box" id="toastBox"></div>
 
 <script>
-  const API_BASE_MGMT = '/v0/management/key-guard';
-  const API_SELF_USAGE = '/v0/resource/plugins/cpa-plugin-key/usage';
-  const STORAGE_MGMT_KEY = 'cpa_key_guard_mgmt_key';
-  const STORAGE_SELF_KEY = 'cpa_key_guard_self_api_key';
+  const API_BASE_MGMT = "/v0/management/key-guard";
+  const API_CPA_KEYS  = "/v0/management/api-keys";
+  const API_SELF_USAGE = "/v0/resource/plugins/cpa-plugin-key/usage";
+  const STORAGE_MGMT_KEY = "cpa_key_guard_mgmt_key";
+  const STORAGE_SELF_KEY = "cpa_key_guard_self_api_key";
 
-  let currentMode = 'admin'; // 'admin' | 'account'
+  if (window.parent !== window) {
+    document.body.classList.add("embedded");
+  }
+
+  let currentMode = "admin";
   let overviewData = null;
   let expandedDashKeys = {};
   let revealedKeys = {};
   let refSearchTimer = null;
 
+  // Checkbox selection state for Modal ('km') and Default Policy ('dp')
+  const selectorState = {
+    km: {
+      allModels: true,
+      selectedModels: new Set(),
+      providerFilter: "all",
+      allCreds: true,
+      selectedCreds: new Set()
+    },
+    dp: {
+      allModels: true,
+      selectedModels: new Set(),
+      providerFilter: "all",
+      allCreds: true,
+      selectedCreds: new Set()
+    }
+  };
+
   function showToast(msg, isError = false) {
-    const box = document.getElementById('toastBox');
-    const el = document.createElement('div');
-    el.className = 'toast';
-    if (isError) el.style.borderLeftColor = 'var(--danger)';
+    const box = document.getElementById("toastBox");
+    const el = document.createElement("div");
+    el.className = "toast";
+    if (isError) el.style.borderLeftColor = "var(--error-color)";
     el.textContent = msg;
     box.appendChild(el);
     setTimeout(() => el.remove(), 3400);
   }
 
   function escapeHtml(str) {
-    if (str === null || str === undefined) return '';
+    if (str === null || str === undefined) return "";
     return String(str)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
   }
 
   function fmtInt(n) {
-    return Number(n || 0).toLocaleString('en-US');
+    return Number(n || 0).toLocaleString("en-US");
   }
 
   function fmtUSD(n) {
-    return '$' + Number(n || 0).toFixed(6);
+    return "$" + Number(n || 0).toFixed(6);
+  }
+
+  function maskKeyStr(k) {
+    if (!k) return "anonymous";
+    if (k.length <= 8) return k.slice(0, 2) + "***";
+    if (k.length <= 14) return k.slice(0, 4) + "..." + k.slice(-3);
+    return k.slice(0, 7) + "..." + k.slice(-5);
   }
 
   function discoverManagementKey() {
+    // 1. Check CPAMC encrypted localStorage (`cli-proxy-auth`)
+    const cpamcAuth = cpamcStoredValue("cli-proxy-auth")?.state?.managementKey;
+    if (typeof cpamcAuth === "string" && cpamcAuth.trim()) return cpamcAuth.trim();
+
+    const cpamcDirect = cpamcStoredValue("managementKey");
+    if (typeof cpamcDirect === "string" && cpamcDirect.trim()) return cpamcDirect.trim();
+
+    // 2. Check URL query
     const params = new URLSearchParams(window.location.search);
-    for (const qk of ['mgmt_key', 'management_key', 'token', 'admin_token']) {
+    for (const qk of ["mgmt_key", "management_key", "token", "admin_token"]) {
       if (params.get(qk)) {
         localStorage.setItem(STORAGE_MGMT_KEY, params.get(qk));
         return params.get(qk);
       }
     }
+
+    // 3. Check localStorage / sessionStorage
     const candidates = [
       STORAGE_MGMT_KEY,
-      'management_key',
-      'cpa_management_key',
-      'cliproxy_management_key',
-      'secret_key',
-      'managementKey',
-      'auth_token',
-      'token'
+      "management_key",
+      "cpa_management_key",
+      "cliproxy_management_key",
+      "secret_key",
+      "managementKey"
     ];
     for (const k of candidates) {
       const v = localStorage.getItem(k) || sessionStorage.getItem(k);
       if (v && v.trim()) return v.trim();
     }
-    try {
-      if (window.parent && window.parent !== window && window.parent.localStorage) {
-        for (const k of candidates) {
-          const v = window.parent.localStorage.getItem(k) || window.parent.sessionStorage.getItem(k);
-          if (v && v.trim()) return v.trim();
-        }
-      }
-    } catch (_) {}
-    return '';
+    return "";
   }
 
-  async function apiFetchMgmt(subpath, options = {}) {
+  async function apiFetchRaw(urlPath, options = {}) {
     const key = discoverManagementKey();
-    const headers = Object.assign({ 'Accept': 'application/json' }, options.headers || {});
-    if (options.body && !headers['Content-Type']) {
-      headers['Content-Type'] = 'application/json';
+    const headers = Object.assign({ "Accept": "application/json" }, options.headers || {});
+    if (options.body && !headers["Content-Type"]) {
+      headers["Content-Type"] = "application/json";
     }
     if (key) {
-      headers['Authorization'] = 'Bearer ' + key;
-      headers['X-Management-Key'] = key;
+      headers["Authorization"] = "Bearer " + key;
+      headers["X-Management-Key"] = key;
     }
-    const resp = await fetch(API_BASE_MGMT + subpath, Object.assign({}, options, { headers }));
+    const resp = await fetch(urlPath, Object.assign({}, options, { headers }));
     if (resp.status === 401 || resp.status === 403) {
       openMgmtKeyModal();
-      throw new Error('需要管理员密钥认证 (HTTP ' + resp.status + ')');
+      throw new Error("需要管理员密钥认证 (HTTP " + resp.status + ")");
     }
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok) {
-      const msg = (data && data.error && data.error.message) || data.error || ('请求失败: HTTP ' + resp.status);
+      const msg = (data && data.error && data.error.message) || data.error || ("请求失败: HTTP " + resp.status);
       throw new Error(msg);
     }
     return data;
   }
 
+  function apiFetchMgmt(subpath, options = {}) {
+    return apiFetchRaw(API_BASE_MGMT + subpath, options);
+  }
+
+  // ==================== UNIFIED CPA GLOBAL API-KEYS SYNC ====================
+  async function fetchCPAGlobalKeys() {
+    try {
+      const res = await apiFetchRaw(API_CPA_KEYS, { method: "GET" });
+      const list = res["api-keys"] || res.api_keys || [];
+      if (Array.isArray(list)) {
+        return list.map(k => String(k || "").trim()).filter(Boolean);
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  async function writeCPAGlobalKeys(keysArray) {
+    try {
+      const unique = Array.from(new Set(keysArray.map(k => String(k || "").trim()).filter(Boolean)));
+      await apiFetchRaw(API_CPA_KEYS, {
+        method: "PUT",
+        body: JSON.stringify(unique)
+      });
+      return unique;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // ==================== MODE & TAB SWITCHING ====================
   function detectInitialMode() {
-    const hash = (window.location.hash || '').toLowerCase();
+    const hash = (window.location.hash || "").toLowerCase();
     const params = new URLSearchParams(window.location.search);
-    if (hash.startsWith('#account') || params.get('mode') === 'account') {
-      setMode('account');
-      const hashQueryIdx = window.location.hash.indexOf('?');
+    if (hash.startsWith("#account") || params.get("mode") === "account") {
+      setMode("account");
+      const hashQueryIdx = window.location.hash.indexOf("?");
       if (hashQueryIdx >= 0) {
         const hp = new URLSearchParams(window.location.hash.slice(hashQueryIdx + 1));
-        if (hp.get('key')) {
-          document.getElementById('selfApiKeyInput').value = hp.get('key');
-        }
-      } else if (params.get('key')) {
-        document.getElementById('selfApiKeyInput').value = params.get('key');
+        if (hp.get("key")) document.getElementById("selfApiKeyInput").value = hp.get("key");
+      } else if (params.get("key")) {
+        document.getElementById("selfApiKeyInput").value = params.get("key");
       } else {
-        const saved = sessionStorage.getItem(STORAGE_SELF_KEY) || '';
-        if (saved) document.getElementById('selfApiKeyInput').value = saved;
+        const saved = sessionStorage.getItem(STORAGE_SELF_KEY) || "";
+        if (saved) document.getElementById("selfApiKeyInput").value = saved;
       }
-      if (document.getElementById('selfApiKeyInput').value.trim()) {
+      if (document.getElementById("selfApiKeyInput").value.trim()) {
         querySelfAccount();
       }
     } else {
-      setMode('admin');
+      setMode("admin");
       loadAdminOverview();
-      searchRefPrices('');
+      searchRefPrices("");
     }
   }
 
   function setMode(mode) {
     currentMode = mode;
-    const adminEl = document.getElementById('adminContainer');
-    const acctEl = document.getElementById('accountContainer');
-    const switchBtn = document.getElementById('btnSwitchMode');
-    const mgmtBtn = document.getElementById('btnSetMgmtKey');
-    const titleEl = document.getElementById('pageTitle');
-    if (mode === 'account') {
-      adminEl.classList.add('hidden');
-      acctEl.classList.remove('hidden');
-      switchBtn.textContent = '🛠️ 切换至管理员后台';
-      mgmtBtn.classList.add('hidden');
-      titleEl.textContent = 'API Key 额度与账单自查中心';
-      if (!window.location.hash.startsWith('#account')) {
-        history.replaceState(null, '', '#account');
+    const adminEl = document.getElementById("adminContainer");
+    const acctEl = document.getElementById("accountContainer");
+    const switchBtn = document.getElementById("btnSwitchMode");
+    const mgmtBtn = document.getElementById("btnSetMgmtKey");
+    const titleEl = document.getElementById("pageTitle");
+    if (mode === "account") {
+      adminEl.classList.add("hidden");
+      acctEl.classList.remove("hidden");
+      switchBtn.textContent = "🛠️ 管理员模式";
+      mgmtBtn.classList.add("hidden");
+      titleEl.textContent = "API Key 额度与账单自查";
+      if (!window.location.hash.startsWith("#account")) {
+        history.replaceState(null, "", "#account");
       }
     } else {
-      acctEl.classList.add('hidden');
-      adminEl.classList.remove('hidden');
-      switchBtn.textContent = '👤 切换至 Key 自查模式';
-      mgmtBtn.classList.remove('hidden');
-      titleEl.textContent = 'API Key 计费与管控中心';
-      if (window.location.hash.startsWith('#account')) {
-        history.replaceState(null, '', window.location.pathname + window.location.search);
+      acctEl.classList.add("hidden");
+      adminEl.classList.remove("hidden");
+      switchBtn.textContent = "👤 Key 自查模式";
+      mgmtBtn.classList.remove("hidden");
+      titleEl.textContent = "API Key 计费与管控";
+      if (window.location.hash.startsWith("#account")) {
+        history.replaceState(null, "", window.location.pathname + window.location.search);
       }
     }
   }
 
   function toggleMode() {
-    if (currentMode === 'admin') {
-      setMode('account');
-      const saved = sessionStorage.getItem(STORAGE_SELF_KEY) || '';
-      if (saved && !document.getElementById('selfApiKeyInput').value) {
-        document.getElementById('selfApiKeyInput').value = saved;
+    if (currentMode === "admin") {
+      setMode("account");
+      const saved = sessionStorage.getItem(STORAGE_SELF_KEY) || "";
+      if (saved && !document.getElementById("selfApiKeyInput").value) {
+        document.getElementById("selfApiKeyInput").value = saved;
         querySelfAccount();
       }
     } else {
-      setMode('admin');
+      setMode("admin");
       loadAdminOverview();
-      searchRefPrices('');
+      searchRefPrices("");
     }
   }
 
   function copySelfQueryLink() {
-    const url = window.location.origin + '/v0/resource/plugins/cpa-plugin-key/ui#account';
+    const url = window.location.origin + "/v0/resource/plugins/cpa-plugin-key/ui#account";
     navigator.clipboard.writeText(url).then(() => {
-      showToast('已复制用户自查链接: ' + url);
+      showToast("已复制用户自查链接: " + url);
     }).catch(() => {
-      prompt('请复制用户自查链接:', url);
+      prompt("请复制用户自查链接:", url);
     });
   }
 
   function refreshCurrentView() {
-    if (currentMode === 'account') {
+    if (currentMode === "account") {
       querySelfAccount();
     } else {
       loadAdminOverview();
-      searchRefPrices(document.getElementById('refPriceSearch').value);
+      searchRefPrices(document.getElementById("refPriceSearch").value);
     }
   }
 
   function switchAdminTab(tabId) {
-    document.querySelectorAll('.admin-tab').forEach(s => s.classList.add('hidden'));
-    document.getElementById(tabId).classList.remove('hidden');
-    document.querySelectorAll('.tab-btn').forEach(b => {
-      b.classList.toggle('active', b.getAttribute('data-tab') === tabId);
+    document.querySelectorAll(".admin-tab").forEach(s => s.classList.add("hidden"));
+    document.getElementById(tabId).classList.remove("hidden");
+    document.querySelectorAll(".tab-btn").forEach(b => {
+      b.classList.toggle("active", b.getAttribute("data-tab") === tabId);
     });
   }
 
-  // ==================== ADMIN OVERVIEW & RENDERING ====================
+  // ==================== ADMIN OVERVIEW & UNIFIED KEY SYNC ====================
   async function loadAdminOverview() {
     try {
-      const data = await apiFetchMgmt('/overview');
+      // 1. Pull CPA's global api-keys and sync with plugin if reachable
+      const cpaKeys = await fetchCPAGlobalKeys();
+      let data;
+      if (cpaKeys !== null) {
+        data = await apiFetchMgmt("/keys/sync", {
+          method: "POST",
+          body: JSON.stringify({ keys: cpaKeys })
+        });
+      } else {
+        data = await apiFetchMgmt("/overview");
+      }
       overviewData = data;
+      populateModelDatalist();
       renderSyncBadge(data.pricing_status);
       renderDashboardKPIs(data);
-      renderDashboardTables();
       renderKeysCrudTable();
-      renderDefaultPolicyForm();
+      renderDashboardTables();
+      initDefaultPolicySelectors();
       renderHostAuthTable();
       renderCustomPricesTable();
     } catch (err) {
@@ -1142,53 +1628,541 @@
     }
   }
 
+  function populateModelDatalist() {
+    const dl = document.getElementById("pmModelDatalist");
+    if (!dl || !overviewData) return;
+    const models = overviewData.available_models || [];
+    dl.innerHTML = models.map(m => `<option value="${escapeHtml(m.id)}">${escapeHtml(m.provider)}</option>`).join("");
+  }
+
   function renderSyncBadge(ps) {
     if (!ps) return;
-    const el = document.getElementById('syncBadge');
-    el.textContent = `models.dev: ${fmtInt(ps.synced_model_keys)} 模型 | 自定义: ${ (ps.custom_exact_count || 0) + (ps.custom_wildcard_count || 0) }`;
-    const meta = document.getElementById('pricingSyncMeta');
+    const el = document.getElementById("syncBadge");
+    el.textContent = `models.dev: ${fmtInt(ps.synced_model_keys)} 模型`;
+    const meta = document.getElementById("pricingSyncMeta");
     if (meta) {
-      meta.textContent = `最后同步: ${ps.last_sync_at || '未同步'} | 来源: ${ps.sync_source || '-'} | 已载入模型键: ${fmtInt(ps.synced_model_keys)}` +
-        (ps.last_sync_error ? ` | 最近错误: ${ps.last_sync_error}` : '');
+      meta.textContent = `最后同步: ${ps.last_sync_at || "未同步"} · 来源: ${ps.sync_source || "-"} · 已载入模型键: ${fmtInt(ps.synced_model_keys)}`;
     }
   }
 
   function renderDashboardKPIs(data) {
     const s = data.summary || {};
-    document.getElementById('kpiTotalCost').textContent = fmtUSD(s.total_cost_usd || 0);
-    document.getElementById('kpiTotalTokens').textContent = fmtInt(s.total_tokens || 0);
-    document.getElementById('kpiTokenSub').textContent =
-      `输入: ${fmtInt(s.input_tokens)} | 输出: ${fmtInt(s.output_tokens)} | 缓存读: ${fmtInt(s.cache_read_tokens)}`;
-    document.getElementById('kpiTotalRequests').textContent = fmtInt(s.total_requests || 0);
-    const rate = s.total_requests > 0 ? ((s.success_requests / s.total_requests) * 100).toFixed(1) : '100.0';
-    document.getElementById('kpiReqSub').textContent =
-      `成功: ${fmtInt(s.success_requests)} | 失败: ${fmtInt(s.failed_requests)} (${rate}%)`;
-    document.getElementById('kpiActiveConc').textContent = fmtInt(s.active_concurrency || 0);
-    document.getElementById('kpiKeyCountSub').textContent =
-      `已配置规则 Key: ${fmtInt((data.keys || []).length)} 个`;
+    document.getElementById("kpiTotalCost").textContent = fmtUSD(s.total_cost_usd || 0);
+    document.getElementById("kpiTotalTokens").textContent = fmtInt(s.total_tokens || 0);
+    document.getElementById("kpiTokenSub").textContent =
+      `输入: ${fmtInt(s.input_tokens)} · 输出: ${fmtInt(s.output_tokens)} · 缓存读: ${fmtInt(s.cache_read_tokens)}`;
+    document.getElementById("kpiTotalRequests").textContent = fmtInt(s.total_requests || 0);
+    const rate = s.total_requests > 0 ? ((s.success_requests / s.total_requests) * 100).toFixed(1) : "100.0";
+    document.getElementById("kpiReqSub").textContent =
+      `成功: ${fmtInt(s.success_requests)} · 失败: ${fmtInt(s.failed_requests)} (${rate}%)`;
+    document.getElementById("kpiActiveConc").textContent = fmtInt(s.active_concurrency || 0);
+    document.getElementById("kpiKeyCountSub").textContent =
+      `CPA 统一 API Key: ${fmtInt((data.keys || []).length)} 个`;
   }
 
+  // ==================== PURE CHECKBOX SELECTORS (MODELS & CREDENTIALS) ====================
+  function getAvailableModels() {
+    return (overviewData && overviewData.available_models) || [];
+  }
+
+  function getAvailableCredentials() {
+    return (overviewData && overviewData.auth_files) || [];
+  }
+
+  function loadSelectorFromRule(prefix, allowedModels, boundCreds) {
+    const st = selectorState[prefix];
+    const normModels = (allowedModels || []).map(s => s.trim()).filter(Boolean);
+    const isAllModels = normModels.length === 0 || (normModels.length === 1 && normModels[0] === "*");
+    st.allModels = isAllModels;
+    st.selectedModels = new Set(isAllModels ? [] : normModels);
+    st.providerFilter = "all";
+
+    const normCreds = (boundCreds || []).map(s => s.trim()).filter(Boolean);
+    const isAllCreds = normCreds.length === 0;
+    st.allCreds = isAllCreds;
+    st.selectedCreds = new Set(normCreds);
+
+    document.getElementById(prefix + "AllModelsCheck").checked = st.allModels;
+    document.getElementById(prefix + "ModelPickerPanel").classList.toggle("hidden", st.allModels);
+    document.getElementById(prefix + "AllCredsCheck").checked = st.allCreds;
+    document.getElementById(prefix + "CredPickerPanel").classList.toggle("hidden", st.allCreds);
+
+    renderProviderPills(prefix);
+    renderModelCheckList(prefix);
+    renderCredCheckList(prefix);
+    updateSelectorBadges(prefix);
+  }
+
+  function onToggleAllModels(prefix) {
+    const st = selectorState[prefix];
+    st.allModels = document.getElementById(prefix + "AllModelsCheck").checked;
+    document.getElementById(prefix + "ModelPickerPanel").classList.toggle("hidden", st.allModels);
+    if (!st.allModels) {
+      renderProviderPills(prefix);
+      renderModelCheckList(prefix);
+    }
+    updateSelectorBadges(prefix);
+  }
+
+  function onToggleAllCreds(prefix) {
+    const st = selectorState[prefix];
+    st.allCreds = document.getElementById(prefix + "AllCredsCheck").checked;
+    document.getElementById(prefix + "CredPickerPanel").classList.toggle("hidden", st.allCreds);
+    if (!st.allCreds) {
+      renderCredCheckList(prefix);
+    }
+    updateSelectorBadges(prefix);
+  }
+
+  function updateSelectorBadges(prefix) {
+    const st = selectorState[prefix];
+    const mBadge = document.getElementById(prefix + "ModelCountBadge");
+    if (st.allModels) {
+      mBadge.textContent = "全部允许 (*)";
+      mBadge.className = "tag ok";
+    } else {
+      mBadge.textContent = `已勾选 ${st.selectedModels.size} 项模型`;
+      mBadge.className = st.selectedModels.size > 0 ? "tag plain" : "tag warn";
+    }
+
+    const cBadge = document.getElementById(prefix + "CredCountBadge");
+    if (st.allCreds) {
+      cBadge.textContent = "全部可用凭证 (公共池)";
+      cBadge.className = "tag ok";
+    } else {
+      cBadge.textContent = `已勾选 ${st.selectedCreds.size} 个凭证`;
+      cBadge.className = st.selectedCreds.size > 0 ? "tag plain" : "tag warn";
+    }
+  }
+
+  function renderProviderPills(prefix) {
+    const st = selectorState[prefix];
+    const models = getAvailableModels();
+    const provSet = new Set(["all"]);
+    models.forEach(m => { if (m.provider) provSet.add(m.provider); });
+    const labels = {
+      all: "全部",
+      claude: "Claude",
+      openai: "OpenAI / Codex",
+      gemini: "Gemini",
+      deepseek: "DeepSeek",
+      qwen: "Qwen",
+      xai: "xAI",
+      zhipu: "GLM",
+      kimi: "Kimi",
+      other: "其它"
+    };
+    const container = document.getElementById(prefix + "ProviderPills");
+    container.innerHTML = Array.from(provSet).map(p => {
+      const active = st.providerFilter === p ? "active" : "";
+      return `<button type="button" class="provider-pill ${active}" onclick="setProviderFilter('${prefix}', '${escapeHtml(p)}')">${escapeHtml(labels[p] || p)}</button>`;
+    }).join("");
+  }
+
+  function setProviderFilter(prefix, prov) {
+    selectorState[prefix].providerFilter = prov;
+    renderProviderPills(prefix);
+    renderModelCheckList(prefix);
+  }
+
+  function getFilteredModelsForSelector(prefix) {
+    const st = selectorState[prefix];
+    const q = (document.getElementById(prefix + "ModelSearch")?.value || "").toLowerCase().trim();
+    const baseModels = getAvailableModels();
+
+    // Ensure any previously selected model is also in the list
+    const knownIDs = new Set(baseModels.map(m => m.id));
+    const merged = baseModels.slice();
+    st.selectedModels.forEach(id => {
+      if (!knownIDs.has(id)) {
+        merged.unshift({ id, provider: "custom" });
+      }
+    });
+
+    return merged.filter(m => {
+      if (st.providerFilter !== "all" && m.provider !== st.providerFilter) return false;
+      if (q && !m.id.toLowerCase().includes(q) && !(m.provider || "").toLowerCase().includes(q)) return false;
+      return true;
+    });
+  }
+
+  function renderModelCheckList(prefix) {
+    const st = selectorState[prefix];
+    const list = getFilteredModelsForSelector(prefix);
+    const container = document.getElementById(prefix + "ModelCheckList");
+    if (list.length === 0) {
+      container.innerHTML = `<div style="grid-column:1/-1;text-align:center;padding:14px;color:var(--text-tertiary)">没有匹配的模型选项</div>`;
+      return;
+    }
+    container.innerHTML = list.map(m => {
+      const checked = st.selectedModels.has(m.id);
+      const isWild = m.id.includes("*");
+      return `<label class="check-item ${checked ? "checked" : ""}">
+        <input type="checkbox" ${checked ? "checked" : ""} onchange="toggleModelCheckItem('${prefix}', '${escapeHtml(m.id)}', this.checked)">
+        <div class="check-item-body">
+          <div class="check-item-title mono">${escapeHtml(m.id)}</div>
+          <div class="check-item-sub">${isWild ? "通配符全系匹配" : escapeHtml(m.provider || "model")}</div>
+        </div>
+      </label>`;
+    }).join("");
+  }
+
+  function toggleModelCheckItem(prefix, modelId, isChecked) {
+    const st = selectorState[prefix];
+    if (isChecked) {
+      st.selectedModels.add(modelId);
+    } else {
+      st.selectedModels.delete(modelId);
+    }
+    renderModelCheckList(prefix);
+    updateSelectorBadges(prefix);
+  }
+
+  function batchCheckModels(prefix, checkAll) {
+    const st = selectorState[prefix];
+    st.allModels = false;
+    document.getElementById(prefix + "AllModelsCheck").checked = false;
+    document.getElementById(prefix + "ModelPickerPanel").classList.remove("hidden");
+
+    const visible = getFilteredModelsForSelector(prefix);
+    if (checkAll) {
+      visible.forEach(m => st.selectedModels.add(m.id));
+    } else {
+      visible.forEach(m => st.selectedModels.delete(m.id));
+    }
+    renderModelCheckList(prefix);
+    updateSelectorBadges(prefix);
+  }
+
+  function getFilteredCredsForSelector(prefix) {
+    const st = selectorState[prefix];
+    const q = (document.getElementById(prefix + "CredSearch")?.value || "").toLowerCase().trim();
+    const files = getAvailableCredentials();
+    const knownVals = new Set(files.map(af => af.name || af.id || af.auth_index));
+    const merged = files.slice();
+    st.selectedCreds.forEach(c => {
+      if (!knownVals.has(c)) {
+        merged.unshift({ id: c, name: c, provider: "bound", status: "active" });
+      }
+    });
+
+    return merged.filter(af => {
+      if (!q) return true;
+      const hay = [af.name, af.id, af.provider, af.type, af.email, af.account, af.label].filter(Boolean).join(" ").toLowerCase();
+      return hay.includes(q);
+    });
+  }
+
+  function renderCredCheckList(prefix) {
+    const st = selectorState[prefix];
+    const list = getFilteredCredsForSelector(prefix);
+    const container = document.getElementById(prefix + "CredCheckList");
+    if (list.length === 0) {
+      container.innerHTML = `<div style="grid-column:1/-1;text-align:center;padding:14px;color:var(--text-tertiary)">宿主当前未加载匹配的账号凭证</div>`;
+      return;
+    }
+    container.innerHTML = list.map(af => {
+      const val = af.name || af.id || af.auth_index;
+      const checked = st.selectedCreds.has(val) || st.selectedCreds.has(af.id) || st.selectedCreds.has(af.name);
+      const sub = [af.provider || af.type, af.email || af.account || af.label].filter(Boolean).join(" · ");
+      const statusOk = !af.disabled && !af.unavailable;
+      return `<label class="check-item ${checked ? "checked" : ""}">
+        <input type="checkbox" ${checked ? "checked" : ""} onchange="toggleCredCheckItem('${prefix}', '${escapeHtml(val)}', this.checked)">
+        <div class="check-item-body">
+          <div class="check-item-title mono">${escapeHtml(val)}</div>
+          <div class="check-item-sub">${escapeHtml(sub || "可用凭证")}</div>
+        </div>
+        <span class="tag ${statusOk ? "ok" : "bad"}">${escapeHtml(af.status || (statusOk ? "active" : "disabled"))}</span>
+      </label>`;
+    }).join("");
+  }
+
+  function toggleCredCheckItem(prefix, credVal, isChecked) {
+    const st = selectorState[prefix];
+    if (isChecked) {
+      st.selectedCreds.add(credVal);
+    } else {
+      st.selectedCreds.delete(credVal);
+    }
+    renderCredCheckList(prefix);
+    updateSelectorBadges(prefix);
+  }
+
+  function batchCheckCreds(prefix, checkAll) {
+    const st = selectorState[prefix];
+    st.allCreds = false;
+    document.getElementById(prefix + "AllCredsCheck").checked = false;
+    document.getElementById(prefix + "CredPickerPanel").classList.remove("hidden");
+
+    const visible = getFilteredCredsForSelector(prefix);
+    if (checkAll) {
+      visible.forEach(af => st.selectedCreds.add(af.name || af.id || af.auth_index));
+    } else {
+      visible.forEach(af => st.selectedCreds.delete(af.name || af.id || af.auth_index));
+    }
+    renderCredCheckList(prefix);
+    updateSelectorBadges(prefix);
+  }
+
+  function exportSelectorValues(prefix) {
+    const st = selectorState[prefix];
+    const allowedModels = st.allModels ? ["*"] : Array.from(st.selectedModels);
+    const credentials = st.allCreds ? [] : Array.from(st.selectedCreds);
+    return { allowedModels, credentials };
+  }
+
+  // ==================== TAB 1: UNIFIED API KEYS CRUD ====================
+  function renderKeysCrudTable() {
+    if (!overviewData) return;
+    const keys = overviewData.keys || [];
+    const snapKeys = (overviewData.usage && overviewData.usage.keys) || {};
+    const q = (document.getElementById("crudKeySearch").value || "").toLowerCase().trim();
+
+    const filtered = keys.filter(kr => {
+      if (!q) return true;
+      return (kr.api_key || "").toLowerCase().includes(q) || (kr.name || "").toLowerCase().includes(q);
+    });
+
+    const tbody = document.getElementById("crudKeysTableBody");
+    if (filtered.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--text-tertiary)">暂无 API Key，点击右上角「新建 API Key」创建并自动同步至 CPA</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = filtered.map((kr) => {
+      const k = kr.api_key;
+      const ks = snapKeys[k] || {};
+      const enabled = kr.enabled !== false;
+      const isRevealed = !!revealedKeys[k];
+      const dispKey = isRevealed ? k : maskKeyStr(k);
+      const activeC = ks.active_concurrency || 0;
+      const maxC = kr.max_concurrency || 0;
+      const usedUSD = ks.total_cost_usd || 0;
+      const quotaUSD = kr.quota_limit_usd || 0;
+
+      let quotaCell = `<span class="cost-val">${fmtUSD(usedUSD)}</span> <span style="color:var(--text-tertiary)">/ 不限额</span>`;
+      if (quotaUSD > 0) {
+        const pct = Math.min(100, (usedUSD / quotaUSD) * 100);
+        const cls = pct >= 100 ? "danger" : (pct >= 80 ? "warn" : "");
+        quotaCell = `<div><span class="cost-val">${fmtUSD(usedUSD)}</span> / <span class="mono">$${Number(quotaUSD).toFixed(2)}</span></div>
+          <div class="bar"><div class="bar-fill ${cls}" style="width:${pct}%"></div></div>`;
+      }
+
+      const models = (kr.allowed_models && kr.allowed_models.length) ? kr.allowed_models : ["*"];
+      const modelsHtml = (models.length === 1 && models[0] === "*")
+        ? `<span class="tag ok">全部模型 (*)</span>`
+        : models.map(m => `<span class="tag plain mono">${escapeHtml(m)}</span>`).join(" ");
+
+      const ub = kr.upstream_binding || {};
+      const creds = Array.from(new Set([].concat(ub.auth_ids || [], ub.credentials || [])));
+      let bindHtml = `<span class="tag ok">全部可用凭证</span>`;
+      if (creds.length > 0) {
+        bindHtml = `<span class="tag warn">${escapeHtml(ub.strategy || "round-robin")}</span> ` +
+          creds.map(c => `<span class="tag plain mono">${escapeHtml(c)}</span>`).join(" ");
+      }
+
+      return `<tr>
+        <td>
+          <span class="tag ${enabled ? "ok" : "bad"}" style="cursor:pointer" onclick="quickToggleKeyEnabled('${escapeHtml(k)}')" title="点击切换启用/禁用">
+            ${enabled ? "● 启用" : "⛔ 禁用"}
+          </span>
+        </td>
+        <td>
+          <span class="mono" style="font-weight:600">${escapeHtml(dispKey)}</span>
+          <button type="button" class="btn btn-sm" style="padding:2px 6px;margin-left:4px" onclick="toggleRevealKey('${escapeHtml(k)}')">${isRevealed ? "🙈" : "👁️"}</button>
+          <button type="button" class="btn btn-sm" style="padding:2px 6px" onclick="copyText('${escapeHtml(k)}')">📋</button>
+        </td>
+        <td style="font-weight:600">${escapeHtml(kr.name || "-")}</td>
+        <td class="mono">${activeC} / ${maxC > 0 ? maxC : "∞"}</td>
+        <td>${quotaCell}</td>
+        <td>${modelsHtml}</td>
+        <td>${bindHtml}</td>
+        <td style="white-space:nowrap">
+          <button type="button" class="btn btn-sm" onclick="openKeyModalByKey('${escapeHtml(k)}')">编辑规则</button>
+          <button type="button" class="btn btn-sm" onclick="resetUsageStats('${escapeHtml(k)}')">清零账单</button>
+          <button type="button" class="btn btn-sm btn-danger" onclick="deleteKeyRule('${escapeHtml(k)}')">删除</button>
+        </td>
+      </tr>`;
+    }).join("");
+  }
+
+  function toggleRevealKey(k) {
+    revealedKeys[k] = !revealedKeys[k];
+    renderKeysCrudTable();
+  }
+
+  function copyText(txt) {
+    navigator.clipboard.writeText(txt).then(() => showToast("已复制到剪贴板"));
+  }
+
+  function generateRandomSkKey() {
+    const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    let out = "sk-cpa-";
+    const arr = new Uint32Array(28);
+    window.crypto.getRandomValues(arr);
+    for (let i = 0; i < arr.length; i++) {
+      out += chars[arr[i] % chars.length];
+    }
+    document.getElementById("kmApiKey").value = out;
+  }
+
+  function openKeyModalByKey(apiKey) {
+    const found = ((overviewData && overviewData.keys) || []).find(x => x.api_key === apiKey);
+    openKeyModal(found || null);
+  }
+
+  function openKeyModal(rule) {
+    document.getElementById("keyModalTitle").textContent = rule ? "编辑 API Key 管控规则" : "新建 API Key";
+    document.getElementById("kmOriginalApiKey").value = rule ? rule.api_key : "";
+    document.getElementById("kmApiKey").value = rule ? rule.api_key : "";
+    document.getElementById("kmName").value = (rule && rule.name) || "";
+    document.getElementById("kmMaxConcurrency").value = (rule && rule.max_concurrency) || 0;
+    document.getElementById("kmQuotaLimit").value = (rule && rule.quota_limit_usd) || 0;
+    document.getElementById("kmEnabled").value = (rule && rule.enabled === false) ? "false" : "true";
+
+    const ub = (rule && rule.upstream_binding) || {};
+    document.getElementById("kmBindStrategy").value = ub.strategy || "round-robin";
+    const boundCreds = Array.from(new Set([].concat(ub.auth_ids || [], ub.credentials || [])));
+    const allowedModels = (rule && rule.allowed_models && rule.allowed_models.length) ? rule.allowed_models : ["*"];
+
+    loadSelectorFromRule("km", allowedModels, boundCreds);
+    document.getElementById("keyModalBackdrop").classList.add("open");
+  }
+
+  function closeKeyModal() {
+    document.getElementById("keyModalBackdrop").classList.remove("open");
+  }
+
+  async function submitKeyModal() {
+    const origKey = document.getElementById("kmOriginalApiKey").value.trim();
+    const apiKey = document.getElementById("kmApiKey").value.trim();
+    if (!apiKey) {
+      showToast("API Key 不能为空", true);
+      return;
+    }
+
+    const { allowedModels, credentials } = exportSelectorValues("km");
+    if (!selectorState.km.allModels && allowedModels.length === 0) {
+      showToast("请至少勾选一个允许访问的模型，或勾选「允许访问全部模型」", true);
+      return;
+    }
+    if (!selectorState.km.allCreds && credentials.length === 0) {
+      showToast("请至少勾选一个绑定的账号凭证，或勾选「允许使用全部可用账号凭证」", true);
+      return;
+    }
+
+    const payload = {
+      api_key: apiKey,
+      name: document.getElementById("kmName").value.trim(),
+      enabled: document.getElementById("kmEnabled").value === "true",
+      max_concurrency: parseInt(document.getElementById("kmMaxConcurrency").value || "0", 10) || 0,
+      quota_limit_usd: parseFloat(document.getElementById("kmQuotaLimit").value || "0") || 0,
+      allowed_models: allowedModels,
+      upstream_binding: {
+        strategy: document.getElementById("kmBindStrategy").value,
+        credentials: credentials
+      }
+    };
+
+    try {
+      // 1. Synchronize with CPA global /v0/management/api-keys so there is only ONE unified key list
+      const currentCpaKeys = (await fetchCPAGlobalKeys()) || ((overviewData && overviewData.keys) || []).map(k => k.api_key);
+      let nextCpaKeys = currentCpaKeys.slice();
+      if (origKey && origKey !== apiKey) {
+        nextCpaKeys = nextCpaKeys.filter(k => k !== origKey);
+        await apiFetchMgmt("/keys?api_key=" + encodeURIComponent(origKey), { method: "DELETE" });
+      }
+      if (!nextCpaKeys.includes(apiKey)) {
+        nextCpaKeys.push(apiKey);
+      }
+      await writeCPAGlobalKeys(nextCpaKeys);
+
+      // 2. Save rule in plugin
+      await apiFetchMgmt("/keys", {
+        method: "POST",
+        body: JSON.stringify(payload)
+      });
+
+      closeKeyModal();
+      showToast("API Key 与管控规则已保存并同步至 CPA 全局配置");
+      await loadAdminOverview();
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  }
+
+  async function quickToggleKeyEnabled(apiKey) {
+    const kr = ((overviewData && overviewData.keys) || []).find(x => x.api_key === apiKey);
+    if (!kr) return;
+    const next = kr.enabled === false ? true : false;
+    const payload = Object.assign({}, kr, { enabled: next });
+    try {
+      await apiFetchMgmt("/keys", {
+        method: "POST",
+        body: JSON.stringify(payload)
+      });
+      showToast(`已${next ? "启用" : "禁用"} Key: ${kr.name || maskKeyStr(kr.api_key)}`);
+      await loadAdminOverview();
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  }
+
+  async function deleteKeyRule(apiKey) {
+    if (!confirm(`确定要删除 API Key [${maskKeyStr(apiKey)}] 吗？（将同时从 CPA 全局 api-keys 与插件中移除）`)) return;
+    try {
+      const currentCpaKeys = await fetchCPAGlobalKeys();
+      if (currentCpaKeys !== null) {
+        const remaining = currentCpaKeys.filter(k => k !== apiKey);
+        await writeCPAGlobalKeys(remaining);
+      }
+      await apiFetchMgmt("/keys?api_key=" + encodeURIComponent(apiKey), {
+        method: "DELETE"
+      });
+      showToast("已从 CPA 全局配置与插件中删除该 API Key");
+      await loadAdminOverview();
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  }
+
+  async function resetUsageStats(apiKey) {
+    const desc = apiKey ? `Key [${maskKeyStr(apiKey)}]` : "所有 API Key";
+    if (!confirm(`确定要清零 ${desc} 的累计 Token 与 USD 账单统计吗？`)) return;
+    try {
+      await apiFetchMgmt("/usage/reset", {
+        method: "POST",
+        body: JSON.stringify({ api_key: apiKey })
+      });
+      showToast(`已清零 ${desc} 的账单统计`);
+      await loadAdminOverview();
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  }
+
+  // ==================== TAB 2: DASHBOARD LEADERBOARDS ====================
   function renderDashboardTables() {
     if (!overviewData) return;
     const snapKeys = (overviewData.usage && overviewData.usage.keys) || {};
     const rulesMap = {};
     (overviewData.keys || []).forEach(r => { rulesMap[r.api_key] = r; });
 
-    const q = (document.getElementById('dashKeySearch').value || '').toLowerCase().trim();
+    const q = (document.getElementById("dashKeySearch").value || "").toLowerCase().trim();
     const rows = Object.values(snapKeys).filter(ks => {
       if (!q) return true;
-      return (ks.api_key || '').toLowerCase().includes(q) ||
-             (ks.masked_key || '').toLowerCase().includes(q) ||
-             (ks.key_name || '').toLowerCase().includes(q);
+      return (ks.api_key || "").toLowerCase().includes(q) ||
+             (ks.masked_key || "").toLowerCase().includes(q) ||
+             (ks.key_name || "").toLowerCase().includes(q);
     });
 
     rows.sort((a, b) => (b.total_cost_usd || 0) - (a.total_cost_usd || 0) || (b.total_tokens || 0) - (a.total_tokens || 0));
 
-    const tbody = document.getElementById('dashKeyTableBody');
+    const tbody = document.getElementById("dashKeyTableBody");
     if (rows.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--text-muted)">暂无匹配的 API Key 统计数据</td></tr>';
+      tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;color:var(--text-tertiary)">暂无调用统计数据</td></tr>`;
     } else {
-      let html = '';
+      let html = "";
       for (const ks of rows) {
         const rawKey = ks.api_key || ks.masked_key;
         const rule = rulesMap[rawKey] || {};
@@ -1196,31 +2170,31 @@
         const concText = maxConc > 0 ? `${ks.active_concurrency || 0} / ${maxConc}` : `${ks.active_concurrency || 0} / ∞`;
         const quota = rule.quota_limit_usd || ks.quota_limit_usd || 0;
         const used = ks.total_cost_usd || 0;
-        let quotaHtml = '<span style="color:var(--text-muted)">不限额</span>';
+        let quotaHtml = `<span style="color:var(--text-tertiary)">不限额</span>`;
         if (quota > 0) {
           const pct = Math.min(100, (used / quota) * 100);
-          const cls = pct >= 100 ? 'danger' : (pct >= 80 ? 'warn' : '');
+          const cls = pct >= 100 ? "danger" : (pct >= 80 ? "warn" : "");
           quotaHtml = `<div style="font-size:12px" class="mono">${fmtUSD(used)} / $${Number(quota).toFixed(2)} (${pct.toFixed(1)}%)</div>
-            <div class="progress-track"><div class="progress-fill ${cls}" style="width:${pct}%"></div></div>`;
+            <div class="bar"><div class="bar-fill ${cls}" style="width:${pct}%"></div></div>`;
         }
         const modelCount = ks.models ? Object.keys(ks.models).length : 0;
         const isExpanded = !!expandedDashKeys[rawKey];
 
         html += `<tr>
           <td>
-            <div style="font-weight:600">${escapeHtml(ks.key_name || '未命名 Key')}</div>
+            <div style="font-weight:600">${escapeHtml(ks.key_name || "未命名 Key")}</div>
             <div class="mono" style="font-size:12px;color:var(--text-secondary)">${escapeHtml(ks.masked_key)}</div>
           </td>
-          <td><span class="badge ${ks.active_concurrency > 0 ? 'badge-success' : 'badge-info'} mono">${escapeHtml(concText)}</span></td>
+          <td><span class="tag ${ks.active_concurrency > 0 ? "ok" : "plain"} mono">${escapeHtml(concText)}</span></td>
           <td>${quotaHtml}</td>
-          <td class="mono">${fmtInt(ks.total_requests)} <span style="color:var(--text-muted)">(${fmtInt(ks.success_requests)}/${fmtInt(ks.failed_requests)})</span></td>
+          <td class="mono">${fmtInt(ks.total_requests)} <span style="color:var(--text-tertiary)">(${fmtInt(ks.success_requests)}/${fmtInt(ks.failed_requests)})</span></td>
           <td class="mono">${fmtInt(ks.input_tokens)} / ${fmtInt(ks.output_tokens)}</td>
           <td class="mono">${fmtInt(ks.cache_read_tokens)} / ${fmtInt(ks.cache_write_tokens)}</td>
           <td class="mono" style="font-weight:600">${fmtInt(ks.total_tokens)}</td>
-          <td class="cost-text">${escapeHtml(ks.total_cost_formatted || '$0.000000')}</td>
+          <td class="cost-val">${escapeHtml(ks.total_cost_formatted || "$0.000000")}</td>
           <td>
-            <button class="btn btn-sm" onclick="toggleDashKeyExpand('${escapeHtml(rawKey)}')">${isExpanded ? '收起' : '明细 (' + modelCount + ')'}</button>
-            <button class="btn btn-sm btn-danger" onclick="resetUsageStats('${escapeHtml(rawKey)}')">重置</button>
+            <button type="button" class="btn btn-sm" onclick="toggleDashKeyExpand('${escapeHtml(rawKey)}')">${isExpanded ? "收起" : "展开明细 (" + modelCount + ")"}</button>
+            <button type="button" class="btn btn-sm btn-danger" onclick="resetUsageStats('${escapeHtml(rawKey)}')">清零</button>
           </td>
         </tr>`;
 
@@ -1229,14 +2203,14 @@
           for (const ms of mList) {
             const up = ms.unit_price_per_1m || {};
             html += `<tr class="sub-row">
-              <td>↳ <span class="mono" style="color:var(--text-primary)">${escapeHtml(ms.model)}</span></td>
-              <td colspan="2"><span class="badge badge-purple">单价: $${Number(up.input||0).toFixed(2)} / $${Number(up.output||0).toFixed(2)} (${escapeHtml(up.source||'auto')})</span></td>
+              <td>↳ <span class="mono" style="color:var(--text-primary);font-weight:600">${escapeHtml(ms.model)}</span></td>
+              <td colspan="2"><span class="tag plain">单价: $${Number(up.input||0).toFixed(2)} / $${Number(up.output||0).toFixed(2)} (${escapeHtml(up.source||"auto")})</span></td>
               <td class="mono">${fmtInt(ms.requests)} (${fmtInt(ms.success_requests)}/${fmtInt(ms.failed_requests)})</td>
               <td class="mono">${fmtInt(ms.input_tokens)} / ${fmtInt(ms.output_tokens)}</td>
               <td class="mono">${fmtInt(ms.cache_read_tokens)} / ${fmtInt(ms.cache_write_tokens)}</td>
               <td class="mono">${fmtInt(ms.total_tokens)}</td>
-              <td class="cost-text">${escapeHtml(ms.cost_formatted || '$0.000000')}</td>
-              <td style="font-size:11px;color:var(--text-muted)">${escapeHtml(ms.last_used_at || '-')}</td>
+              <td class="cost-val">${escapeHtml(ms.cost_formatted || "$0.000000")}</td>
+              <td style="font-size:11px;color:var(--text-tertiary)">${escapeHtml(ms.last_used_at || "-")}</td>
             </tr>`;
           }
         }
@@ -1244,13 +2218,13 @@
       tbody.innerHTML = html;
     }
 
-    // Aggregate Model Leaderboard
+    // Model Leaderboard
     const modelAgg = {};
     let grandTotalCost = 0;
     for (const ks of Object.values(snapKeys)) {
       if (!ks.models) continue;
       for (const ms of Object.values(ks.models)) {
-        const m = ms.model || 'unknown';
+        const m = ms.model || "unknown";
         if (!modelAgg[m]) {
           modelAgg[m] = {
             model: m,
@@ -1281,28 +2255,28 @@
     }
 
     const mRows = Object.values(modelAgg).sort((a, b) => b.costUSD - a.costUSD || b.totalTokens - a.totalTokens);
-    const mBody = document.getElementById('dashModelTableBody');
+    const mBody = document.getElementById("dashModelTableBody");
     if (mRows.length === 0) {
-      mBody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--text-muted)">暂无模型消耗数据</td></tr>';
+      mBody.innerHTML = `<tr><td colspan="9" style="text-align:center;color:var(--text-tertiary)">暂无模型消耗数据</td></tr>`;
     } else {
       mBody.innerHTML = mRows.map(m => {
-        const share = grandTotalCost > 0 ? ((m.costUSD / grandTotalCost) * 100).toFixed(1) : '0.0';
+        const share = grandTotalCost > 0 ? ((m.costUSD / grandTotalCost) * 100).toFixed(1) : "0.0";
         const up = m.unitPrice || {};
         return `<tr>
           <td class="mono" style="font-weight:600">${escapeHtml(m.model)}</td>
-          <td class="mono">$${Number(up.input||0).toFixed(2)} / $${Number(up.output||0).toFixed(2)} <span class="badge badge-info">${escapeHtml(up.source||'-')}</span></td>
+          <td class="mono">$${Number(up.input||0).toFixed(2)} / $${Number(up.output||0).toFixed(2)} <span class="tag plain">${escapeHtml(up.source||"-")}</span></td>
           <td class="mono">${fmtInt(m.requests)} (${fmtInt(m.success)}/${fmtInt(m.failed)})</td>
           <td class="mono">${fmtInt(m.input)}</td>
           <td class="mono">${fmtInt(m.output)}</td>
           <td class="mono">${fmtInt(m.cacheRead)} / ${fmtInt(m.cacheWrite)}</td>
           <td class="mono" style="font-weight:600">${fmtInt(m.totalTokens)}</td>
-          <td class="cost-text">${fmtUSD(m.costUSD)}</td>
+          <td class="cost-val">${fmtUSD(m.costUSD)}</td>
           <td style="min-width:130px">
             <div style="font-size:12px" class="mono">${share}%</div>
-            <div class="progress-track"><div class="progress-fill" style="width:${share}%"></div></div>
+            <div class="bar"><div class="bar-fill" style="width:${share}%"></div></div>
           </td>
         </tr>`;
-      }).join('');
+      }).join("");
     }
   }
 
@@ -1311,307 +2285,48 @@
     renderDashboardTables();
   }
 
-  // ==================== TAB 2: API KEY CRUD ====================
-  function renderKeysCrudTable() {
-    if (!overviewData) return;
-    const keys = overviewData.keys || [];
-    const snapKeys = (overviewData.usage && overviewData.usage.keys) || {};
-    const q = (document.getElementById('crudKeySearch').value || '').toLowerCase().trim();
-
-    const filtered = keys.filter(kr => {
-      if (!q) return true;
-      return (kr.api_key || '').toLowerCase().includes(q) || (kr.name || '').toLowerCase().includes(q);
-    });
-
-    const tbody = document.getElementById('crudKeysTableBody');
-    if (filtered.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-muted)">尚未配置特定 API Key 规则，点击右上角「新建 API Key 规则」添加</td></tr>';
-      return;
-    }
-
-    tbody.innerHTML = filtered.map((kr, idx) => {
-      const k = kr.api_key;
-      const ks = snapKeys[k] || {};
-      const enabled = kr.enabled !== false;
-      const isRevealed = !!revealedKeys[k];
-      const dispKey = isRevealed ? k : maskKeyStr(k);
-      const activeC = ks.active_concurrency || 0;
-      const maxC = kr.max_concurrency || 0;
-      const usedUSD = ks.total_cost_usd || 0;
-      const quotaUSD = kr.quota_limit_usd || 0;
-
-      let quotaCell = `<span class="cost-text">${fmtUSD(usedUSD)}</span> / <span style="color:var(--text-muted)">∞</span>`;
-      if (quotaUSD > 0) {
-        const pct = Math.min(100, (usedUSD / quotaUSD) * 100);
-        const cls = pct >= 100 ? 'danger' : (pct >= 80 ? 'warn' : '');
-        quotaCell = `<div><span class="cost-text">${fmtUSD(usedUSD)}</span> / <span class="mono">$${Number(quotaUSD).toFixed(2)}</span></div>
-          <div class="progress-track"><div class="progress-fill ${cls}" style="width:${pct}%"></div></div>`;
-      }
-
-      const modelsHtml = (kr.allowed_models && kr.allowed_models.length ? kr.allowed_models : ['*']).map(m => {
-        const isNeg = m.startsWith('!');
-        return `<span class="badge ${isNeg ? 'badge-danger' : 'badge-info'} mono">${escapeHtml(m)}</span>`;
-      }).join(' ');
-
-      const ub = kr.upstream_binding || {};
-      const creds = [].concat(ub.auth_ids || [], ub.credentials || []);
-      let bindHtml = '<span style="color:var(--text-muted)">公共池自动路由</span>';
-      if (creds.length > 0) {
-        bindHtml = `<span class="badge badge-purple">${escapeHtml(ub.strategy || 'round-robin')}</span> ` +
-          creds.map(c => `<span class="badge badge-success mono">${escapeHtml(c)}</span>`).join(' ');
-      }
-
-      return `<tr>
-        <td>
-          <span class="badge ${enabled ? 'badge-success' : 'badge-danger'}" style="cursor:pointer" onclick="quickToggleKeyEnabled(${idx})" title="点击切换启用/禁用">
-            ${enabled ? '● 启用' : '⛔ 禁用'}
-          </span>
-        </td>
-        <td style="font-weight:600">${escapeHtml(kr.name || '-')}</td>
-        <td>
-          <span class="mono">${escapeHtml(dispKey)}</span>
-          <button class="btn btn-sm" style="padding:2px 6px;margin-left:4px" onclick="toggleRevealKey('${escapeHtml(k)}')">${isRevealed ? '🙈' : '👁️'}</button>
-          <button class="btn btn-sm" style="padding:2px 6px" onclick="copyText('${escapeHtml(k)}')">📋</button>
-        </td>
-        <td class="mono">${activeC} / ${maxC > 0 ? maxC : '∞'}</td>
-        <td>${quotaCell}</td>
-        <td>${modelsHtml}</td>
-        <td>${bindHtml}</td>
-        <td style="white-space:nowrap">
-          <button class="btn btn-sm" onclick="openKeyModalByKey('${escapeHtml(k)}')">✏️ 编辑</button>
-          <button class="btn btn-sm" onclick="resetUsageStats('${escapeHtml(k)}')">🔄 清零账单</button>
-          <button class="btn btn-sm btn-danger" onclick="deleteKeyRule('${escapeHtml(k)}')">🗑️ 删除</button>
-        </td>
-      </tr>`;
-    }).join('');
-  }
-
-  function maskKeyStr(k) {
-    if (!k) return 'anonymous';
-    if (k.length <= 8) return k.slice(0, 2) + '***';
-    if (k.length <= 14) return k.slice(0, 4) + '...' + k.slice(-3);
-    return k.slice(0, 7) + '...' + k.slice(-5);
-  }
-
-  function toggleRevealKey(k) {
-    revealedKeys[k] = !revealedKeys[k];
-    renderKeysCrudTable();
-  }
-
-  function copyText(txt) {
-    navigator.clipboard.writeText(txt).then(() => showToast('已复制到剪贴板'));
-  }
-
-  function generateRandomSkKey() {
-    const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-    let out = 'sk-cpa-';
-    const arr = new Uint32Array(28);
-    window.crypto.getRandomValues(arr);
-    for (let i = 0; i < arr.length; i++) {
-      out += chars[arr[i] % chars.length];
-    }
-    document.getElementById('kmApiKey').value = out;
-  }
-
-  function addModelPreset(preset) {
-    const input = document.getElementById('kmAllowedModels');
-    if (preset === '*') {
-      input.value = '*';
-      return;
-    }
-    const cur = input.value.split(/[\n,]+/).map(s => s.trim()).filter(Boolean).filter(s => s !== '*');
-    preset.split(',').map(s => s.trim()).filter(Boolean).forEach(p => {
-      if (!cur.includes(p)) cur.push(p);
-    });
-    input.value = cur.join(', ');
-  }
-
-  function renderAuthCheckboxes(containerId, selectedList) {
-    const container = document.getElementById(containerId);
-    const authFiles = (overviewData && overviewData.auth_files) || [];
-    const selSet = new Set((selectedList || []).map(s => s.toLowerCase()));
-
-    if (authFiles.length === 0) {
-      container.innerHTML = '<div style="color:var(--text-muted);padding:6px">宿主当前未返回凭证文件（可通过上方输入框手动填写凭证名称或 ID）</div>';
-      return;
-    }
-
-    container.innerHTML = authFiles.map(af => {
-      const val = af.name || af.id || af.auth_index;
-      const checked = selSet.has((af.name || '').toLowerCase()) ||
-                      selSet.has((af.id || '').toLowerCase()) ||
-                      selSet.has((af.auth_index || '').toLowerCase()) ? 'checked' : '';
-      const sub = af.email || af.account || af.label || af.provider || af.type || '';
-      return `<label class="auth-check-item">
-        <input type="checkbox" value="${escapeHtml(val)}" ${checked}>
-        <div style="overflow:hidden;text-overflow:ellipsis">
-          <div class="mono" style="font-weight:600">${escapeHtml(val)}</div>
-          <div style="font-size:11px;color:var(--text-secondary)">${escapeHtml(af.provider || af.type || '')} ${escapeHtml(sub)}</div>
-        </div>
-      </label>`;
-    }).join('');
-  }
-
-  function openKeyModalByKey(apiKey) {
-    const found = ((overviewData && overviewData.keys) || []).find(x => x.api_key === apiKey);
-    openKeyModal(found || null);
-  }
-
-  function openKeyModal(rule) {
-    document.getElementById('keyModalTitle').textContent = rule ? '编辑 API Key 规则' : '新建 API Key 规则';
-    document.getElementById('kmApiKey').value = rule ? rule.api_key : '';
-    document.getElementById('kmName').value = (rule && rule.name) || '';
-    document.getElementById('kmMaxConcurrency').value = (rule && rule.max_concurrency) || 0;
-    document.getElementById('kmQuotaLimit').value = (rule && rule.quota_limit_usd) || 0;
-    document.getElementById('kmEnabled').value = (rule && rule.enabled === false) ? 'false' : 'true';
-    document.getElementById('kmAllowedModels').value = (rule && rule.allowed_models && rule.allowed_models.length) ? rule.allowed_models.join(', ') : '*';
-
-    const ub = (rule && rule.upstream_binding) || {};
-    document.getElementById('kmBindStrategy').value = ub.strategy || 'round-robin';
-    const allBound = [].concat(ub.auth_ids || [], ub.credentials || []);
-    renderAuthCheckboxes('kmAuthCheckList', allBound);
-
-    // Put any bound credentials not in auth_files into kmCustomCreds
-    const knownSet = new Set(((overviewData && overviewData.auth_files) || []).flatMap(af => [af.name, af.id, af.auth_index].filter(Boolean).map(s => s.toLowerCase())));
-    const extras = allBound.filter(c => !knownSet.has(c.toLowerCase()));
-    document.getElementById('kmCustomCreds').value = extras.join(', ');
-
-    document.getElementById('keyModalBackdrop').classList.add('open');
-  }
-
-  function closeKeyModal() {
-    document.getElementById('keyModalBackdrop').classList.remove('open');
-  }
-
-  async function submitKeyModal() {
-    const apiKey = document.getElementById('kmApiKey').value.trim();
-    if (!apiKey) {
-      showToast('API Key 不能为空', true);
-      return;
-    }
-    const name = document.getElementById('kmName').value.trim();
-    const maxConcurrency = parseInt(document.getElementById('kmMaxConcurrency').value || '0', 10) || 0;
-    const quotaLimitUSD = parseFloat(document.getElementById('kmQuotaLimit').value || '0') || 0;
-    const enabled = document.getElementById('kmEnabled').value === 'true';
-    const allowedModels = document.getElementById('kmAllowedModels').value
-      .split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
-
-    const checkedCreds = Array.from(document.querySelectorAll('#kmAuthCheckList input[type="checkbox"]:checked'))
-      .map(cb => cb.value.trim()).filter(Boolean);
-    const extraCreds = document.getElementById('kmCustomCreds').value
-      .split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
-    const finalCreds = Array.from(new Set(checkedCreds.concat(extraCreds)));
-
-    const payload = {
-      api_key: apiKey,
-      name: name,
-      enabled: enabled,
-      max_concurrency: maxConcurrency,
-      quota_limit_usd: quotaLimitUSD,
-      allowed_models: allowedModels.length ? allowedModels : ['*'],
-      upstream_binding: {
-        strategy: document.getElementById('kmBindStrategy').value,
-        credentials: finalCreds
-      }
-    };
-
-    try {
-      await apiFetchMgmt('/keys', {
-        method: 'POST',
-        body: JSON.stringify(payload)
-      });
-      closeKeyModal();
-      showToast('已保存 API Key 规则并实时生效');
-      await loadAdminOverview();
-    } catch (err) {
-      showToast(err.message, true);
-    }
-  }
-
-  async function quickToggleKeyEnabled(idx) {
-    const kr = (overviewData && overviewData.keys && overviewData.keys[idx]);
-    if (!kr) return;
-    const next = kr.enabled === false ? true : false;
-    const payload = Object.assign({}, kr, { enabled: next });
-    try {
-      await apiFetchMgmt('/keys', {
-        method: 'POST',
-        body: JSON.stringify(payload)
-      });
-      showToast(`已${next ? '启用' : '禁用'} Key: ${kr.name || maskKeyStr(kr.api_key)}`);
-      await loadAdminOverview();
-    } catch (err) {
-      showToast(err.message, true);
-    }
-  }
-
-  async function deleteKeyRule(apiKey) {
-    if (!confirm(`确定要删除 API Key 规则 [${maskKeyStr(apiKey)}] 吗？`)) return;
-    try {
-      await apiFetchMgmt('/keys?api_key=' + encodeURIComponent(apiKey), {
-        method: 'DELETE'
-      });
-      showToast('已删除 API Key 规则');
-      await loadAdminOverview();
-    } catch (err) {
-      showToast(err.message, true);
-    }
-  }
-
-  async function resetUsageStats(apiKey) {
-    const desc = apiKey ? `Key [${maskKeyStr(apiKey)}]` : '所有 API Key';
-    if (!confirm(`确定要清零 ${desc} 的累计 Token 与 USD 账单统计吗？`)) return;
-    try {
-      await apiFetchMgmt('/usage/reset', {
-        method: 'POST',
-        body: JSON.stringify({ api_key: apiKey })
-      });
-      showToast(`已清零 ${desc} 的统计账单`);
-      await loadAdminOverview();
-    } catch (err) {
-      showToast(err.message, true);
-    }
-  }
-
-  // ==================== TAB 3: DEFAULT POLICY & HOST AUTH TABLE ====================
-  function renderDefaultPolicyForm() {
+  // ==================== TAB 3: DEFAULT POLICY & CREDENTIALS ====================
+  function initDefaultPolicySelectors() {
     if (!overviewData || !overviewData.default_policy) return;
     const dp = overviewData.default_policy;
-    document.getElementById('dpAllowUnlisted').value = dp.allow_unlisted_keys === false ? 'false' : 'true';
-    document.getElementById('dpMaxConcurrency').value = dp.max_concurrency || 0;
-    document.getElementById('dpQuotaLimit').value = dp.quota_limit_usd || 0;
-    document.getElementById('dpAllowedModels').value = (dp.allowed_models && dp.allowed_models.length) ? dp.allowed_models.join(', ') : '*';
+    document.getElementById("dpAllowUnlisted").value = dp.allow_unlisted_keys === false ? "false" : "true";
+    document.getElementById("dpMaxConcurrency").value = dp.max_concurrency || 0;
+    document.getElementById("dpQuotaLimit").value = dp.quota_limit_usd || 0;
     const ub = dp.upstream_binding || {};
-    document.getElementById('dpBindStrategy').value = ub.strategy || 'round-robin';
-    const bound = [].concat(ub.auth_ids || [], ub.credentials || []);
-    renderAuthCheckboxes('dpAuthCheckList', bound);
+    document.getElementById("dpBindStrategy").value = ub.strategy || "round-robin";
+
+    const boundCreds = Array.from(new Set([].concat(ub.auth_ids || [], ub.credentials || [])));
+    const allowedModels = (dp.allowed_models && dp.allowed_models.length) ? dp.allowed_models : ["*"];
+    loadSelectorFromRule("dp", allowedModels, boundCreds);
   }
 
   async function saveDefaultPolicy() {
-    const allowUnlisted = document.getElementById('dpAllowUnlisted').value === 'true';
-    const maxConc = parseInt(document.getElementById('dpMaxConcurrency').value || '0', 10) || 0;
-    const quota = parseFloat(document.getElementById('dpQuotaLimit').value || '0') || 0;
-    const models = document.getElementById('dpAllowedModels').value
-      .split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
-    const creds = Array.from(document.querySelectorAll('#dpAuthCheckList input[type="checkbox"]:checked'))
-      .map(cb => cb.value.trim()).filter(Boolean);
+    const { allowedModels, credentials } = exportSelectorValues("dp");
+    if (!selectorState.dp.allModels && allowedModels.length === 0) {
+      showToast("请至少勾选一个默认允许的模型，或勾选「允许访问全部模型」", true);
+      return;
+    }
+    if (!selectorState.dp.allCreds && credentials.length === 0) {
+      showToast("请至少勾选一个默认绑定的凭证，或勾选「使用全部可用账号凭证」", true);
+      return;
+    }
 
     const payload = {
-      allow_unlisted_keys: allowUnlisted,
-      max_concurrency: maxConc,
-      quota_limit_usd: quota,
-      allowed_models: models.length ? models : ['*'],
+      allow_unlisted_keys: document.getElementById("dpAllowUnlisted").value === "true",
+      max_concurrency: parseInt(document.getElementById("dpMaxConcurrency").value || "0", 10) || 0,
+      quota_limit_usd: parseFloat(document.getElementById("dpQuotaLimit").value || "0") || 0,
+      allowed_models: allowedModels,
       upstream_binding: {
-        strategy: document.getElementById('dpBindStrategy').value,
-        credentials: creds
+        strategy: document.getElementById("dpBindStrategy").value,
+        credentials: credentials
       }
     };
     try {
-      await apiFetchMgmt('/default-policy', {
-        method: 'POST',
+      await apiFetchMgmt("/default-policy", {
+        method: "POST",
         body: JSON.stringify(payload)
       });
-      showToast('全局默认策略已保存并实时生效');
+      showToast("全局默认策略已保存并立即生效");
       await loadAdminOverview();
     } catch (err) {
       showToast(err.message, true);
@@ -1622,10 +2337,10 @@
     if (!overviewData) return;
     const files = overviewData.auth_files || [];
     const keys = overviewData.keys || [];
-    const tbody = document.getElementById('hostAuthTableBody');
+    const tbody = document.getElementById("hostAuthTableBody");
 
     if (files.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-muted)">宿主当前暂无已加载的上游凭证文件</td></tr>';
+      tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;color:var(--text-tertiary)">宿主当前暂无已加载的上游凭证文件</td></tr>`;
       return;
     }
 
@@ -1634,22 +2349,22 @@
       const boundKeys = keys.filter(kr => {
         const ub = kr.upstream_binding || {};
         const list = [].concat(ub.auth_ids || [], ub.credentials || []).map(x => x.toLowerCase());
-        return list.includes((af.name || '').toLowerCase()) ||
-               list.includes((af.id || '').toLowerCase()) ||
-               list.includes((af.auth_index || '').toLowerCase());
+        return list.includes((af.name || "").toLowerCase()) ||
+               list.includes((af.id || "").toLowerCase()) ||
+               list.includes((af.auth_index || "").toLowerCase());
       });
 
       const statusOk = !af.disabled && !af.unavailable;
       return `<tr>
         <td class="mono" style="font-weight:600">${escapeHtml(idOrName)}</td>
-        <td><span class="badge badge-info">${escapeHtml(af.provider || af.type || 'unknown')}</span></td>
-        <td>${escapeHtml(af.email || af.account || af.label || '-')}</td>
-        <td><span class="badge ${statusOk ? 'badge-success' : 'badge-danger'}">${escapeHtml(af.status || (statusOk ? 'active' : 'disabled'))}</span></td>
+        <td><span class="tag plain">${escapeHtml(af.provider || af.type || "unknown")}</span></td>
+        <td>${escapeHtml(af.email || af.account || af.label || "-")}</td>
+        <td><span class="tag ${statusOk ? "ok" : "bad"}">${escapeHtml(af.status || (statusOk ? "active" : "disabled"))}</span></td>
         <td class="mono">${af.priority || 0}</td>
         <td class="mono">${fmtInt(af.success)} / ${fmtInt(af.failed)}</td>
-        <td>${boundKeys.length ? boundKeys.map(k => `<span class="badge badge-purple">${escapeHtml(k.name || maskKeyStr(k.api_key))}</span>`).join(' ') : '<span style="color:var(--text-muted)">未单独绑定 (公共池)</span>'}</td>
+        <td>${boundKeys.length ? boundKeys.map(k => `<span class="tag plain">${escapeHtml(k.name || maskKeyStr(k.api_key))}</span>`).join(" ") : `<span style="color:var(--text-tertiary)">公共池共享</span>`}</td>
       </tr>`;
-    }).join('');
+    }).join("");
   }
 
   // ==================== TAB 4: MODEL PRICING ====================
@@ -1659,77 +2374,77 @@
     const defPrice = overviewData.pricing_status.default_price;
     const entries = Object.entries(cp).sort((a, b) => a[0].localeCompare(b[0]));
 
-    const tbody = document.getElementById('customPriceTableBody');
-    let html = '';
+    const tbody = document.getElementById("customPriceTableBody");
+    let html = "";
 
     if (defPrice) {
       html += `<tr>
         <td class="mono" style="font-weight:700">__default__ (全局兜底默认单价)</td>
-        <td><span class="badge badge-warning">兜底默认</span></td>
+        <td><span class="tag warn">兜底默认</span></td>
         <td class="mono">$${Number(defPrice.input||0).toFixed(4)}</td>
         <td class="mono">$${Number(defPrice.output||0).toFixed(4)}</td>
         <td class="mono">$${Number(defPrice.cache_read||0).toFixed(4)}</td>
         <td class="mono">$${Number(defPrice.cache_write||0).toFixed(4)}</td>
         <td>
-          <button class="btn btn-sm" onclick="openPriceModal('__default__', ${defPrice.input||0}, ${defPrice.output||0}, ${defPrice.cache_read||0}, ${defPrice.cache_write||0})">✏️ 编辑</button>
+          <button type="button" class="btn btn-sm" onclick="openPriceModal('__default__', ${defPrice.input||0}, ${defPrice.output||0}, ${defPrice.cache_read||0}, ${defPrice.cache_write||0})">编辑</button>
         </td>
       </tr>`;
     }
 
     for (const [model, p] of entries) {
-      const isWild = model.includes('*') || model.includes('?');
+      const isWild = model.includes("*") || model.includes("?");
       html += `<tr>
         <td class="mono" style="font-weight:600">${escapeHtml(model)}</td>
-        <td><span class="badge ${isWild ? 'badge-purple' : 'badge-info'}">${isWild ? '通配符规则' : '精确匹配'}</span></td>
+        <td><span class="tag ${isWild ? "warn" : "plain"}">${isWild ? "通配符规则" : "精确匹配"}</span></td>
         <td class="mono">$${Number(p.input||0).toFixed(4)}</td>
         <td class="mono">$${Number(p.output||0).toFixed(4)}</td>
         <td class="mono">$${Number(p.cache_read||0).toFixed(4)}</td>
         <td class="mono">$${Number(p.cache_write||0).toFixed(4)}</td>
         <td>
-          <button class="btn btn-sm" onclick="openPriceModal('${escapeHtml(model)}', ${p.input||0}, ${p.output||0}, ${p.cache_read||0}, ${p.cache_write||0})">✏️ 编辑</button>
-          <button class="btn btn-sm btn-danger" onclick="deleteCustomPrice('${escapeHtml(model)}')">🗑️ 删除</button>
+          <button type="button" class="btn btn-sm" onclick="openPriceModal('${escapeHtml(model)}', ${p.input||0}, ${p.output||0}, ${p.cache_read||0}, ${p.cache_write||0})">编辑</button>
+          <button type="button" class="btn btn-sm btn-danger" onclick="deleteCustomPrice('${escapeHtml(model)}')">删除</button>
         </td>
       </tr>`;
     }
 
     if (!html) {
-      html = '<tr><td colspan="7" style="text-align:center;color:var(--text-muted)">暂无自定义价格覆盖，当前全部使用 models.dev 同步标准价格</td></tr>';
+      html = `<tr><td colspan="7" style="text-align:center;color:var(--text-tertiary)">暂无自定义价格覆盖，当前全部使用 models.dev 标准价格</td></tr>`;
     }
     tbody.innerHTML = html;
   }
 
   function openPriceModal(model, inp, outp, cread, cwrite) {
-    document.getElementById('pmModel').value = model || '';
-    document.getElementById('pmInput').value = inp || 0;
-    document.getElementById('pmOutput').value = outp || 0;
-    document.getElementById('pmCacheRead').value = cread || 0;
-    document.getElementById('pmCacheWrite').value = cwrite || 0;
-    document.getElementById('priceModalBackdrop').classList.add('open');
+    document.getElementById("pmModel").value = model || "";
+    document.getElementById("pmInput").value = inp || 0;
+    document.getElementById("pmOutput").value = outp || 0;
+    document.getElementById("pmCacheRead").value = cread || 0;
+    document.getElementById("pmCacheWrite").value = cwrite || 0;
+    document.getElementById("priceModalBackdrop").classList.add("open");
   }
 
   function closePriceModal() {
-    document.getElementById('priceModalBackdrop').classList.remove('open');
+    document.getElementById("priceModalBackdrop").classList.remove("open");
   }
 
   async function submitPriceModal() {
-    const model = document.getElementById('pmModel').value.trim();
+    const model = document.getElementById("pmModel").value.trim();
     if (!model) {
-      showToast('模型名称或通配符不能为空', true);
+      showToast("模型名称或通配符不能为空", true);
       return;
     }
     const price = {
-      input: parseFloat(document.getElementById('pmInput').value || '0') || 0,
-      output: parseFloat(document.getElementById('pmOutput').value || '0') || 0,
-      cache_read: parseFloat(document.getElementById('pmCacheRead').value || '0') || 0,
-      cache_write: parseFloat(document.getElementById('pmCacheWrite').value || '0') || 0
+      input: parseFloat(document.getElementById("pmInput").value || "0") || 0,
+      output: parseFloat(document.getElementById("pmOutput").value || "0") || 0,
+      cache_read: parseFloat(document.getElementById("pmCacheRead").value || "0") || 0,
+      cache_write: parseFloat(document.getElementById("pmCacheWrite").value || "0") || 0
     };
     try {
-      await apiFetchMgmt('/pricing/custom', {
-        method: 'POST',
+      await apiFetchMgmt("/pricing/custom", {
+        method: "POST",
         body: JSON.stringify({ model, price })
       });
       closePriceModal();
-      showToast('自定义模型单价已保存并实时生效');
+      showToast("自定义模型单价已保存并立即生效");
       await loadAdminOverview();
     } catch (err) {
       showToast(err.message, true);
@@ -1739,10 +2454,10 @@
   async function deleteCustomPrice(model) {
     if (!confirm(`确定删除模型 [${model}] 的自定义价格覆盖吗？`)) return;
     try {
-      await apiFetchMgmt('/pricing/custom?model=' + encodeURIComponent(model), {
-        method: 'DELETE'
+      await apiFetchMgmt("/pricing/custom?model=" + encodeURIComponent(model), {
+        method: "DELETE"
       });
-      showToast('已删除自定义价格覆盖');
+      showToast("已删除自定义价格覆盖");
       await loadAdminOverview();
     } catch (err) {
       showToast(err.message, true);
@@ -1750,36 +2465,36 @@
   }
 
   async function triggerModelsDevSync() {
-    const btn = document.getElementById('btnSyncPricing');
+    const btn = document.getElementById("btnSyncPricing");
     btn.disabled = true;
-    btn.textContent = '⏳ 正在同步...';
+    btn.textContent = "⏳ 正在同步...";
     try {
-      const res = await apiFetchMgmt('/pricing/sync', { method: 'POST' });
+      const res = await apiFetchMgmt("/pricing/sync", { method: "POST" });
       showToast(`models.dev 同步成功 (${fmtInt(res.synced_models)} 个模型键)`);
       await loadAdminOverview();
-      await searchRefPrices(document.getElementById('refPriceSearch').value);
+      await searchRefPrices(document.getElementById("refPriceSearch").value);
     } catch (err) {
-      showToast('同步失败: ' + err.message, true);
+      showToast("同步失败: " + err.message, true);
     } finally {
       btn.disabled = false;
-      btn.textContent = '🌐 立即同步 models.dev';
+      btn.textContent = "🌐 立即同步 models.dev";
     }
   }
 
   function searchRefPricesDebounced() {
     clearTimeout(refSearchTimer);
     refSearchTimer = setTimeout(() => {
-      searchRefPrices(document.getElementById('refPriceSearch').value);
+      searchRefPrices(document.getElementById("refPriceSearch").value);
     }, 220);
   }
 
   async function searchRefPrices(q) {
     try {
-      const data = await apiFetchMgmt('/pricing?search=' + encodeURIComponent(q || '') + '&limit=100');
+      const data = await apiFetchMgmt("/pricing?search=" + encodeURIComponent(q || "") + "&limit=100");
       const list = data.reference_models || [];
-      const tbody = document.getElementById('refPriceTableBody');
+      const tbody = document.getElementById("refPriceTableBody");
       if (list.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted)">未找到匹配的 models.dev 模型价格记录</td></tr>';
+        tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;color:var(--text-tertiary)">未找到匹配的 models.dev 模型价格记录</td></tr>`;
         return;
       }
       tbody.innerHTML = list.map(item => {
@@ -1791,36 +2506,36 @@
           <td class="mono">$${Number(p.cache_read||0).toFixed(4)}</td>
           <td class="mono">$${Number(p.cache_write||0).toFixed(4)}</td>
           <td>
-            <button class="btn btn-sm" onclick="openPriceModal('${escapeHtml(item.model)}', ${p.input||0}, ${p.output||0}, ${p.cache_read||0}, ${p.cache_write||0})">⚡ 覆盖此价格</button>
+            <button type="button" class="btn btn-sm" onclick="openPriceModal('${escapeHtml(item.model)}', ${p.input||0}, ${p.output||0}, ${p.cache_read||0}, ${p.cache_write||0})">覆盖此价格</button>
           </td>
         </tr>`;
-      }).join('');
+      }).join("");
     } catch (_) {}
   }
 
-  // ==================== USER SELF-SERVICE MODE (#account) ====================
+  // ==================== USER SELF-QUERY MODE (#account) ====================
   function toggleSelfKeyVisibility() {
-    const el = document.getElementById('selfApiKeyInput');
-    el.type = el.type === 'password' ? 'text' : 'password';
+    const el = document.getElementById("selfApiKeyInput");
+    el.type = el.type === "password" ? "text" : "password";
   }
 
   async function querySelfAccount() {
-    const apiKey = document.getElementById('selfApiKeyInput').value.trim();
+    const apiKey = document.getElementById("selfApiKeyInput").value.trim();
     if (!apiKey) {
-      showToast('请输入您的 API Key', true);
+      showToast("请输入您的 API Key", true);
       return;
     }
     sessionStorage.setItem(STORAGE_SELF_KEY, apiKey);
     try {
-      const resp = await fetch(API_SELF_USAGE + '?format=json&mode=account', {
+      const resp = await fetch(API_SELF_USAGE + "?format=json&mode=account", {
         headers: {
-          'Accept': 'application/json',
-          'X-Api-Key': apiKey
+          "Accept": "application/json",
+          "X-Api-Key": apiKey
         }
       });
       const data = await resp.json().catch(() => ({}));
       if (!resp.ok) {
-        const msg = (data && data.error && data.error.message) || ('查询失败: HTTP ' + resp.status);
+        const msg = (data && data.error && data.error.message) || ("查询失败: HTTP " + resp.status);
         throw new Error(msg);
       }
       renderSelfAccountResult(data);
@@ -1830,7 +2545,7 @@
   }
 
   function renderSelfAccountResult(data) {
-    document.getElementById('selfResultBox').classList.remove('hidden');
+    document.getElementById("selfResultBox").classList.remove("hidden");
     const acct = data.self_account || {};
     const stats = acct.stats || {};
 
@@ -1839,57 +2554,56 @@
     const usedUSD = acct.used_cost_usd || stats.total_cost_usd || 0;
     const isQuotaExhausted = quotaUSD > 0 && usedUSD >= quotaUSD;
 
-    const statusEl = document.getElementById('selfKeyStatus');
+    const statusEl = document.getElementById("selfKeyStatus");
     if (!enabled) {
-      statusEl.innerHTML = '<span class="badge badge-danger">⛔ 已禁用</span> ' + escapeHtml(acct.key_name || '');
+      statusEl.innerHTML = `<span class="tag bad">⛔ 已禁用</span> ` + escapeHtml(acct.key_name || "");
     } else if (isQuotaExhausted) {
-      statusEl.innerHTML = '<span class="badge badge-warning">⚠️ 配额已用尽</span> ' + escapeHtml(acct.key_name || '');
+      statusEl.innerHTML = `<span class="tag warn">⚠️ 配额已用尽</span> ` + escapeHtml(acct.key_name || "");
     } else {
-      statusEl.innerHTML = '<span class="badge badge-success">● 正常可用</span> ' + escapeHtml(acct.key_name || '');
+      statusEl.innerHTML = `<span class="tag ok">● 正常可用</span> ` + escapeHtml(acct.key_name || "");
     }
-    document.getElementById('selfKeyMasked').textContent = acct.api_key_masked || stats.masked_key || '-';
+    document.getElementById("selfKeyMasked").textContent = acct.api_key_masked || stats.masked_key || "-";
 
-    document.getElementById('selfUsedCost').textContent = fmtUSD(usedUSD);
-    const bar = document.getElementById('selfQuotaBar');
+    document.getElementById("selfUsedCost").textContent = fmtUSD(usedUSD);
+    const bar = document.getElementById("selfQuotaBar");
     if (quotaUSD > 0) {
       const pct = Math.min(100, (usedUSD / quotaUSD) * 100);
-      bar.style.width = pct + '%';
-      bar.className = 'progress-fill ' + (pct >= 100 ? 'danger' : (pct >= 80 ? 'warn' : ''));
+      bar.style.width = pct + "%";
+      bar.className = "bar-fill " + (pct >= 100 ? "danger" : (pct >= 80 ? "warn" : ""));
       const rem = Math.max(0, quotaUSD - usedUSD);
-      document.getElementById('selfQuotaSub').textContent = `配额上限: $${Number(quotaUSD).toFixed(2)} | 剩余可用: ${fmtUSD(rem)}`;
+      document.getElementById("selfQuotaSub").textContent = `配额上限: $${Number(quotaUSD).toFixed(2)} · 剩余可用: ${fmtUSD(rem)}`;
     } else {
-      bar.style.width = '15%';
-      bar.className = 'progress-fill';
-      document.getElementById('selfQuotaSub').textContent = '配额上限: 不限额度 (Unlimited)';
+      bar.style.width = "15%";
+      bar.className = "bar-fill";
+      document.getElementById("selfQuotaSub").textContent = "配额上限: 不限额度 (Unlimited)";
     }
 
     const maxC = acct.max_concurrency || 0;
     const actC = acct.active_concurrency || 0;
-    document.getElementById('selfConcurrency').textContent = maxC > 0 ? `${actC} / ${maxC}` : `${actC} / ∞`;
-    document.getElementById('selfReqSummary').textContent =
+    document.getElementById("selfConcurrency").textContent = maxC > 0 ? `${actC} / ${maxC}` : `${actC} / ∞`;
+    document.getElementById("selfReqSummary").textContent =
       `累计请求: ${fmtInt(stats.total_requests)} 次 (成功 ${fmtInt(stats.success_requests)} / 失败 ${fmtInt(stats.failed_requests)})`;
 
-    document.getElementById('selfTotalTokens').textContent = fmtInt(stats.total_tokens || 0);
-    document.getElementById('selfTokenBreakdown').textContent =
-      `输入: ${fmtInt(stats.input_tokens)} | 输出: ${fmtInt(stats.output_tokens)} | 缓存读: ${fmtInt(stats.cache_read_tokens)}`;
+    document.getElementById("selfTotalTokens").textContent = fmtInt(stats.total_tokens || 0);
+    document.getElementById("selfTokenBreakdown").textContent =
+      `输入: ${fmtInt(stats.input_tokens)} · 输出: ${fmtInt(stats.output_tokens)} · 缓存读: ${fmtInt(stats.cache_read_tokens)}`;
 
-    const models = (acct.allowed_models && acct.allowed_models.length) ? acct.allowed_models : ['*'];
-    document.getElementById('selfAllowedModels').innerHTML = models.map(m => {
-      const neg = m.startsWith('!');
-      return `<span class="badge ${neg ? 'badge-danger' : 'badge-info'} mono">${escapeHtml(m)}</span>`;
-    }).join(' ');
+    const models = (acct.allowed_models && acct.allowed_models.length) ? acct.allowed_models : ["*"];
+    document.getElementById("selfAllowedModels").innerHTML = (models.length === 1 && models[0] === "*")
+      ? `<span class="tag ok">全部模型 (*)</span>`
+      : models.map(m => `<span class="tag plain mono">${escapeHtml(m)}</span>`).join(" ");
 
     const ub = acct.upstream_binding || {};
     const bCreds = [].concat(ub.auth_ids || [], ub.credentials || []);
-    document.getElementById('selfUpstreamInfo').innerHTML = bCreds.length > 0
-      ? `<span class="badge badge-purple">专属通道 (${escapeHtml(ub.strategy || 'round-robin')}, 已绑定 ${bCreds.length} 个上游凭证)</span>`
-      : '<span class="badge badge-success">标准高可用公共池路由</span>';
+    document.getElementById("selfUpstreamInfo").innerHTML = bCreds.length > 0
+      ? `<span class="tag plain">专属通道 (${escapeHtml(ub.strategy || "round-robin")}，已绑定 ${bCreds.length} 个账号凭证)</span>`
+      : `<span class="tag ok">公共凭证池自动负载均衡</span>`;
 
     const mMap = stats.models || {};
     const mList = Object.values(mMap).sort((a, b) => (b.cost_usd || 0) - (a.cost_usd || 0));
-    const tbody = document.getElementById('selfModelsTableBody');
+    const tbody = document.getElementById("selfModelsTableBody");
     if (mList.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--text-muted)">该 API Key 暂无模型调用记录</td></tr>';
+      tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;color:var(--text-tertiary)">该 API Key 暂无模型调用记录</td></tr>`;
     } else {
       tbody.innerHTML = mList.map(ms => {
         const up = ms.unit_price_per_1m || {};
@@ -1901,39 +2615,39 @@
           <td class="mono">${fmtInt(ms.output_tokens)}</td>
           <td class="mono">${fmtInt(ms.cache_read_tokens)} / ${fmtInt(ms.cache_write_tokens)}</td>
           <td class="mono" style="font-weight:600">${fmtInt(ms.total_tokens)}</td>
-          <td class="cost-text">${escapeHtml(ms.cost_formatted || '$0.000000')}</td>
-          <td style="font-size:12px;color:var(--text-secondary)">${escapeHtml(ms.last_used_at || '-')}</td>
+          <td class="cost-val">${escapeHtml(ms.cost_formatted || "$0.000000")}</td>
+          <td style="font-size:12px;color:var(--text-secondary)">${escapeHtml(ms.last_used_at || "-")}</td>
         </tr>`;
-      }).join('');
+      }).join("");
     }
   }
 
   // ==================== MGMT KEY MODAL ====================
   function openMgmtKeyModal() {
-    document.getElementById('mgmtKeyInput').value = localStorage.getItem(STORAGE_MGMT_KEY) || '';
-    document.getElementById('mgmtKeyModalBackdrop').classList.add('open');
+    document.getElementById("mgmtKeyInput").value = localStorage.getItem(STORAGE_MGMT_KEY) || "";
+    document.getElementById("mgmtKeyModalBackdrop").classList.add("open");
   }
 
   function closeMgmtKeyModal() {
-    document.getElementById('mgmtKeyModalBackdrop').classList.remove('open');
+    document.getElementById("mgmtKeyModalBackdrop").classList.remove("open");
   }
 
   function saveMgmtKey() {
-    const val = document.getElementById('mgmtKeyInput').value.trim();
+    const val = document.getElementById("mgmtKeyInput").value.trim();
     localStorage.setItem(STORAGE_MGMT_KEY, val);
     closeMgmtKeyModal();
     loadAdminOverview();
-    searchRefPrices('');
+    searchRefPrices("");
   }
 
   function switchToAccountModeFromModal() {
     closeMgmtKeyModal();
-    setMode('account');
+    setMode("account");
   }
 
-  window.addEventListener('hashchange', () => {
-    if ((window.location.hash || '').toLowerCase().startsWith('#account')) {
-      setMode('account');
+  window.addEventListener("hashchange", () => {
+    if ((window.location.hash || "").toLowerCase().startsWith("#account")) {
+      setMode("account");
     }
   });
 

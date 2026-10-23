@@ -21,10 +21,10 @@ import (
 
 const (
 	PluginID      = "cpa-plugin-key"
-	PluginVersion = "0.2.0"
+	PluginVersion = "0.3.0"
 	PluginAuthor  = "YzMzx"
 	PluginRepo    = "https://github.com/YzMzx/cpa-plugin-key"
-	PluginLogoSVG = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%230284c7'/><path d='M24 22a10 10 0 1 0 9.5 13H42v5h6v-5h4v-6H33.5A10 10 0 0 0 24 22zm0 6a4 4 0 1 1 0 8 4 4 0 0 1 0-8z' fill='%23fff'/></svg>"
+	PluginLogoSVG = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%238b8680'/><path d='M24 22a10 10 0 1 0 9.5 13H42v5h6v-5h4v-6H33.5A10 10 0 0 0 24 22zm0 6a4 4 0 1 1 0 8 4 4 0 0 1 0-8z' fill='%23fff'/></svg>"
 )
 
 type lifecycleRequest struct {
@@ -63,9 +63,11 @@ type Manager struct {
 	mu            sync.RWMutex
 	seedCfg       Config
 	dynamicState  *DynamicRulesState
+	hostAPIKeys   []string
 	cfg           Config
 	lastSyncKey   string
 	seenAuthFiles map[string]pluginapi.HostAuthFileEntry
+	seenModels    map[string]string
 	host          *HostBridge
 	scheduler     *authz.Scheduler
 	limiter       *limiter.Limiter
@@ -87,6 +89,7 @@ func NewManager(invoker HostInvoker) *Manager {
 		dynamicState:  &DynamicRulesState{Version: 1, CustomPrices: make(map[string]pricing.ModelPrice)},
 		cfg:           defCfg,
 		seenAuthFiles: make(map[string]pluginapi.HostAuthFileEntry),
+		seenModels:    make(map[string]string),
 		host:          hostBridge,
 		scheduler:     authz.NewScheduler(),
 		limiter:       limiter.New(),
@@ -193,7 +196,14 @@ func (m *Manager) Configure(raw []byte) error {
 		dynState = &DynamicRulesState{Version: 1, CustomPrices: make(map[string]pricing.ModelPrice)}
 	}
 
-	cfg := MergeDynamicState(seedCfg, dynState)
+	hostKeys := ReadHostConfigAPIKeys("")
+	m.mu.RLock()
+	if len(hostKeys) == 0 && len(m.hostAPIKeys) > 0 {
+		hostKeys = append([]string(nil), m.hostAPIKeys...)
+	}
+	m.mu.RUnlock()
+
+	cfg := MergeDynamicState(seedCfg, dynState, hostKeys...)
 	m.pricingEngine.SetCustomPrices(cfg.Pricing.CustomPrices, cfg.Pricing.DefaultPrice)
 
 	flushDur := time.Duration(cfg.Storage.FlushIntervalSeconds) * time.Second
@@ -215,6 +225,7 @@ func (m *Manager) Configure(raw []byte) error {
 	needRestartSync := m.lastSyncKey != syncKey
 	m.seedCfg = seedCfg
 	m.dynamicState = dynState
+	m.hostAPIKeys = hostKeys
 	m.cfg = cfg
 	m.lastSyncKey = syncKey
 	m.mu.Unlock()
@@ -646,30 +657,284 @@ func (m *Manager) ExtractCallerAPIKey(req pluginapi.ManagementRequest) (apiKey s
 	return token, false
 }
 
-// ListHostAuthFiles calls `host.auth.list` and merges any candidates observed during scheduling.
+// ListHostAuthFiles calls `host.auth.list` and `host.auth.models`, merging any candidates observed during scheduling.
 func (m *Manager) ListHostAuthFiles(hostCallbackID string) ([]pluginapi.HostAuthFileEntry, error) {
 	hostFiles, err := m.host.ListAuthFiles(hostCallbackID)
-	if len(hostFiles) > 0 {
-		return hostFiles, err
+	authModels, _ := m.host.ListAuthModels(hostCallbackID)
+
+	byKey := make(map[string]pluginapi.HostAuthFileEntry)
+	for _, f := range hostFiles {
+		k := strings.TrimSpace(f.ID)
+		if k == "" {
+			k = strings.TrimSpace(f.Name)
+		}
+		if k == "" {
+			k = strings.TrimSpace(f.AuthIndex)
+		}
+		if k != "" {
+			byKey[k] = f
+		}
+	}
+	for _, am := range authModels {
+		k := strings.TrimSpace(am.ID)
+		if k == "" {
+			k = strings.TrimSpace(am.AuthIndex)
+		}
+		if k == "" {
+			continue
+		}
+		if existing, ok := byKey[k]; ok {
+			if existing.Provider == "" && am.Provider != "" {
+				existing.Provider = am.Provider
+			}
+			if existing.AuthIndex == "" && am.AuthIndex != "" {
+				existing.AuthIndex = am.AuthIndex
+			}
+			byKey[k] = existing
+		} else {
+			byKey[k] = pluginapi.HostAuthFileEntry{
+				ID:        am.ID,
+				AuthIndex: am.AuthIndex,
+				Name:      am.ID,
+				Provider:  am.Provider,
+				Status:    "active",
+			}
+		}
 	}
 
 	m.mu.RLock()
-	fallback := make([]pluginapi.HostAuthFileEntry, 0, len(m.seenAuthFiles))
-	for _, f := range m.seenAuthFiles {
-		fallback = append(fallback, f)
+	for id, f := range m.seenAuthFiles {
+		if _, ok := byKey[id]; !ok {
+			byKey[id] = f
+		}
 	}
 	m.mu.RUnlock()
 
-	sort.Slice(fallback, func(i, j int) bool {
-		return fallback[i].Name < fallback[j].Name
+	out := make([]pluginapi.HostAuthFileEntry, 0, len(byKey))
+	for _, f := range byKey {
+		if strings.TrimSpace(f.Name) == "" {
+			f.Name = f.ID
+		}
+		out = append(out, f)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name)
 	})
-	return fallback, err
+	return out, err
+}
+
+// AvailableModelOption represents a selectable model item in the Web UI checkbox list.
+type AvailableModelOption struct {
+	ID       string   `json:"id"`
+	Provider string   `json:"provider"`
+	Sources  []string `json:"sources,omitempty"`
+}
+
+func inferModelProvider(modelID string) string {
+	low := strings.ToLower(strings.TrimSpace(modelID))
+	switch {
+	case strings.Contains(low, "claude"):
+		return "claude"
+	case strings.HasPrefix(low, "gpt-"), strings.HasPrefix(low, "o1"), strings.HasPrefix(low, "o3"), strings.HasPrefix(low, "o4"), strings.Contains(low, "codex"), strings.Contains(low, "chatgpt"):
+		return "openai"
+	case strings.Contains(low, "gemini"):
+		return "gemini"
+	case strings.Contains(low, "deepseek"):
+		return "deepseek"
+	case strings.Contains(low, "qwen"):
+		return "qwen"
+	case strings.Contains(low, "glm"):
+		return "zhipu"
+	case strings.Contains(low, "kimi"), strings.Contains(low, "moonshot"):
+		return "kimi"
+	case strings.Contains(low, "grok"):
+		return "xai"
+	default:
+		return "other"
+	}
+}
+
+// ListAvailableModels aggregates all selectable models from host credentials (`host.auth.models`),
+// observed traffic (`usageStore`), configured key rules, and common standard models.
+func (m *Manager) ListAvailableModels(hostCallbackID string, snap usage.PersistedSnapshot) []AvailableModelOption {
+	authModels, _ := m.host.ListAuthModels(hostCallbackID)
+	byModel := make(map[string]*AvailableModelOption)
+
+	addModel := func(id, provider, source string) {
+		clean := strings.TrimSpace(id)
+		if clean == "" || clean == "*" || strings.HasPrefix(clean, "!") {
+			return
+		}
+		prov := strings.ToLower(strings.TrimSpace(provider))
+		if prov == "" {
+			prov = inferModelProvider(clean)
+		}
+		item, exists := byModel[clean]
+		if !exists {
+			item = &AvailableModelOption{
+				ID:       clean,
+				Provider: prov,
+			}
+			byModel[clean] = item
+		} else if (item.Provider == "" || item.Provider == "other") && prov != "" && prov != "other" {
+			item.Provider = prov
+		}
+		if source != "" {
+			hasSrc := false
+			for _, s := range item.Sources {
+				if s == source {
+					hasSrc = true
+					break
+				}
+			}
+			if !hasSrc {
+				item.Sources = append(item.Sources, source)
+			}
+		}
+	}
+
+	// 1. Models registered on active host credentials via host.auth.models
+	for _, cred := range authModels {
+		src := cred.ID
+		if src == "" {
+			src = cred.Provider
+		}
+		for _, mid := range cred.Models {
+			addModel(mid, cred.Provider, src)
+		}
+	}
+
+	// 2. Models observed in usage statistics
+	for _, ks := range snap.Keys {
+		if ks == nil {
+			continue
+		}
+		for mid := range ks.Models {
+			addModel(mid, "", "usage")
+		}
+	}
+
+	// 3. Models already referenced in key rules or custom prices
+	m.mu.RLock()
+	for _, kr := range m.cfg.Keys {
+		for _, mod := range kr.AllowedModels {
+			addModel(mod, "", "rule")
+		}
+	}
+	for _, mod := range m.cfg.DefaultPolicy.AllowedModels {
+		addModel(mod, "", "default_policy")
+	}
+	for mod := range m.cfg.Pricing.CustomPrices {
+		addModel(mod, "", "custom_price")
+	}
+	m.mu.RUnlock()
+
+	// 4. Built-in mainstream models & wildcard family checkboxes so the UI always has rich checkboxes even before credentials are added
+	builtinModels := []struct {
+		id       string
+		provider string
+	}{
+		{"claude-*", "claude"},
+		{"claude-sonnet-4-20250514", "claude"},
+		{"claude-opus-4-20250514", "claude"},
+		{"claude-3-7-sonnet-20250219", "claude"},
+		{"claude-3-5-sonnet-20241022", "claude"},
+		{"claude-3-5-haiku-20241022", "claude"},
+		{"gpt-*", "openai"},
+		{"gpt-5", "openai"},
+		{"gpt-4.1", "openai"},
+		{"gpt-4.1-mini", "openai"},
+		{"gpt-4o", "openai"},
+		{"gpt-4o-mini", "openai"},
+		{"o3", "openai"},
+		{"o3-mini", "openai"},
+		{"o4-mini", "openai"},
+		{"codex-mini-latest", "openai"},
+		{"gemini-*", "gemini"},
+		{"gemini-2.5-pro", "gemini"},
+		{"gemini-2.5-flash", "gemini"},
+		{"gemini-2.0-flash", "gemini"},
+		{"deepseek-*", "deepseek"},
+		{"deepseek-chat", "deepseek"},
+		{"deepseek-reasoner", "deepseek"},
+		{"qwen-*", "qwen"},
+		{"grok-*", "xai"},
+	}
+	for _, bm := range builtinModels {
+		addModel(bm.id, bm.provider, "catalog")
+	}
+
+	out := make([]AvailableModelOption, 0, len(byModel))
+	for _, item := range byModel {
+		out = append(out, *item)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Provider != out[j].Provider {
+			return out[i].Provider < out[j].Provider
+		}
+		iWild := strings.Contains(out[i].ID, "*")
+		jWild := strings.Contains(out[j].ID, "*")
+		if iWild != jWild {
+			return iWild
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out
+}
+
+// SyncHostAPIKeys synchronizes the global API keys from CLIProxyAPI (`/v0/management/api-keys` or `config.yaml`)
+// with the plugin's in-memory and persisted state so CPA and the plugin share a single unified set of API keys.
+func (m *Manager) SyncHostAPIKeys(keys []string) error {
+	cleaned := make([]string, 0, len(keys))
+	seen := make(map[string]struct{}, len(keys))
+	for _, rawKey := range keys {
+		k := strings.TrimSpace(rawKey)
+		if k == "" {
+			continue
+		}
+		if _, ok := seen[k]; !ok {
+			seen[k] = struct{}{}
+			cleaned = append(cleaned, k)
+		}
+	}
+
+	m.mu.Lock()
+	if m.dynamicState == nil {
+		m.dynamicState = &DynamicRulesState{Version: 1, CustomPrices: make(map[string]pricing.ModelPrice)}
+	}
+	m.hostAPIKeys = cleaned
+
+	// Remove any key present in CPA's global api-keys from DeletedKeys
+	if len(m.dynamicState.DeletedKeys) > 0 {
+		filteredDel := make([]string, 0, len(m.dynamicState.DeletedKeys))
+		for _, dk := range m.dynamicState.DeletedKeys {
+			if _, inHost := seen[strings.TrimSpace(dk)]; !inHost {
+				filteredDel = append(filteredDel, dk)
+			}
+		}
+		m.dynamicState.DeletedKeys = filteredDel
+	}
+
+	m.cfg = MergeDynamicState(m.seedCfg, m.dynamicState, m.hostAPIKeys...)
+	rulesFile := m.cfg.Storage.RulesFile
+	errSave := SaveDynamicRulesFile(rulesFile, m.dynamicState)
+	m.mu.Unlock()
+	return errSave
 }
 
 // BuildAdminOverview returns the complete state needed by the Admin Dashboard in a single call.
 func (m *Manager) BuildAdminOverview(hostCallbackID string) map[string]any {
+	diskKeys := ReadHostConfigAPIKeys("")
+	if len(diskKeys) > 0 {
+		m.mu.Lock()
+		m.hostAPIKeys = diskKeys
+		m.cfg = MergeDynamicState(m.seedCfg, m.dynamicState, m.hostAPIKeys...)
+		m.mu.Unlock()
+	}
+
 	snap := m.BuildSnapshot("", "", false)
 	authFiles, _ := m.ListHostAuthFiles(hostCallbackID)
+	availableModels := m.ListAvailableModels(hostCallbackID, snap)
 	pStatus := m.PricingStatus()
 
 	m.mu.RLock()
@@ -720,13 +985,14 @@ func (m *Manager) BuildAdminOverview(hostCallbackID string) map[string]any {
 	}
 
 	return map[string]any{
-		"summary":        summary,
-		"keys":           keysCopy,
-		"default_policy": dpCopy,
-		"usage":          snap,
-		"auth_files":     authFiles,
-		"pricing_status": pStatus,
-		"rules_file":     cfg.Storage.RulesFile,
+		"summary":          summary,
+		"keys":             keysCopy,
+		"default_policy":   dpCopy,
+		"usage":            snap,
+		"auth_files":       authFiles,
+		"available_models": availableModels,
+		"pricing_status":   pStatus,
+		"rules_file":       cfg.Storage.RulesFile,
 	}
 }
 
@@ -802,7 +1068,7 @@ func (m *Manager) UpsertKeyRuleFromJSON(rawBody []byte) (any, error) {
 		m.dynamicState.Keys = append(m.dynamicState.Keys, cloneKeyRule(rule))
 	}
 
-	m.cfg = MergeDynamicState(m.seedCfg, m.dynamicState)
+	m.cfg = MergeDynamicState(m.seedCfg, m.dynamicState, m.hostAPIKeys...)
 	rulesFile := m.cfg.Storage.RulesFile
 	errSave := SaveDynamicRulesFile(rulesFile, m.dynamicState)
 	m.mu.Unlock()
@@ -832,6 +1098,14 @@ func (m *Manager) DeleteKeyRule(apiKey string) error {
 	}
 	m.dynamicState.Keys = nextKeys
 
+	nextHostKeys := make([]string, 0, len(m.hostAPIKeys))
+	for _, hk := range m.hostAPIKeys {
+		if hk != target {
+			nextHostKeys = append(nextHostKeys, hk)
+		}
+	}
+	m.hostAPIKeys = nextHostKeys
+
 	alreadyDeleted := false
 	for _, dk := range m.dynamicState.DeletedKeys {
 		if dk == target {
@@ -843,7 +1117,7 @@ func (m *Manager) DeleteKeyRule(apiKey string) error {
 		m.dynamicState.DeletedKeys = append(m.dynamicState.DeletedKeys, target)
 	}
 
-	m.cfg = MergeDynamicState(m.seedCfg, m.dynamicState)
+	m.cfg = MergeDynamicState(m.seedCfg, m.dynamicState, m.hostAPIKeys...)
 	rulesFile := m.cfg.Storage.RulesFile
 	errSave := SaveDynamicRulesFile(rulesFile, m.dynamicState)
 	m.mu.Unlock()
@@ -877,7 +1151,7 @@ func (m *Manager) SaveDefaultPolicyFromJSON(rawBody []byte) (any, error) {
 	}
 	dpCopy := dp
 	m.dynamicState.DefaultPolicy = &dpCopy
-	m.cfg = MergeDynamicState(m.seedCfg, m.dynamicState)
+	m.cfg = MergeDynamicState(m.seedCfg, m.dynamicState, m.hostAPIKeys...)
 	rulesFile := m.cfg.Storage.RulesFile
 	errSave := SaveDynamicRulesFile(rulesFile, m.dynamicState)
 	m.mu.Unlock()
@@ -917,7 +1191,7 @@ func (m *Manager) UpsertCustomPrice(model string, price pricing.ModelPrice) erro
 		m.dynamicState.DeletedPrices = filteredDel
 	}
 
-	m.cfg = MergeDynamicState(m.seedCfg, m.dynamicState)
+	m.cfg = MergeDynamicState(m.seedCfg, m.dynamicState, m.hostAPIKeys...)
 	m.pricingEngine.SetCustomPrices(m.cfg.Pricing.CustomPrices, m.cfg.Pricing.DefaultPrice)
 	rulesFile := m.cfg.Storage.RulesFile
 	errSave := SaveDynamicRulesFile(rulesFile, m.dynamicState)
@@ -951,7 +1225,7 @@ func (m *Manager) DeleteCustomPrice(model string) error {
 		m.dynamicState.DeletedPrices = append(m.dynamicState.DeletedPrices, norm)
 	}
 
-	m.cfg = MergeDynamicState(m.seedCfg, m.dynamicState)
+	m.cfg = MergeDynamicState(m.seedCfg, m.dynamicState, m.hostAPIKeys...)
 	m.pricingEngine.SetCustomPrices(m.cfg.Pricing.CustomPrices, m.cfg.Pricing.DefaultPrice)
 	rulesFile := m.cfg.Storage.RulesFile
 	errSave := SaveDynamicRulesFile(rulesFile, m.dynamicState)
