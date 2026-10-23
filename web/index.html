@@ -1006,9 +1006,9 @@
         <div class="form-group">
           <label class="form-label">默认上游账号凭证调度策略</label>
           <select id="dpBindStrategy">
-            <option value="round-robin">round-robin</option>
-            <option value="fill-first">fill-first</option>
-            <option value="strict">strict</option>
+            <option value="round-robin">轮询调度 (round-robin)</option>
+            <option value="fill-first">优先级填满 (fill-first)</option>
+            <option value="strict">严格隔离 (strict)</option>
           </select>
         </div>
       </div>
@@ -1176,9 +1176,9 @@
             </label>
             <div class="input-row">
               <select id="kmBindStrategy" style="width:auto;min-height:28px;padding:2px 8px;font-size:12px">
-                <option value="round-robin">策略: round-robin</option>
-                <option value="fill-first">策略: fill-first</option>
-                <option value="strict">策略: strict</option>
+                <option value="round-robin">策略: 轮询调度 (round-robin)</option>
+                <option value="fill-first">策略: 优先级填满 (fill-first)</option>
+                <option value="strict">策略: 严格隔离 (strict)</option>
               </select>
               <button type="button" class="btn btn-sm" onclick="batchCheckCreds('km', true)">全选凭证</button>
               <button type="button" class="btn btn-sm" onclick="batchCheckCreds('km', false)">清空勾选</button>
@@ -1910,12 +1910,19 @@
 
       const ub = kr.upstream_binding || {};
       const creds = Array.from(new Set([].concat(ub.auth_ids || [], ub.credentials || [])));
+      const strategyLabelMap = {
+        "round-robin": "轮询 (round-robin)",
+        "fill-first": "优先级 (fill-first)",
+        "strict": "严格 (strict)"
+      };
       let bindHtml = `<span class="tag ok">全部可用凭证</span>`;
       if (creds.length > 0) {
         const shownCreds = creds.slice(0, 2).map(c => `<span class="tag plain mono">${escapeHtml(c)}</span>`).join("");
         const moreCreds = creds.length - 2;
         const moreCredTag = moreCreds > 0 ? `<span class="tag plain" title="${escapeHtml(creds.join(", "))}">+${moreCreds}</span>` : "";
-        bindHtml = `<div class="tag-group"><span class="tag warn">${escapeHtml(ub.strategy || "round-robin")}</span>${shownCreds}${moreCredTag}</div>`;
+        const strat = ub.strategy || "round-robin";
+        const dispStrat = strategyLabelMap[strat] || strat;
+        bindHtml = `<div class="tag-group"><span class="tag warn">${escapeHtml(dispStrat)}</span>${shownCreds}${moreCredTag}</div>`;
       }
 
       return `<tr>

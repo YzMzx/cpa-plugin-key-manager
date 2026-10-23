@@ -27,6 +27,10 @@ plugins:
         allowed_models:
           - "*"
         upstream_binding:
+          # 账号调度策略可选：
+          #   - round-robin: 轮询调度（在绑定的凭证间依次轮流分发）
+          #   - fill-first:  优先级填满（优先主用前序凭证，用尽后顺延）
+          #   - strict:      严格隔离（仅限绑定凭证，不可用时直接拒绝）
           strategy: "round-robin"
 
       # 3. API Key 专属规则（自动与 CPA 全局 api-keys 同步，请在 CPA 管理后台「API Key 管控与用量」页面可视化配置）
