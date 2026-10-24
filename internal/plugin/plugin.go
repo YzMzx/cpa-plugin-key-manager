@@ -22,7 +22,7 @@ import (
 
 const (
 	PluginID      = "cpa-plugin-key-manager"
-	PluginVersion = "0.5.10"
+	PluginVersion = "0.5.11"
 	PluginAuthor  = "YzMzx"
 	PluginRepo    = "https://github.com/YzMzx/cpa-plugin-key-manager"
 	PluginLogoSVG = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%238b8680'/><path d='M24 22a10 10 0 1 0 9.5 13H42v5h6v-5h4v-6H33.5A10 10 0 0 0 24 22zm0 6a4 4 0 1 1 0 8 4 4 0 0 1 0-8z' fill='%23fff'/></svg>"
@@ -61,21 +61,20 @@ type managementRegistrationResponse struct {
 // It is safe for concurrent use and preserves in-flight concurrency slots,
 // dynamic Web UI rules, and accumulated usage across `plugin.reconfigure` hot-reloads.
 type Manager struct {
-	mu             sync.RWMutex
-	seedCfg        Config
-	dynamicState   *DynamicRulesState
-	hostAPIKeys    []string
-	cfg            Config
-	lastSyncKey    string
-	seenAuthFiles  map[string]pluginapi.HostAuthFileEntry
-	seenModels     map[string]string
-	host           *HostBridge
-	scheduler      *authz.Scheduler
-	limiter        *limiter.Limiter
-	pricingEngine  *pricing.Engine
-	pricingSyncer  *pricing.Syncer
-	usageStore     *usage.Store
-	lastConfigSync time.Time
+	mu            sync.RWMutex
+	seedCfg       Config
+	dynamicState  *DynamicRulesState
+	hostAPIKeys   []string
+	cfg           Config
+	lastSyncKey   string
+	seenAuthFiles map[string]pluginapi.HostAuthFileEntry
+	seenModels    map[string]string
+	host          *HostBridge
+	scheduler     *authz.Scheduler
+	limiter       *limiter.Limiter
+	pricingEngine *pricing.Engine
+	pricingSyncer *pricing.Syncer
+	usageStore    *usage.Store
 }
 
 // NewManager creates a new plugin Manager instance.
@@ -198,27 +197,12 @@ func (m *Manager) Configure(raw []byte) error {
 		dynState = &DynamicRulesState{Version: 1, CustomPrices: make(map[string]pricing.ModelPrice)}
 	}
 
-	// 1. Seed synchronization: If the disk rules file has no keys, restore from
-	// every other durable source (config.yaml seed, config.yaml plugin snapshot).
+	// Seed synchronization: if the disk rules are empty, restore them from the
+	// plugin config that CLIProxyAPI itself delivers in the registration payload.
 	if len(dynState.Keys) == 0 && len(seedCfg.Keys) > 0 {
 		dynState.Keys = make([]KeyRuleConfig, len(seedCfg.Keys))
 		for i, k := range seedCfg.Keys {
 			dynState.Keys[i] = cloneKeyRule(k)
-		}
-	}
-	if cfgSnapshot := ReadHostConfigPluginRules(""); cfgSnapshot != nil {
-		if len(dynState.Keys) == 0 && len(cfgSnapshot.Keys) > 0 {
-			dynState.Keys = make([]KeyRuleConfig, len(cfgSnapshot.Keys))
-			for i, k := range cfgSnapshot.Keys {
-				dynState.Keys[i] = cloneKeyRule(k)
-			}
-		}
-		if dynState.DefaultPolicy == nil && cfgSnapshot.DefaultPolicy != nil {
-			dp := *cfgSnapshot.DefaultPolicy
-			dynState.DefaultPolicy = &dp
-		}
-		if len(cfgSnapshot.CustomPrices) > 0 && len(dynState.CustomPrices) == 0 {
-			dynState.CustomPrices = cfgSnapshot.CustomPrices
 		}
 	}
 	if len(dynState.Keys) > 0 || dynState.DefaultPolicy != nil {
@@ -285,24 +269,6 @@ func (m *Manager) Configure(raw []byte) error {
 	m.cfg = cfg
 	m.lastSyncKey = syncKey
 	m.mu.Unlock()
-
-	// Repair the host config.yaml snapshot on every (re)configuration so that a
-	// management save performed by CLIProxyAPI from a stale in-memory copy can
-	// never permanently erase the administrator's remarks and model whitelists.
-	if len(dynState.Keys) > 0 || dynState.DefaultPolicy != nil {
-		allKeys := make([]string, 0, len(cfg.Keys))
-		for _, k := range cfg.Keys {
-			allKeys = append(allKeys, k.APIKey)
-		}
-		if len(allKeys) == 0 {
-			allKeys = append(allKeys, hostKeys...)
-		}
-		if errHost := WriteHostConfigState("", allKeys, dynState); errHost != nil {
-			m.host.Log("warn", "failed to mirror plugin rules into host config.yaml", map[string]any{
-				"error": errHost.Error(),
-			})
-		}
-	}
 
 	return nil
 }
@@ -988,66 +954,18 @@ func (m *Manager) SyncHostAPIKeys(keys []string) error {
 			"error": errSave.Error(),
 		})
 	}
-	stateSnapshot := m.dynamicState
 	allKeys := make([]string, 0, len(m.cfg.Keys))
 	for _, k := range m.cfg.Keys {
 		allKeys = append(allKeys, k.APIKey)
 	}
 	m.mu.Unlock()
 
-	if errHost := WriteHostConfigState("", allKeys, stateSnapshot); errHost != nil {
-		m.host.Log("warn", "failed to mirror plugin rules into host config.yaml on sync", map[string]any{
+	if errHost := WriteHostConfigAPIKeys("", allKeys); errHost != nil {
+		m.host.Log("warn", "failed to sync host config api-keys", map[string]any{
 			"error": errHost.Error(),
 		})
 	}
 	return errSave
-}
-
-// repairHostConfigSnapshot re-mirrors the in-memory dynamic rules into the host
-// config.yaml when that snapshot is missing or out of date. CLIProxyAPI saves its
-// whole in-memory config on every management change; because that copy was loaded
-// at startup it may not contain the plugin's `keys`/`default_policy` block, which
-// would silently wipe the administrator's remarks and model whitelists.
-func (m *Manager) repairHostConfigSnapshot() {
-	m.mu.RLock()
-	state := m.dynamicState
-	cfg := m.cfg
-	lastSync := m.lastConfigSync
-	m.mu.RUnlock()
-
-	if state == nil || (len(state.Keys) == 0 && state.DefaultPolicy == nil) {
-		return
-	}
-
-	allKeys := make([]string, 0, len(cfg.Keys))
-	for _, k := range cfg.Keys {
-		allKeys = append(allKeys, k.APIKey)
-	}
-
-	// Only rewrite when the snapshot actually lost data, at most once every 20s.
-	configKeys := ReadHostConfigPluginKeys()
-	needRepair := len(configKeys) < len(state.Keys)
-	if !needRepair && state.DefaultPolicy != nil {
-		if snap := ReadHostConfigPluginRules(""); snap == nil || snap.DefaultPolicy == nil {
-			needRepair = true
-		}
-	}
-	if !needRepair {
-		return
-	}
-	if time.Since(lastSync) < 20*time.Second {
-		return
-	}
-
-	if errHost := WriteHostConfigState("", allKeys, state); errHost != nil {
-		m.host.Log("warn", "failed to repair host config.yaml plugin snapshot", map[string]any{
-			"error": errHost.Error(),
-		})
-		return
-	}
-	m.mu.Lock()
-	m.lastConfigSync = time.Now()
-	m.mu.Unlock()
 }
 
 // BuildAdminOverview returns the complete state needed by the Admin Dashboard in a single call.
@@ -1059,7 +977,6 @@ func (m *Manager) BuildAdminOverview(hostCallbackID string) map[string]any {
 		m.cfg = MergeDynamicState(m.seedCfg, m.dynamicState, m.hostAPIKeys...)
 		m.mu.Unlock()
 	}
-	m.repairHostConfigSnapshot()
 
 	snap := m.BuildSnapshot("", "", false)
 	authFiles, _ := m.ListHostAuthFiles(hostCallbackID)
@@ -1147,21 +1064,20 @@ func (m *Manager) BuildPersistenceDiagnostics() map[string]any {
 	}
 
 	return map[string]any{
-		"rules_file":                rulesFile,
-		"rules_file_exists":         rulesFileExists,
-		"rules_file_size":           rulesFileSize,
-		"rules_candidates":          DynamicRulesFileReport(rulesFile),
-		"rules_keys_in_memory":      stateKeys,
-		"usage_file":                usageFile,
-		"usage_candidates":          UsageFileCandidates(usageFile),
-		"usage_report":              UsageFileReport(usageFile),
-		"config_file":               configFile,
-		"config_plugin_keys_pinned": len(ReadHostConfigPluginKeys()) > 0,
-		"auth_dirs":                 existingAuthDirs(),
-		"state_dirs":                StateDirs(),
-		"cwd":                       cwd,
-		"home":                      home,
-		"process_args":              os.Args,
+		"rules_file":           rulesFile,
+		"rules_file_exists":    rulesFileExists,
+		"rules_file_size":      rulesFileSize,
+		"rules_candidates":     DynamicRulesFileReport(rulesFile),
+		"rules_keys_in_memory": stateKeys,
+		"usage_file":           usageFile,
+		"usage_candidates":     UsageFileCandidates(usageFile),
+		"usage_report":         UsageFileReport(usageFile),
+		"config_file":          configFile,
+		"auth_dirs":            existingAuthDirs(),
+		"state_dirs":           StateDirs(),
+		"cwd":                  cwd,
+		"home":                 home,
+		"process_args":         os.Args,
 	}
 }
 
@@ -1263,8 +1179,8 @@ func (m *Manager) UpsertKeyRuleFromJSON(rawBody []byte) (any, error) {
 	}
 	m.mu.Unlock()
 
-	if errHost := WriteHostConfigState("", allKeys, m.dynamicState); errHost != nil {
-		m.host.Log("warn", "failed to write host config api-keys and plugin state", map[string]any{
+	if errHost := WriteHostConfigAPIKeys("", allKeys); errHost != nil {
+		m.host.Log("warn", "failed to write host config api-keys", map[string]any{
 			"error": errHost.Error(),
 		})
 	}
@@ -1327,7 +1243,7 @@ func (m *Manager) DeleteKeyRule(apiKey string) error {
 	}
 	m.mu.Unlock()
 
-	if errHost := WriteHostConfigState("", allKeys, m.dynamicState); errHost != nil {
+	if errHost := WriteHostConfigAPIKeys("", allKeys); errHost != nil {
 		m.host.Log("warn", "failed to write host config api-keys on delete", map[string]any{
 			"error": errHost.Error(),
 		})
@@ -1370,17 +1286,7 @@ func (m *Manager) SaveDefaultPolicyFromJSON(rawBody []byte) (any, error) {
 			"error": errSave.Error(),
 		})
 	}
-	allKeys := make([]string, 0, len(m.cfg.Keys))
-	for _, k := range m.cfg.Keys {
-		allKeys = append(allKeys, k.APIKey)
-	}
 	m.mu.Unlock()
-
-	if errHost := WriteHostConfigState("", allKeys, m.dynamicState); errHost != nil {
-		m.host.Log("warn", "failed to write host config default policy", map[string]any{
-			"error": errHost.Error(),
-		})
-	}
 
 	if errSave != nil {
 		return nil, errSave

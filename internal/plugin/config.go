@@ -938,88 +938,15 @@ func ReadHostConfigAPIKeys(configPath string) []string {
 	return out
 }
 
-// ReadHostConfigPluginRules reads the plugin rule snapshot that is mirrored into
-// CLIProxyAPI's config.yaml under `plugins.configs.<plugin id>`. It returns the
-// decoded DynamicRulesState when present, so that a wiped `data/` directory can
-// always be rebuilt from the host's persistent config file.
-func ReadHostConfigPluginRules(configPath string) *DynamicRulesState {
-	resolvedPath := FindHostConfigFile(configPath)
-	raw, err := os.ReadFile(resolvedPath)
-	if err != nil || len(raw) == 0 {
-		return nil
-	}
-	var root struct {
-		Plugins struct {
-			Configs map[string]yaml.Node `yaml:"configs"`
-		} `yaml:"plugins"`
-	}
-	if errUnmarshal := yaml.Unmarshal(raw, &root); errUnmarshal != nil {
-		return nil
-	}
-	node, ok := root.Plugins.Configs[PluginID]
-	if !ok {
-		return nil
-	}
-	var snapshot struct {
-		DefaultPolicy *DefaultPolicyConfig `yaml:"default_policy"`
-		Keys          []KeyRuleConfig      `yaml:"keys"`
-	}
-	if errDecode := node.Decode(&snapshot); errDecode != nil {
-		return nil
-	}
-	if snapshot.DefaultPolicy == nil && len(snapshot.Keys) == 0 {
-		return nil
-	}
-	state := &DynamicRulesState{
-		Version:       1,
-		DefaultPolicy: snapshot.DefaultPolicy,
-		Keys:          snapshot.Keys,
-		CustomPrices:  make(map[string]pricing.ModelPrice),
-	}
-	return state
-}
-
-// ReadHostConfigPluginKeys returns just the API keys of the plugin rule snapshot
-// mirrored inside CLIProxyAPI's config.yaml (used for live diagnostics).
-func ReadHostConfigPluginKeys() []string {
-	state := ReadHostConfigPluginRules("")
-	if state == nil {
-		return nil
-	}
-	out := make([]string, 0, len(state.Keys))
-	for _, rule := range state.Keys {
-		if key := strings.TrimSpace(rule.APIKey); key != "" {
-			out = append(out, key)
-		}
-	}
-	return out
-}
-
-func valueToYAMLNode(v any) (*yaml.Node, error) {
-	raw, err := yaml.Marshal(v)
-	if err != nil {
-		return nil, err
-	}
-	var doc yaml.Node
-	if err := yaml.Unmarshal(raw, &doc); err != nil {
-		return nil, err
-	}
-	if len(doc.Content) == 0 {
-		return nil, errors.New("empty yaml node")
-	}
-	return doc.Content[0], nil
-}
-
 // WriteHostConfigAPIKeys updates the global `api-keys` list in CLIProxyAPI's config.yaml on disk
 // while preserving all other YAML nodes and comments.
+//
+// Note: the plugin deliberately does NOT mirror its rule state (remarks, model
+// whitelists, default policy) into config.yaml. CLIProxyAPI rewrites that file
+// from its own in-memory copy on every management save, so such a snapshot is
+// silently lost; the durable mirrors written by SaveDynamicRulesFile are the
+// only supported persistence mechanism.
 func WriteHostConfigAPIKeys(configPath string, keys []string) error {
-	return WriteHostConfigState(configPath, keys, nil)
-}
-
-// WriteHostConfigState synchronizes global `api-keys`, `default_policy`, and `keys` into CLIProxyAPI's config.yaml.
-// This guarantees that even if `key_guard_rules.json` is missing or cleared across container restarts,
-// CLIProxyAPI and the plugin will ALWAYS restore the exact remarks, model whitelists, and default policies on startup.
-func WriteHostConfigState(configPath string, keys []string, state *DynamicRulesState) error {
 	resolvedPath := FindHostConfigFile(configPath)
 	raw, err := os.ReadFile(resolvedPath)
 	if err != nil {
@@ -1037,7 +964,6 @@ func WriteHostConfigState(configPath string, keys []string, state *DynamicRulesS
 	}
 	rootMap := doc.Content[0]
 
-	// 1. Update api-keys list
 	seqNode := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
 	seen := make(map[string]struct{}, len(keys))
 	for _, rawKey := range keys {
@@ -1080,109 +1006,6 @@ func WriteHostConfigState(configPath string, keys []string, state *DynamicRulesS
 			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "api-keys"},
 			seqNode,
 		)
-	}
-
-	// 2. Synchronize plugins.configs.cpa-plugin-key-manager
-	if state != nil {
-		var pluginsMap *yaml.Node
-		for i := 0; i+1 < len(rootMap.Content); i += 2 {
-			if rootMap.Content[i].Value == "plugins" && rootMap.Content[i+1].Kind == yaml.MappingNode {
-				pluginsMap = rootMap.Content[i+1]
-				break
-			}
-		}
-		if pluginsMap == nil {
-			pluginsMap = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
-			rootMap.Content = append(rootMap.Content,
-				&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "plugins"},
-				pluginsMap,
-			)
-		}
-
-		var configsMap *yaml.Node
-		for i := 0; i+1 < len(pluginsMap.Content); i += 2 {
-			if pluginsMap.Content[i].Value == "configs" && pluginsMap.Content[i+1].Kind == yaml.MappingNode {
-				configsMap = pluginsMap.Content[i+1]
-				break
-			}
-		}
-		if configsMap == nil {
-			configsMap = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
-			pluginsMap.Content = append(pluginsMap.Content,
-				&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "configs"},
-				configsMap,
-			)
-		}
-
-		var pluginConfigMap *yaml.Node
-		for i := 0; i+1 < len(configsMap.Content); i += 2 {
-			if configsMap.Content[i].Value == PluginID && configsMap.Content[i+1].Kind == yaml.MappingNode {
-				pluginConfigMap = configsMap.Content[i+1]
-				break
-			}
-		}
-		if pluginConfigMap == nil {
-			pluginConfigMap = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
-			configsMap.Content = append(configsMap.Content,
-				&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: PluginID},
-				pluginConfigMap,
-			)
-		}
-
-		// Ensure enabled: true
-		hasEnabled := false
-		for i := 0; i+1 < len(pluginConfigMap.Content); i += 2 {
-			if pluginConfigMap.Content[i].Value == "enabled" {
-				hasEnabled = true
-				break
-			}
-		}
-		if !hasEnabled {
-			pluginConfigMap.Content = append(pluginConfigMap.Content,
-				&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "enabled"},
-				&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: "true"},
-			)
-		}
-
-		// Update default_policy
-		if state.DefaultPolicy != nil {
-			if dpVal, errDP := valueToYAMLNode(state.DefaultPolicy); errDP == nil && dpVal != nil {
-				updatedDP := false
-				for i := 0; i+1 < len(pluginConfigMap.Content); i += 2 {
-					if pluginConfigMap.Content[i].Value == "default_policy" {
-						pluginConfigMap.Content[i+1] = dpVal
-						updatedDP = true
-						break
-					}
-				}
-				if !updatedDP {
-					pluginConfigMap.Content = append(pluginConfigMap.Content,
-						&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "default_policy"},
-						dpVal,
-					)
-				}
-			}
-		}
-
-		// Update keys
-		if len(state.Keys) > 0 {
-			if keysVal, errKeys := valueToYAMLNode(state.Keys); errKeys == nil && keysVal != nil {
-				updatedKeyList := false
-				for i := 0; i+1 < len(pluginConfigMap.Content); i += 2 {
-					if pluginConfigMap.Content[i].Value == "keys" {
-						pluginConfigMap.Content[i+1] = keysVal
-						updatedKeyList = true
-						break
-					}
-				}
-				if !updatedKeyList {
-					pluginConfigMap.Content = append(pluginConfigMap.Content,
-						&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "keys"},
-						keysVal,
-					)
-				}
-			}
-		}
 	}
 
 	var buf strings.Builder

@@ -12,7 +12,7 @@
    - **纯复选框（Checkbox）模型白名单与账号凭证绑定**：
      - **模型白名单复选框**：自动聚合宿主已加载凭证注册的模型（`host.auth.models`）、历史调用模型与主流模型库，支持按 Provider 分类筛选与一键全选/清空，无需手动输入模型规则。
      - **上游账号凭证复选框**：自动调用 `host.auth.list` 与 `host.auth.models` 列出所有可用账号凭证，全复选框勾选绑定并支持 `round-robin` / `fill-first` / `strict` 策略。
-   - **动态持久化与热生效**：网页端增删改查的所有 API Key 规则自动原子落盘至 `./data/key_guard_rules.json` 与宿主 `config.yaml`，修改后立即热生效。
+   - **动态持久化与热生效**：网页端增删改查的所有 API Key 规则自动原子落盘，并**镜像到多个持久位置**（CLIProxyAPI 认证目录下的 `key-manager/*.state`、`config.yaml` 所在目录、`data/` 目录），容器重建或 `data/` 被清空后启动时自动从最新副本恢复；修改后立即热生效。插件规则**不写入 `config.yaml`**（该文件会被 CPA 用内存副本整体重写，写进去必然丢失），`config.yaml` 只同步全局 `api-keys`。
 
 2. **按 API Key 维度的路由与访问控制（Pre-request & Response Filter）**
    - **模型白名单访问控制**：每个 API Key 可配置独立的 `allowed_models` 列表，支持精确匹配、`*`/`?` 通配符（如 `claude-3-5-*`、`gpt-4o*`）、`!` 排除规则，并自动兼容带思考后缀与带 Provider 前缀的模型名。越权调用直接短路返回兼容 OpenAI 与 Anthropic SDK 的 `403 Forbidden` JSON 错误，不触发任何上游请求。

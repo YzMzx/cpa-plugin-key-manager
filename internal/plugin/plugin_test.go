@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/YzMzx/cpa-plugin-key-manager/internal/handler"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
@@ -234,7 +233,11 @@ plugins:
 	}
 }
 
-func TestWriteHostConfigStateFull(t *testing.T) {
+// TestWriteHostConfigAPIKeysDoesNotMirrorRules pins the decision that the plugin
+// never stores its rule state inside CLIProxyAPI's config.yaml: that file is
+// rewritten from the host's in-memory copy, so such a snapshot would silently
+// disappear. Only the global api-keys list is synchronized there.
+func TestWriteHostConfigAPIKeysDoesNotMirrorRules(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfgPath := filepath.Join(tmpDir, "config.yaml")
 	sampleYAML := `port: 8317
@@ -247,59 +250,25 @@ plugins:
     cpa-plugin-key-manager:
       enabled: true
       priority: 100
-      storage:
-        usage_file: "./data/key_usage_stats.json"
-        rules_file: "./data/key_guard_rules.json"
 `
-	if err := os.WriteFile(cfgPath, []byte(sampleYAML), 0644); err != nil {
+	if err := os.WriteFile(cfgPath, []byte(sampleYAML), 0o644); err != nil {
 		t.Fatalf("write failed: %v", err)
 	}
-
-	enabled := true
-	state := &DynamicRulesState{
-		Version: 1,
-		DefaultPolicy: &DefaultPolicyConfig{
-			AllowUnlistedKeys: &enabled,
-			MaxConcurrency:    12,
-			AllowedModels:     []string{"gpt-4o", "gemini-3.8-flash-high"},
-		},
-		Keys: []KeyRuleConfig{
-			{
-				APIKey:         "sk-new-1",
-				Name:           "Production Main",
-				Enabled:        &enabled,
-				MaxConcurrency: 5,
-				AllowedModels:  []string{"gpt-4o"},
-			},
-		},
+	if err := WriteHostConfigAPIKeys(cfgPath, []string{"sk-new-1"}); err != nil {
+		t.Fatalf("WriteHostConfigAPIKeys failed: %v", err)
 	}
-
-	if err := WriteHostConfigState(cfgPath, []string{"sk-new-1"}, state); err != nil {
-		t.Fatalf("WriteHostConfigState failed: %v", err)
-	}
-
 	data, err := os.ReadFile(cfgPath)
 	if err != nil {
 		t.Fatalf("read failed: %v", err)
 	}
-	t.Logf("Resulting YAML:\n%s", string(data))
-
-	// Re-parse with ParseConfigYAML
-	parsedCfg, err := ParseConfigYAML(data)
-	if err != nil {
-		t.Fatalf("ParseConfigYAML failed: %v", err)
+	text := string(data)
+	if !strings.Contains(text, "sk-new-1") {
+		t.Fatalf("api-keys were not synchronized:\n%s", text)
 	}
-	if len(parsedCfg.Keys) != 1 {
-		t.Fatalf("expected 1 key, got %d", len(parsedCfg.Keys))
-	}
-	if parsedCfg.Keys[0].Name != "Production Main" {
-		t.Fatalf("expected 'Production Main', got %s", parsedCfg.Keys[0].Name)
-	}
-	if len(parsedCfg.Keys[0].AllowedModels) != 1 || parsedCfg.Keys[0].AllowedModels[0] != "gpt-4o" {
-		t.Fatalf("expected ['gpt-4o'], got %v", parsedCfg.Keys[0].AllowedModels)
-	}
-	if parsedCfg.DefaultPolicy.MaxConcurrency != 12 {
-		t.Fatalf("expected DefaultPolicy.MaxConcurrency 12, got %d", parsedCfg.DefaultPolicy.MaxConcurrency)
+	for _, forbidden := range []string{"default_policy:", "\n      keys:"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("rule state must not be mirrored into config.yaml (found %q):\n%s", forbidden, text)
+		}
 	}
 }
 
@@ -1070,28 +1039,13 @@ storage:
 	if _, errStat := os.Stat(primaryRules); errStat != nil {
 		t.Fatalf("recovered state was not converged to the primary rules file: %v", errStat)
 	}
-	// ...and into the durable config.yaml plugin snapshot.
-	pinned := ReadHostConfigPluginKeys()
-	if len(pinned) != 1 || pinned[0] != "sk-survive-1" {
-		t.Fatalf("config.yaml plugin snapshot not repaired, got %v", pinned)
+	// ...and into the durable mirror directory, which is what survives a recreate.
+	mirrorPath := filepath.Join(durableDir, "key_guard_rules.json")
+	if _, errStat := os.Stat(mirrorPath); errStat != nil {
+		t.Fatalf("recovered state was not written to the durable mirror: %v", errStat)
 	}
-	if snap := ReadHostConfigPluginRules(""); snap == nil || len(snap.Keys) != 1 || snap.Keys[0].Name != "生产主力Key" {
-		t.Fatalf("config.yaml snapshot is missing the remark name: %+v", snap)
-	}
-
-	// A management save from CLIProxyAPI's stale in-memory copy wipes the plugin
-	// section; the plugin must restore it on the next overview load.
-	if err := os.WriteFile(configPath, []byte(configYAML), 0o644); err != nil {
-		t.Fatalf("rewrite config.yaml: %v", err)
-	}
-	if len(ReadHostConfigPluginKeys()) != 0 {
-		t.Fatalf("expected plugin snapshot to be wiped before repair")
-	}
-	mgr.mu.Lock()
-	mgr.lastConfigSync = time.Time{}
-	mgr.mu.Unlock()
-	_ = mgr.BuildAdminOverview("")
-	if keys := ReadHostConfigPluginKeys(); len(keys) != 1 || keys[0] != "sk-survive-1" {
-		t.Fatalf("config.yaml snapshot was not repaired after a management save, got %v", keys)
+	// The rule state is intentionally NOT mirrored into config.yaml.
+	if text, errRead := os.ReadFile(configPath); errRead == nil && strings.Contains(string(text), "生产主力Key") {
+		t.Fatalf("rule state must not be stored inside config.yaml:\n%s", string(text))
 	}
 }
