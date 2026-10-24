@@ -478,9 +478,15 @@ func TestAccountStatsGroupByProviderAndCredential(t *testing.T) {
 	if first.LastModel != "gemini-3.8-flash-n" {
 		t.Fatalf("last served model not recorded: %q", first.LastModel)
 	}
-	// 1200*1.0 + 600*2.0 = 2400 nano-units of $0.000001 → $0.002400
-	if first.CostFormatted != "$0.002400" {
-		t.Fatalf("unexpected cost for first credential: %s", first.CostFormatted)
+	// The account list expands into per-model rows, so each account must retain
+	// per-model statistics rather than a token-only tally.
+	servedDetail := first.Models["gemini-3.8-flash-n"]
+	if servedDetail == nil {
+		t.Fatalf("per-model detail missing from account: %+v", first.Models)
+	}
+	if servedDetail.Requests != 2 || servedDetail.TotalTokens != 1800 ||
+		servedDetail.InputTokens != 1200 || servedDetail.OutputTokens != 600 {
+		t.Fatalf("per-model detail for the account is wrong: %+v", servedDetail)
 	}
 	if errFlush := store.FlushNow(); errFlush != nil {
 		t.Fatalf("flush: %v", errFlush)

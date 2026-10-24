@@ -64,26 +64,59 @@ type KeyStats struct {
 
 // AccountStats aggregates usage for one upstream credential (provider + auth id).
 type AccountStats struct {
-	Provider         string  `json:"provider"`
-	AuthID           string  `json:"auth_id,omitempty"`
-	AuthIndex        string  `json:"auth_index,omitempty"`
-	AuthType         string  `json:"auth_type,omitempty"`
-	Requests         int64   `json:"requests"`
-	SuccessRequests  int64   `json:"success_requests"`
-	FailedRequests   int64   `json:"failed_requests"`
-	InputTokens      int64   `json:"input_tokens"`
-	OutputTokens     int64   `json:"output_tokens"`
-	ReasoningTokens  int64   `json:"reasoning_tokens"`
-	CacheReadTokens  int64   `json:"cache_read_tokens"`
-	CacheWriteTokens int64   `json:"cache_write_tokens"`
-	TotalTokens      int64   `json:"total_tokens"`
-	CostNanoUSD      int64   `json:"cost_nano_usd"`
-	CostUSD          float64 `json:"cost_usd"`
-	CostFormatted    string  `json:"cost_formatted"`
-	LastModel        string  `json:"last_model,omitempty"`
-	LastRequestAt    string  `json:"last_request_at,omitempty"`
-	// Models counts tokens per upstream-served model for this credential.
-	Models map[string]int64 `json:"models,omitempty"`
+	Provider         string `json:"provider"`
+	AuthID           string `json:"auth_id,omitempty"`
+	AuthIndex        string `json:"auth_index,omitempty"`
+	AuthType         string `json:"auth_type,omitempty"`
+	Requests         int64  `json:"requests"`
+	SuccessRequests  int64  `json:"success_requests"`
+	FailedRequests   int64  `json:"failed_requests"`
+	InputTokens      int64  `json:"input_tokens"`
+	OutputTokens     int64  `json:"output_tokens"`
+	ReasoningTokens  int64  `json:"reasoning_tokens"`
+	CacheReadTokens  int64  `json:"cache_read_tokens"`
+	CacheWriteTokens int64  `json:"cache_write_tokens"`
+	TotalTokens      int64  `json:"total_tokens"`
+	LastModel        string `json:"last_model,omitempty"`
+	LastRequestAt    string `json:"last_request_at,omitempty"`
+	// Models holds per-upstream-model statistics for this credential.
+	Models AccountModelStats `json:"models,omitempty"`
+}
+
+// AccountModelStats maps a served model name to its statistics for one account.
+// It accepts both the full object shape and the earlier numeric shape
+// (model -> total tokens) so an upgrade never fails to load a snapshot.
+type AccountModelStats map[string]*ModelStats
+
+// UnmarshalJSON decodes either `{"model": {...stats...}}` or `{"model": 12345}`.
+func (m *AccountModelStats) UnmarshalJSON(raw []byte) error {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var entries map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &entries); err != nil {
+		return err
+	}
+	out := make(AccountModelStats, len(entries))
+	for name, entry := range entries {
+		if len(entry) == 0 || string(entry) == "null" {
+			continue
+		}
+		var stats ModelStats
+		if errObj := json.Unmarshal(entry, &stats); errObj == nil {
+			if stats.Model == "" {
+				stats.Model = name
+			}
+			out[name] = &stats
+			continue
+		}
+		var tokens int64
+		if errNum := json.Unmarshal(entry, &tokens); errNum == nil {
+			out[name] = &ModelStats{Model: name, TotalTokens: tokens}
+		}
+	}
+	*m = out
+	return nil
 }
 
 // PersistedSnapshot is the root JSON structure persisted to disk.
@@ -718,18 +751,20 @@ func (s *Store) reconcileTrackerDeltaLocked(tr *TrackedRequest) {
 	}
 
 	ks := s.getOrCreateKeyStatsLocked(apiKey, tr.KeyName)
+	acct := s.getOrCreateAccountStatsLocked(tr)
 
 	// A streaming response can only reveal the served model mid-flight, after the
 	// first usage delta has already been attributed to the requested name. Move
 	// that early bucket onto the served model so the dashboard shows one row.
 	if served := strings.TrimSpace(tr.ExtractedUsage.ResponseModel); !isInvalidModelID(served) && !strings.EqualFold(served, model) {
 		s.migrateModelBucketLocked(ks, model, served)
+		migrateAccountModelBucketLocked(acct, model, served)
 		model = served
 		tr.BilledModel = served
 	}
 
 	ms := s.getOrCreateModelStatsLocked(ks, model)
-	acct := s.getOrCreateAccountStatsLocked(tr)
+	ams := accountModelStats(acct, model)
 	nowStr := time.Now().UTC().Format(time.RFC3339)
 
 	// 1. Apply request count once
@@ -743,16 +778,27 @@ func (s *Store) reconcileTrackerDeltaLocked(tr *TrackedRequest) {
 			if acct != nil {
 				acct.FailedRequests++
 			}
+			if ams != nil {
+				ams.FailedRequests++
+			}
 		} else {
 			ks.SuccessRequests++
 			ms.SuccessRequests++
 			if acct != nil {
 				acct.SuccessRequests++
 			}
+			if ams != nil {
+				ams.SuccessRequests++
+			}
 		}
 		if acct != nil {
 			acct.Requests++
 			acct.LastRequestAt = nowStr
+			acct.LastModel = model
+		}
+		if ams != nil {
+			ams.Requests++
+			ams.LastUsedAt = nowStr
 		}
 		ks.LastRequestAt = nowStr
 		ms.LastUsedAt = nowStr
@@ -833,18 +879,84 @@ func (s *Store) reconcileTrackerDeltaLocked(tr *TrackedRequest) {
 		acct.CacheReadTokens += dRead
 		acct.CacheWriteTokens += dWrite
 		acct.TotalTokens += dTotal
-		acct.CostNanoUSD += costBreakdown.NanoUSD
-		acct.CostUSD = pricing.NanoToUSD(acct.CostNanoUSD)
-		acct.CostFormatted = pricing.FormatUSD(acct.CostNanoUSD)
 		acct.LastModel = model
 		acct.LastRequestAt = nowStr
-		if acct.Models == nil {
-			acct.Models = make(map[string]int64)
-		}
-		acct.Models[model] += dTotal
+	}
+	if ams != nil {
+		ams.InputTokens += dIn
+		ams.OutputTokens += dOut
+		ams.ReasoningTokens += dReason
+		ams.CacheReadTokens += dRead
+		ams.CacheWriteTokens += dWrite
+		ams.TotalTokens += dTotal
+		ams.CostNanoUSD += costBreakdown.NanoUSD
+		ams.CostUSD = pricing.NanoToUSD(ams.CostNanoUSD)
+		ams.CostFormatted = pricing.FormatUSD(ams.CostNanoUSD)
+		ams.LastUsedAt = nowStr
 	}
 
 	s.dirty = true
+}
+
+// accountModelStats returns (creating when needed) the per-model bucket inside an
+// account, or nil when the account is unknown.
+func accountModelStats(acct *AccountStats, model string) *ModelStats {
+	if acct == nil || isInvalidModelID(model) {
+		return nil
+	}
+	if acct.Models == nil {
+		acct.Models = make(AccountModelStats)
+	}
+	stats, ok := acct.Models[model]
+	if !ok || stats == nil {
+		stats = &ModelStats{Model: model}
+		acct.Models[model] = stats
+	}
+	if stats.Model == "" {
+		stats.Model = model
+	}
+	return stats
+}
+
+// migrateAccountModelBucketLocked moves an account's early per-model bucket onto
+// the model the upstream actually served.
+func migrateAccountModelBucketLocked(acct *AccountStats, from, to string) {
+	if acct == nil || len(acct.Models) == 0 {
+		return
+	}
+	from = strings.TrimSpace(from)
+	to = strings.TrimSpace(to)
+	if from == "" || to == "" || strings.EqualFold(from, to) {
+		return
+	}
+	src, ok := acct.Models[from]
+	if !ok || src == nil {
+		return
+	}
+	dst, exists := acct.Models[to]
+	if !exists || dst == nil {
+		src.Model = to
+		acct.Models[to] = src
+		delete(acct.Models, from)
+		return
+	}
+	dst.Requests += src.Requests
+	dst.SuccessRequests += src.SuccessRequests
+	dst.FailedRequests += src.FailedRequests
+	dst.InputTokens += src.InputTokens
+	dst.OutputTokens += src.OutputTokens
+	dst.ReasoningTokens += src.ReasoningTokens
+	dst.CacheReadTokens += src.CacheReadTokens
+	dst.CacheWriteTokens += src.CacheWriteTokens
+	dst.TotalTokens += src.TotalTokens
+	dst.CostNanoUSD += src.CostNanoUSD
+	dst.CostUSD = pricing.NanoToUSD(dst.CostNanoUSD)
+	dst.CostFormatted = pricing.FormatUSD(dst.CostNanoUSD)
+	if src.LastUsedAt > dst.LastUsedAt {
+		dst.LastUsedAt = src.LastUsedAt
+	}
+	recordRequestedAlias(dst, append([]string{from}, src.RequestedModels...))
+	delete(acct.Models, from)
 }
 
 // accountBucketKey builds the stable identifier for one upstream credential.
@@ -873,12 +985,11 @@ func (s *Store) getOrCreateAccountStatsLocked(tr *TrackedRequest) *AccountStats 
 	acct, ok := s.accounts[key]
 	if !ok || acct == nil {
 		acct = &AccountStats{
-			Provider:      strings.TrimSpace(tr.Provider),
-			AuthID:        strings.TrimSpace(tr.AuthID),
-			AuthIndex:     strings.TrimSpace(tr.AuthIndex),
-			AuthType:      strings.TrimSpace(tr.AuthType),
-			CostFormatted: "$0.000000",
-			Models:        make(map[string]int64),
+			Provider:  strings.TrimSpace(tr.Provider),
+			AuthID:    strings.TrimSpace(tr.AuthID),
+			AuthIndex: strings.TrimSpace(tr.AuthIndex),
+			AuthType:  strings.TrimSpace(tr.AuthType),
+			Models:    make(AccountModelStats),
 		}
 		s.accounts[key] = acct
 	}
@@ -1131,12 +1242,16 @@ func (s *Store) snapshotAccountsLocked() map[string]*AccountStats {
 			continue
 		}
 		cp := *v
-		cp.CostUSD = pricing.NanoToUSD(cp.CostNanoUSD)
-		cp.CostFormatted = pricing.FormatUSD(cp.CostNanoUSD)
 		if len(v.Models) > 0 {
-			cp.Models = make(map[string]int64, len(v.Models))
+			cp.Models = make(AccountModelStats, len(v.Models))
 			for mk, mv := range v.Models {
-				cp.Models[mk] = mv
+				if mv == nil {
+					continue
+				}
+				mcp := *mv
+				mcp.CostUSD = pricing.NanoToUSD(mcp.CostNanoUSD)
+				mcp.CostFormatted = pricing.FormatUSD(mcp.CostNanoUSD)
+				cp.Models[mk] = &mcp
 			}
 		}
 		out[k] = &cp
@@ -1206,12 +1321,16 @@ func (s *Store) FlushNow() error {
 			continue
 		}
 		acp := *v
-		acp.CostUSD = pricing.NanoToUSD(acp.CostNanoUSD)
-		acp.CostFormatted = pricing.FormatUSD(acp.CostNanoUSD)
 		if len(v.Models) > 0 {
-			acp.Models = make(map[string]int64, len(v.Models))
+			acp.Models = make(AccountModelStats, len(v.Models))
 			for mk, mv := range v.Models {
-				acp.Models[mk] = mv
+				if mv == nil {
+					continue
+				}
+				mcp := *mv
+				mcp.CostUSD = pricing.NanoToUSD(mcp.CostNanoUSD)
+				mcp.CostFormatted = pricing.FormatUSD(mcp.CostNanoUSD)
+				acp.Models[mk] = &mcp
 			}
 		}
 		snap.Accounts[k] = &acp
@@ -1334,10 +1453,20 @@ func (s *Store) loadFromDisk(filePath string) error {
 			cleanedDisk = true
 			continue
 		}
-		acct.CostUSD = pricing.NanoToUSD(acct.CostNanoUSD)
-		acct.CostFormatted = pricing.FormatUSD(acct.CostNanoUSD)
 		if acct.Models == nil {
-			acct.Models = make(map[string]int64)
+			acct.Models = make(AccountModelStats)
+		}
+		for mk, mv := range acct.Models {
+			if mv == nil {
+				delete(acct.Models, mk)
+				cleanedDisk = true
+				continue
+			}
+			if mv.Model == "" {
+				mv.Model = mk
+			}
+			mv.CostUSD = pricing.NanoToUSD(mv.CostNanoUSD)
+			mv.CostFormatted = pricing.FormatUSD(mv.CostNanoUSD)
 		}
 		s.accounts[key] = acct
 	}
