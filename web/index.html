@@ -1638,11 +1638,10 @@
 
   function loadSelectorFromRule(prefix, allowedModels, boundCreds) {
     const st = selectorState[prefix];
-    const existingIDs = new Set(getAvailableModels().map(m => m.id));
     const normModels = (allowedModels || []).map(s => s.trim()).filter(Boolean);
     const hasWildcardAll = normModels.length === 0 || normModels.includes("*");
-    const validSelectedModels = normModels.filter(m => m !== "*" && existingIDs.has(m));
-    const isAllModels = hasWildcardAll || (existingIDs.size > 0 && validSelectedModels.length === 0);
+    const validSelectedModels = normModels.filter(m => m !== "*");
+    const isAllModels = hasWildcardAll;
     st.allModels = isAllModels;
     st.selectedModels = new Set(isAllModels ? [] : validSelectedModels);
     st.providerFilter = "all";
@@ -1738,7 +1737,14 @@
   function getFilteredModelsForSelector(prefix) {
     const st = selectorState[prefix];
     const q = (document.getElementById(prefix + "ModelSearch")?.value || "").toLowerCase().trim();
-    const baseModels = getAvailableModels();
+    const baseModels = getAvailableModels().slice();
+    const knownIDs = new Set(baseModels.map(m => m.id));
+    // Include any custom or explicitly selected models that are not yet in CPA's model catalog
+    st.selectedModels.forEach(m => {
+      if (!knownIDs.has(m) && m !== "*" && !m.includes("*") && !m.includes("?")) {
+        baseModels.unshift({ id: m, provider: "custom", sources: [] });
+      }
+    });
 
     return baseModels.filter(m => {
       if (st.providerFilter !== "all" && m.provider !== st.providerFilter) return false;
@@ -1898,8 +1904,8 @@
 
       const existingModelIDs = new Set(getAvailableModels().map(m => m.id));
       const rawModels = (kr.allowed_models && kr.allowed_models.length) ? kr.allowed_models : ["*"];
-      const existingSelected = rawModels.filter(m => m !== "*" && !m.includes("*") && !m.includes("?") && existingModelIDs.has(m));
-      const isAllModels = rawModels.includes("*") || existingSelected.length === 0;
+      const isAllModels = rawModels.length === 0 || rawModels.includes("*");
+      const existingSelected = rawModels.filter(m => m !== "*");
       let modelsHtml = `<span class="tag ok">全部已有模型</span>`;
       if (!isAllModels) {
         const shownModels = existingSelected.slice(0, 3).map(m => `<span class="tag plain mono">${escapeHtml(m)}</span>`).join("");

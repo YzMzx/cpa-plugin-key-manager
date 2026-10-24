@@ -4,7 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -135,9 +135,55 @@ func ParseConfigYAML(raw []byte) (Config, error) {
 	return cfg, nil
 }
 
+// FindCPARootDir discovers the root directory of the CLIProxyAPI installation by checking:
+// 1. Explicit CPA_DIR environment variable
+// 2. Directory containing config.yaml (found via FindHostConfigFile)
+// 3. Directory of the host executable (os.Executable)
+// 4. Fallback to process working directory (os.Getwd)
+func FindCPARootDir() string {
+	if envDir := strings.TrimSpace(os.Getenv("CPA_DIR")); envDir != "" {
+		if abs, err := filepath.Abs(envDir); err == nil {
+			return abs
+		}
+		return filepath.Clean(envDir)
+	}
+
+	// If config.yaml is found, its directory is the canonical CPA root
+	cfgPath := FindHostConfigFile("")
+	if cfgPath != "" {
+		if _, err := os.Stat(cfgPath); err == nil {
+			return filepath.Dir(cfgPath)
+		}
+	}
+
+	if exe, errExe := os.Executable(); errExe == nil && exe != "" {
+		exeDir := filepath.Dir(exe)
+		if _, err := os.Stat(filepath.Join(exeDir, "config.yaml")); err == nil {
+			return exeDir
+		}
+		if _, err := os.Stat(filepath.Join(exeDir, "plugins")); err == nil {
+			return exeDir
+		}
+		parentDir := filepath.Dir(exeDir)
+		if _, err := os.Stat(filepath.Join(parentDir, "config.yaml")); err == nil {
+			return parentDir
+		}
+		if _, err := os.Stat(filepath.Join(parentDir, "plugins")); err == nil {
+			return parentDir
+		}
+		return exeDir
+	}
+
+	if wd, err := os.Getwd(); err == nil && wd != "" {
+		return wd
+	}
+	return "."
+}
+
 // ResolveStoragePath converts a configured relative path (e.g. "./data/key_guard_rules.json")
-// to a robust absolute path, inspecting the process working directory, the host executable directory,
-// and parent directories so that differences in CWD across CLIProxyAPI restarts do not cause data loss.
+// to a robust absolute path. It anchors uncreated paths to the canonical CPA root directory,
+// while also discovering existing files across potential CWD, exeDir, and container locations
+// so that differences in CWD across CLIProxyAPI restarts never cause data loss.
 func ResolveStoragePath(rawPath string) string {
 	cleaned := strings.TrimSpace(rawPath)
 	if cleaned == "" {
@@ -147,32 +193,49 @@ func ResolveStoragePath(rawPath string) string {
 		return filepath.Clean(cleaned)
 	}
 
-	// 1. If it already exists relative to CWD, resolve to absolute path
-	if _, err := os.Stat(cleaned); err == nil {
-		if abs, errAbs := filepath.Abs(cleaned); errAbs == nil {
-			return abs
-		}
+	cpaRoot := FindCPARootDir()
+	canonicalPath := filepath.Clean(filepath.Join(cpaRoot, cleaned))
+
+	// 1. If it already exists at the canonical CPA root, use it immediately
+	if _, err := os.Stat(canonicalPath); err == nil {
+		return canonicalPath
 	}
 
-	// 2. Try relative to the directory of the running host executable
+	// 2. Check candidate locations where previous runs may have stored it
+	candidates := make([]string, 0, 8)
+
+	// Relative to CWD
+	if wd, err := os.Getwd(); err == nil && wd != "" {
+		candidates = append(candidates, filepath.Clean(filepath.Join(wd, cleaned)))
+	}
+
+	// Relative to executable directory
 	if exe, errExe := os.Executable(); errExe == nil && exe != "" {
 		exeDir := filepath.Dir(exe)
-		candidate := filepath.Join(exeDir, cleaned)
-		if _, err := os.Stat(candidate); err == nil {
-			return filepath.Clean(candidate)
+		candidates = append(candidates, filepath.Clean(filepath.Join(exeDir, cleaned)))
+		candidates = append(candidates, filepath.Clean(filepath.Join(filepath.Dir(exeDir), cleaned)))
+	}
+
+	// User home directory (.cli-proxy-api)
+	if home, errHome := os.UserHomeDir(); errHome == nil && home != "" {
+		candidates = append(candidates, filepath.Clean(filepath.Join(home, ".cli-proxy-api", cleaned)))
+		candidates = append(candidates, filepath.Clean(filepath.Join(home, cleaned)))
+	}
+
+	// Common Unix container path
+	candidates = append(candidates, filepath.Clean(filepath.Join("/CLIProxyAPI", cleaned)))
+
+	for _, cand := range candidates {
+		if cand == canonicalPath {
+			continue
 		}
-		// If executable is in a subfolder (like bin/ or dist/), also check parent directory
-		parentCandidate := filepath.Join(filepath.Dir(exeDir), cleaned)
-		if _, err := os.Stat(parentCandidate); err == nil {
-			return filepath.Clean(parentCandidate)
+		if info, err := os.Stat(cand); err == nil && !info.IsDir() {
+			return cand
 		}
 	}
 
-	// 3. Fallback: make it absolute relative to CWD
-	if abs, errAbs := filepath.Abs(cleaned); errAbs == nil {
-		return abs
-	}
-	return filepath.Clean(cleaned)
+	// 3. File does not exist anywhere yet: ALWAYS anchor to canonical CPA root directory
+	return canonicalPath
 }
 
 // FindHostConfigFile locates CLIProxyAPI's config.yaml on disk by checking:
@@ -325,33 +388,80 @@ func (c *Config) ResolveKeyRule(apiKey string) (rule KeyRuleConfig, listed bool)
 	}, false
 }
 
-// LoadDynamicRulesFile loads the persisted DynamicRulesState from disk if it exists.
+// LoadDynamicRulesFile loads the persisted DynamicRulesState from disk.
+// If the primary file does not exist or has empty rules, it checks other candidate locations
+// for an existing non-empty rules file, automatically adopting and migrating it to the canonical path.
 func LoadDynamicRulesFile(filePath string) (*DynamicRulesState, error) {
 	cleanPath := strings.TrimSpace(filePath)
 	if cleanPath == "" {
 		return &DynamicRulesState{Version: 1, CustomPrices: make(map[string]pricing.ModelPrice)}, nil
 	}
-	raw, err := os.ReadFile(cleanPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return &DynamicRulesState{Version: 1, CustomPrices: make(map[string]pricing.ModelPrice)}, nil
+
+	readState := func(path string) (*DynamicRulesState, error) {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
 		}
-		return nil, err
+		if len(strings.TrimSpace(string(raw))) == 0 {
+			return nil, io.EOF
+		}
+		var state DynamicRulesState
+		if err := json.Unmarshal(raw, &state); err != nil {
+			return nil, err
+		}
+		if state.Version == 0 {
+			state.Version = 1
+		}
+		if state.CustomPrices == nil {
+			state.CustomPrices = make(map[string]pricing.ModelPrice)
+		}
+		return &state, nil
 	}
-	if len(strings.TrimSpace(string(raw))) == 0 {
+
+	primaryState, errPrimary := readState(cleanPath)
+	if errPrimary == nil && primaryState != nil && (len(primaryState.Keys) > 0 || primaryState.DefaultPolicy != nil) {
+		return primaryState, nil
+	}
+
+	// Search alternate candidate locations if primary is empty or missing
+	baseName := filepath.Base(cleanPath)
+	subRel := filepath.Join("data", baseName)
+
+	cpaRoot := FindCPARootDir()
+	candidates := []string{
+		filepath.Clean(filepath.Join(cpaRoot, subRel)),
+		filepath.Clean(filepath.Join(cpaRoot, baseName)),
+	}
+	if wd, err := os.Getwd(); err == nil && wd != "" {
+		candidates = append(candidates, filepath.Clean(filepath.Join(wd, subRel)), filepath.Clean(filepath.Join(wd, baseName)))
+	}
+	if exe, err := os.Executable(); err == nil && exe != "" {
+		exeDir := filepath.Dir(exe)
+		candidates = append(candidates, filepath.Clean(filepath.Join(exeDir, subRel)), filepath.Clean(filepath.Join(filepath.Dir(exeDir), subRel)))
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		candidates = append(candidates, filepath.Clean(filepath.Join(home, ".cli-proxy-api", subRel)), filepath.Clean(filepath.Join(home, subRel)))
+	}
+	candidates = append(candidates, filepath.Clean(filepath.Join("/CLIProxyAPI", subRel)))
+
+	for _, cand := range candidates {
+		if cand == cleanPath {
+			continue
+		}
+		candState, errCand := readState(cand)
+		if errCand == nil && candState != nil && (len(candState.Keys) > 0 || candState.DefaultPolicy != nil) {
+			_ = SaveDynamicRulesFile(cleanPath, candState)
+			return candState, nil
+		}
+	}
+
+	if primaryState != nil {
+		return primaryState, nil
+	}
+	if os.IsNotExist(errPrimary) {
 		return &DynamicRulesState{Version: 1, CustomPrices: make(map[string]pricing.ModelPrice)}, nil
 	}
-	var state DynamicRulesState
-	if err := json.Unmarshal(raw, &state); err != nil {
-		return nil, fmt.Errorf("unmarshal dynamic rules from %s: %w", cleanPath, err)
-	}
-	if state.Version == 0 {
-		state.Version = 1
-	}
-	if state.CustomPrices == nil {
-		state.CustomPrices = make(map[string]pricing.ModelPrice)
-	}
-	return &state, nil
+	return nil, errPrimary
 }
 
 // SaveDynamicRulesFile atomically writes DynamicRulesState to disk.
