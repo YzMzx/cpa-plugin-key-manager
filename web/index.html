@@ -2420,7 +2420,11 @@
     for (const a of rows) {
       const authID = a.auth_id || a.auth_index || "-";
       const provider = a.provider || "unknown";
-      const bucketKey = provider + "::" + authID;
+      const bucketKey = a.auth_id || a.auth_index || provider;
+      const rawIDs = Array.isArray(a.auth_ids) ? a.auth_ids.filter(Boolean) : [];
+      const mergedHint = rawIDs.length > 1
+        ? `<span class="tag plain" style="font-size:10px" title="${escapeHtml(rawIDs.join("\n"))}">合并 ${rawIDs.length} 个凭据</span>`
+        : "";
       const modelList = a.models
         ? Object.values(a.models).filter(ms => ms && ms.model && ms.model.toLowerCase() !== "unknown")
         : [];
@@ -2435,7 +2439,7 @@
       html += `<tr>
         <td class="cell-nowrap"><span class="tag plain mono">${escapeHtml(provider)}</span></td>
         <td class="cell-nowrap">
-          <div class="mono" style="max-width:280px;overflow:hidden;text-overflow:ellipsis" title="${escapeHtml(authID)}">${escapeHtml(authID)}</div>
+          <div class="mono" style="max-width:280px;overflow:hidden;text-overflow:ellipsis" title="${escapeHtml(authID)}">${escapeHtml(authID)} ${mergedHint}</div>
           ${lastUsedHint}
         </td>
         <td class="cell-nowrap mono">${reqCell}</td>

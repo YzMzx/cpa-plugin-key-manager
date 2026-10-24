@@ -511,3 +511,57 @@ func TestAccountStatsGroupByProviderAndCredential(t *testing.T) {
 		t.Fatalf("account token totals lost across reload: %d", survived)
 	}
 }
+
+// TestAccountRowsMergeHashedCredentials verifies that CLIProxyAPI's hashed
+// openai-compatibility credential ids collapse into a single account row.
+func TestAccountRowsMergeHashedCredentials(t *testing.T) {
+	eng := pricing.NewEngine()
+	store := NewStore(eng)
+	if err := store.ConfigurePersistence(filepath.Join(t.TempDir(), "usage.json"), time.Hour); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	defer store.Close()
+
+	feed := func(reqID, authID string, tokens int64) {
+		store.BeginRequest(reqID, "sk-openai", "OpenAI Key", "glm-5.3", "glm-5.3", "openai", false)
+		store.ObserveHostUsageRecord(pluginapi.UsageRecord{
+			RequestID: reqID,
+			Provider:  "openai",
+			AuthID:    authID,
+			Model:     "glm-5.3",
+			APIKey:    "sk-openai",
+			Detail: pluginapi.UsageDetail{
+				InputTokens: tokens,
+				TotalTokens: tokens,
+			},
+		}, "OpenAI Key")
+	}
+	feed("req-1", "openai-compatibility:上海人工智能实验室:5dfdf0f0b3d3", 100)
+	feed("req-2", "openai-compatibility:上海人工智能实验室:1989c9fb1cda", 200)
+	feed("req-3", "openai-compatibility:上海人工智能实验室:7425c11c84a1", 300)
+
+	snap := store.Snapshot("", "", nil, nil, nil, false)
+	if len(snap.Accounts) != 1 {
+		keys := make([]string, 0, len(snap.Accounts))
+		for k := range snap.Accounts {
+			keys = append(keys, k)
+		}
+		t.Fatalf("hashed credentials must share one row, got %d: %v", len(snap.Accounts), keys)
+	}
+	var acct *AccountStats
+	for _, a := range snap.Accounts {
+		acct = a
+	}
+	if acct.AuthID != "openai-compatibility:上海人工智能实验室" {
+		t.Fatalf("account identity not normalized: %q", acct.AuthID)
+	}
+	if acct.Requests != 3 || acct.TotalTokens != 600 {
+		t.Fatalf("merged totals wrong: %+v", acct)
+	}
+	if len(acct.AuthIDs) != 3 {
+		t.Fatalf("raw credential ids not retained: %+v", acct.AuthIDs)
+	}
+	if acct.Provider != "openai" {
+		t.Fatalf("provider should stay stable for a single provider, got %q", acct.Provider)
+	}
+}

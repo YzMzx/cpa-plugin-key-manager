@@ -62,23 +62,27 @@ type KeyStats struct {
 	Models             map[string]*ModelStats `json:"models"`
 }
 
-// AccountStats aggregates usage for one upstream credential (provider + auth id).
+// AccountStats aggregates usage for one upstream account (provider + credential identity).
 type AccountStats struct {
-	Provider         string `json:"provider"`
-	AuthID           string `json:"auth_id,omitempty"`
-	AuthIndex        string `json:"auth_index,omitempty"`
-	AuthType         string `json:"auth_type,omitempty"`
-	Requests         int64  `json:"requests"`
-	SuccessRequests  int64  `json:"success_requests"`
-	FailedRequests   int64  `json:"failed_requests"`
-	InputTokens      int64  `json:"input_tokens"`
-	OutputTokens     int64  `json:"output_tokens"`
-	ReasoningTokens  int64  `json:"reasoning_tokens"`
-	CacheReadTokens  int64  `json:"cache_read_tokens"`
-	CacheWriteTokens int64  `json:"cache_write_tokens"`
-	TotalTokens      int64  `json:"total_tokens"`
-	LastModel        string `json:"last_model,omitempty"`
-	LastRequestAt    string `json:"last_request_at,omitempty"`
+	Provider string `json:"provider"`
+	// AuthID is the normalized account identity (a trailing credential hash is
+	// stripped so several hashed keys of one provider share a single row).
+	AuthID    string `json:"auth_id,omitempty"`
+	AuthIndex string `json:"auth_index,omitempty"`
+	AuthType  string `json:"auth_type,omitempty"`
+	// AuthIDs lists the raw credential ids that were folded into this account.
+	AuthIDs          []string `json:"auth_ids,omitempty"`
+	Requests         int64    `json:"requests"`
+	SuccessRequests  int64    `json:"success_requests"`
+	FailedRequests   int64    `json:"failed_requests"`
+	InputTokens      int64    `json:"input_tokens"`
+	OutputTokens     int64    `json:"output_tokens"`
+	ReasoningTokens  int64    `json:"reasoning_tokens"`
+	CacheReadTokens  int64    `json:"cache_read_tokens"`
+	CacheWriteTokens int64    `json:"cache_write_tokens"`
+	TotalTokens      int64    `json:"total_tokens"`
+	LastModel        string   `json:"last_model,omitempty"`
+	LastRequestAt    string   `json:"last_request_at,omitempty"`
 	// Models holds per-upstream-model statistics for this credential.
 	Models AccountModelStats `json:"models,omitempty"`
 }
@@ -959,17 +963,67 @@ func migrateAccountModelBucketLocked(acct *AccountStats, from, to string) {
 	delete(acct.Models, from)
 }
 
-// accountBucketKey builds the stable identifier for one upstream credential.
-func accountBucketKey(provider, authID, authIndex string) string {
-	provider = strings.ToLower(strings.TrimSpace(provider))
+// normalizeAccountIdentity collapses credential ids that differ only by a
+// trailing hash into a single account identity. CLIProxyAPI names inline
+// openai-compatibility credentials as `<provider>:<name>:<hash>`, so several
+// hashed keys of the same configured provider must share one row:
+//
+//	openai-compatibility:上海人工智能实验室:5dfdf0f0b3d3 -> openai-compatibility:上海人工智能实验室
+//	antigravity-sly538876@gmail.com.json              -> unchanged
+func normalizeAccountIdentity(authID string) string {
 	authID = strings.TrimSpace(authID)
 	if authID == "" {
-		authID = strings.TrimSpace(authIndex)
-	}
-	if provider == "" && authID == "" {
 		return ""
 	}
-	return provider + "::" + authID
+	if !strings.Contains(authID, ":") {
+		return authID
+	}
+	parts := strings.Split(authID, ":")
+	if len(parts) < 2 {
+		return authID
+	}
+	last := strings.TrimSpace(parts[len(parts)-1])
+	if !looksLikeCredentialHash(last) {
+		return authID
+	}
+	return strings.Join(parts[:len(parts)-1], ":")
+}
+
+// looksLikeCredentialHash reports whether a trailing segment is an opaque hex
+// hash rather than a meaningful account name.
+func looksLikeCredentialHash(segment string) bool {
+	if len(segment) < 6 || len(segment) > 64 {
+		return false
+	}
+	for i := 0; i < len(segment); i++ {
+		c := segment[i]
+		isDigit := c >= '0' && c <= '9'
+		isLowerHex := c >= 'a' && c <= 'f'
+		isUpperHex := c >= 'A' && c <= 'F'
+		if !isDigit && !isLowerHex && !isUpperHex {
+			return false
+		}
+	}
+	return true
+}
+
+// accountBucketKey builds the stable identifier for one upstream account. The
+// identity is the normalized credential id, so one configured provider with
+// several hashed credentials produces a single aggregated row; requests without
+// a credential id fall back to the provider name.
+func accountBucketKey(provider, authID, authIndex string) string {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	identity := normalizeAccountIdentity(authID)
+	if identity == "" {
+		identity = normalizeAccountIdentity(authIndex)
+	}
+	if identity != "" {
+		return "account::" + identity
+	}
+	if provider == "" {
+		return ""
+	}
+	return "provider::" + provider
 }
 
 // getOrCreateAccountStatsLocked returns the account bucket for a tracked request,
@@ -982,16 +1036,32 @@ func (s *Store) getOrCreateAccountStatsLocked(tr *TrackedRequest) *AccountStats 
 	if s.accounts == nil {
 		s.accounts = make(map[string]*AccountStats)
 	}
+	displayID := normalizeAccountIdentity(tr.AuthID)
+	if displayID == "" {
+		displayID = normalizeAccountIdentity(tr.AuthIndex)
+	}
+	provider := strings.TrimSpace(tr.Provider)
 	acct, ok := s.accounts[key]
 	if !ok || acct == nil {
 		acct = &AccountStats{
-			Provider:  strings.TrimSpace(tr.Provider),
-			AuthID:    strings.TrimSpace(tr.AuthID),
+			Provider:  provider,
+			AuthID:    displayID,
 			AuthIndex: strings.TrimSpace(tr.AuthIndex),
 			AuthType:  strings.TrimSpace(tr.AuthType),
 			Models:    make(AccountModelStats),
 		}
 		s.accounts[key] = acct
+	} else if provider != "" {
+		// Several credentials (or providers) can feed one account identity; expose
+		// that aggregate as "mixed" instead of silently picking the first one.
+		if acct.Provider == "" {
+			acct.Provider = provider
+		} else if !strings.EqualFold(acct.Provider, provider) {
+			acct.Provider = "mixed"
+		}
+	}
+	if rawID := strings.TrimSpace(tr.AuthID); rawID != "" && rawID != displayID {
+		acct.AuthIDs = appendUniqueAccountID(acct.AuthIDs, rawID)
 	}
 	if acct.AuthIndex == "" && tr.AuthIndex != "" {
 		acct.AuthIndex = strings.TrimSpace(tr.AuthIndex)
@@ -1000,6 +1070,95 @@ func (s *Store) getOrCreateAccountStatsLocked(tr *TrackedRequest) *AccountStats 
 		acct.AuthType = strings.TrimSpace(tr.AuthType)
 	}
 	return acct
+}
+
+// mergeAccountStats folds src into dst (used when legacy snapshots are re-keyed
+// onto the same normalized account identity).
+func mergeAccountStats(dst, src *AccountStats) {
+	if dst == nil || src == nil {
+		return
+	}
+	dst.Requests += src.Requests
+	dst.SuccessRequests += src.SuccessRequests
+	dst.FailedRequests += src.FailedRequests
+	dst.InputTokens += src.InputTokens
+	dst.OutputTokens += src.OutputTokens
+	dst.ReasoningTokens += src.ReasoningTokens
+	dst.CacheReadTokens += src.CacheReadTokens
+	dst.CacheWriteTokens += src.CacheWriteTokens
+	dst.TotalTokens += src.TotalTokens
+	if src.LastRequestAt > dst.LastRequestAt {
+		dst.LastRequestAt = src.LastRequestAt
+	}
+	if src.LastModel != "" {
+		dst.LastModel = src.LastModel
+	}
+	if dst.AuthIndex == "" {
+		dst.AuthIndex = src.AuthIndex
+	}
+	if dst.AuthType == "" {
+		dst.AuthType = src.AuthType
+	}
+	if dst.AuthID == "" {
+		dst.AuthID = src.AuthID
+	}
+	if dst.Provider == "" {
+		dst.Provider = src.Provider
+	} else if src.Provider != "" && !strings.EqualFold(dst.Provider, src.Provider) {
+		dst.Provider = "mixed"
+	}
+	for _, id := range src.AuthIDs {
+		dst.AuthIDs = appendUniqueAccountID(dst.AuthIDs, id)
+	}
+	if len(src.Models) > 0 {
+		if dst.Models == nil {
+			dst.Models = make(AccountModelStats)
+		}
+		for model, stats := range src.Models {
+			if stats == nil {
+				continue
+			}
+			existing, ok := dst.Models[model]
+			if !ok || existing == nil {
+				dst.Models[model] = stats
+				continue
+			}
+			existing.Requests += stats.Requests
+			existing.SuccessRequests += stats.SuccessRequests
+			existing.FailedRequests += stats.FailedRequests
+			existing.InputTokens += stats.InputTokens
+			existing.OutputTokens += stats.OutputTokens
+			existing.ReasoningTokens += stats.ReasoningTokens
+			existing.CacheReadTokens += stats.CacheReadTokens
+			existing.CacheWriteTokens += stats.CacheWriteTokens
+			existing.TotalTokens += stats.TotalTokens
+			existing.CostNanoUSD += stats.CostNanoUSD
+			existing.CostUSD = pricing.NanoToUSD(existing.CostNanoUSD)
+			existing.CostFormatted = pricing.FormatUSD(existing.CostNanoUSD)
+			if stats.LastUsedAt > existing.LastUsedAt {
+				existing.LastUsedAt = stats.LastUsedAt
+			}
+			recordRequestedAlias(existing, stats.RequestedModels)
+		}
+	}
+}
+
+// appendUniqueAccountID records a raw credential id that was folded into a
+// normalized account bucket (capped so a pathological config cannot bloat the file).
+func appendUniqueAccountID(ids []string, rawID string) []string {
+	rawID = strings.TrimSpace(rawID)
+	if rawID == "" {
+		return ids
+	}
+	for _, existing := range ids {
+		if existing == rawID {
+			return ids
+		}
+	}
+	if len(ids) >= 16 {
+		return ids
+	}
+	return append(ids, rawID)
 }
 
 // canonicalBillingModel picks the model name used as the statistics bucket. The
@@ -1440,18 +1599,27 @@ func (s *Store) loadFromDisk(filePath string) error {
 	if s.accounts == nil {
 		s.accounts = make(map[string]*AccountStats)
 	}
-	for k, acct := range snap.Accounts {
+	for _, acct := range snap.Accounts {
 		if acct == nil {
 			cleanedDisk = true
 			continue
 		}
-		key := strings.TrimSpace(k)
-		if key == "" {
-			key = accountBucketKey(acct.Provider, acct.AuthID, acct.AuthIndex)
-		}
+		// Re-key on load so snapshots written before account identities were
+		// normalized collapse into one row instead of producing duplicates.
+		key := accountBucketKey(acct.Provider, acct.AuthID, acct.AuthIndex)
 		if key == "" {
 			cleanedDisk = true
 			continue
+		}
+		if rawID := strings.TrimSpace(acct.AuthID); rawID != "" {
+			if normalized := normalizeAccountIdentity(rawID); normalized != rawID {
+				acct.AuthIDs = appendUniqueAccountID(acct.AuthIDs, rawID)
+				acct.AuthID = normalized
+				cleanedDisk = true
+			}
+		}
+		if acct.AuthID == "" {
+			acct.AuthID = normalizeAccountIdentity(acct.AuthIndex)
 		}
 		if acct.Models == nil {
 			acct.Models = make(AccountModelStats)
@@ -1468,7 +1636,11 @@ func (s *Store) loadFromDisk(filePath string) error {
 			mv.CostUSD = pricing.NanoToUSD(mv.CostNanoUSD)
 			mv.CostFormatted = pricing.FormatUSD(mv.CostNanoUSD)
 		}
-		s.accounts[key] = acct
+		if existing, ok := s.accounts[key]; ok && existing != nil {
+			mergeAccountStats(existing, acct)
+		} else {
+			s.accounts[key] = acct
+		}
 	}
 	if cleanedDisk {
 		s.dirty = true
