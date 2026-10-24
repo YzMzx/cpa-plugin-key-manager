@@ -22,7 +22,7 @@ import (
 
 const (
 	PluginID      = "cpa-plugin-key-manager"
-	PluginVersion = "0.5.14"
+	PluginVersion = "0.5.15"
 	PluginAuthor  = "YzMzx"
 	PluginRepo    = "https://github.com/YzMzx/cpa-plugin-key-manager"
 	PluginLogoSVG = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%238b8680'/><path d='M24 22a10 10 0 1 0 9.5 13H42v5h6v-5h4v-6H33.5A10 10 0 0 0 24 22zm0 6a4 4 0 1 1 0 8 4 4 0 0 1 0-8z' fill='%23fff'/></svg>"
@@ -1213,6 +1213,17 @@ func (m *Manager) DeleteKeyRule(apiKey string) error {
 	}
 	m.hostAPIKeys = nextHostKeys
 
+	// Keep the drag & drop display order in sync with the surviving keys.
+	if len(m.dynamicState.KeyOrder) > 0 {
+		nextOrder := make([]string, 0, len(m.dynamicState.KeyOrder))
+		for _, key := range m.dynamicState.KeyOrder {
+			if strings.TrimSpace(key) != target {
+				nextOrder = append(nextOrder, key)
+			}
+		}
+		m.dynamicState.KeyOrder = nextOrder
+	}
+
 	alreadyDeleted := false
 	for _, dk := range m.dynamicState.DeletedKeys {
 		if dk == target {
@@ -1244,6 +1255,44 @@ func (m *Manager) DeleteKeyRule(apiKey string) error {
 			"error": errHost.Error(),
 		})
 	}
+	return errSave
+}
+
+// ReorderKeys persists the administrator-defined display order of API keys
+// (drag & drop in the Web UI) and hot-reloads the in-memory rule list.
+func (m *Manager) ReorderKeys(keys []string) error {
+	cleaned := make([]string, 0, len(keys))
+	seen := make(map[string]struct{}, len(keys))
+	for _, raw := range keys {
+		key := strings.TrimSpace(raw)
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		cleaned = append(cleaned, key)
+	}
+	if len(cleaned) == 0 {
+		return fmt.Errorf("keys list is required")
+	}
+
+	m.mu.Lock()
+	if m.dynamicState == nil {
+		m.dynamicState = &DynamicRulesState{Version: 1, CustomPrices: make(map[string]pricing.ModelPrice)}
+	}
+	m.dynamicState.KeyOrder = cleaned
+	m.cfg = MergeDynamicState(m.seedCfg, m.dynamicState, m.hostAPIKeys...)
+	rulesFile := m.cfg.Storage.RulesFile
+	errSave := SaveDynamicRulesFile(rulesFile, m.dynamicState)
+	if errSave != nil {
+		m.host.Log("error", "failed to save key order", map[string]any{
+			"file":  rulesFile,
+			"error": errSave.Error(),
+		})
+	}
+	m.mu.Unlock()
 	return errSave
 }
 

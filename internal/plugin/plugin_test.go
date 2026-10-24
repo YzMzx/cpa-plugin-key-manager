@@ -844,6 +844,68 @@ keys:
 	}
 }
 
+// TestKeyOrderPersistsAcrossRestart covers the drag & drop ordering of the API key
+// list: the order must be stored in the rules file and replayed by a fresh manager.
+func TestKeyOrderPersistsAcrossRestart(t *testing.T) {
+	isolateStateDirs(t)
+	tmpDir := t.TempDir()
+	rulesFile := filepath.Join(tmpDir, "key_guard_rules.json")
+	usageFile := filepath.Join(tmpDir, "key_usage_stats.json")
+
+	pluginYAML := []byte(`
+storage:
+  rules_file: "` + filepath.ToSlash(rulesFile) + `"
+  usage_file: "` + filepath.ToSlash(usageFile) + `"
+keys:
+  - api_key: "sk-alpha"
+  - api_key: "sk-bravo"
+  - api_key: "sk-charlie"
+`)
+	regReq, _ := json.Marshal(lifecycleRequest{
+		ConfigYAML:    pluginYAML,
+		SchemaVersion: pluginabi.SchemaVersion,
+	})
+
+	mgr := NewManager(func(method string, payload []byte) ([]byte, error) {
+		return okEnvelope(struct{}{})
+	})
+	if _, err := mgr.HandleRPC(pluginabi.MethodPluginRegister, regReq); err != nil {
+		t.Fatalf("register failed: %v", err)
+	}
+	// Reorder to charlie, alpha, bravo.
+	if err := mgr.ReorderKeys([]string{"sk-charlie", "sk-alpha", "sk-bravo"}); err != nil {
+		t.Fatalf("reorder failed: %v", err)
+	}
+	overview := mgr.BuildAdminOverview("")
+	ordered := overview["keys"].([]KeyRuleConfig)
+	if len(ordered) != 3 || ordered[0].APIKey != "sk-charlie" || ordered[1].APIKey != "sk-alpha" || ordered[2].APIKey != "sk-bravo" {
+		t.Fatalf("in-memory order not applied: %+v", ordered)
+	}
+	mgr.Shutdown()
+
+	// A new manager (restart) must read the same order back from disk.
+	restarted := NewManager(func(method string, payload []byte) ([]byte, error) {
+		return okEnvelope(struct{}{})
+	})
+	defer restarted.Shutdown()
+	if _, err := restarted.HandleRPC(pluginabi.MethodPluginRegister, regReq); err != nil {
+		t.Fatalf("second register failed: %v", err)
+	}
+	afterRestart := restarted.BuildAdminOverview("")["keys"].([]KeyRuleConfig)
+	if len(afterRestart) != 3 || afterRestart[0].APIKey != "sk-charlie" || afterRestart[2].APIKey != "sk-bravo" {
+		t.Fatalf("order not restored after restart: %+v", afterRestart)
+	}
+
+	// Deleting a key drops it from the stored order without disturbing the rest.
+	if err := restarted.DeleteKeyRule("sk-alpha"); err != nil {
+		t.Fatalf("delete failed: %v", err)
+	}
+	pruned := restarted.BuildAdminOverview("")["keys"].([]KeyRuleConfig)
+	if len(pruned) != 2 || pruned[0].APIKey != "sk-charlie" || pruned[1].APIKey != "sk-bravo" {
+		t.Fatalf("order broken after delete: %+v", pruned)
+	}
+}
+
 // TestRulesMirrorUsesAuthSubdirAndMigratesLegacy verifies that mirrors live in a
 // dedicated subdirectory of the auth dir (so CLIProxyAPI never lists them as
 // credentials) and that a pre-0.5.8 mirror in the auth dir root is migrated.

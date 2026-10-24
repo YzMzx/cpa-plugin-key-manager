@@ -475,6 +475,29 @@
     flex-wrap: nowrap;
   }
 
+  /* API Key drag & drop ordering */
+  tr.key-row {
+    transition: background 0.12s ease, opacity 0.12s ease;
+  }
+  tr.key-row.dragging {
+    opacity: 0.45;
+  }
+  tr.key-row.drag-over td {
+    background: var(--bg-tertiary);
+    box-shadow: inset 0 2px 0 0 var(--accent, #8b8680);
+  }
+  td.drag-cell {
+    cursor: grab;
+    color: var(--text-tertiary);
+    text-align: center;
+    user-select: none;
+    font-size: 15px;
+    letter-spacing: 1px;
+  }
+  td.drag-cell:active {
+    cursor: grabbing;
+  }
+
   /* Progress Bar */
   .bar {
     width: 100%;
@@ -893,6 +916,7 @@
       <div class="card-header">
         <div>
           <h2 class="card-title">API Key 列表</h2>
+          <div style="font-size:12px;color:var(--text-tertiary);margin-top:4px">拖动行首的 ⠿ 手柄可调整显示顺序（顺序会被保存，重启后保持）</div>
         </div>
         <div class="input-row">
           <input type="text" class="input" style="width:220px" id="crudKeySearch" placeholder="搜索 API Key 或备注名称..." oninput="renderKeysCrudTable()">
@@ -903,6 +927,7 @@
         <table>
           <thead>
             <tr>
+              <th style="width:34px"></th>
               <th>状态</th>
               <th>API Key</th>
               <th>备注名称</th>
@@ -915,7 +940,7 @@
             </tr>
           </thead>
           <tbody id="crudKeysTableBody">
-            <tr><td colspan="9" style="text-align:center;color:var(--text-tertiary)">加载中...</td></tr>
+            <tr><td colspan="10" style="text-align:center;color:var(--text-tertiary)">加载中...</td></tr>
           </tbody>
         </table>
       </div>
@@ -1236,6 +1261,7 @@
 <script>
   const API_OVERVIEW       = "/v0/management/key-guard/overview";
   const API_KEYS_SYNC      = "/v0/management/key-guard/keys/sync";
+  const API_KEYS_REORDER   = "/v0/management/key-guard/keys/reorder";
   const API_KEYS_CRUD      = "/v0/management/key-guard/keys";
   const API_DEFAULT_POLICY = "/v0/management/key-guard/default-policy";
   const API_USAGE_RESET    = "/v0/management/key-guard/usage/reset";
@@ -1923,7 +1949,7 @@
 
     const tbody = document.getElementById("crudKeysTableBody");
     if (filtered.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;color:var(--text-tertiary)">暂无 API Key</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;color:var(--text-tertiary)">暂无 API Key</td></tr>`;
       return;
     }
 
@@ -1963,7 +1989,12 @@
         bindHtml = `<div class="tag-group"><span class="tag warn">${escapeHtml(dispStrat)}</span>${shownCreds}${moreCredTag}</div>`;
       }
 
-      return `<tr>
+      return `<tr class="key-row" data-key="${escapeHtml(k)}" draggable="true"
+          ondragstart="onKeyRowDragStart(event, '${escapeHtml(k)}')"
+          ondragover="onKeyRowDragOver(event, '${escapeHtml(k)}')"
+          ondrop="onKeyRowDrop(event, '${escapeHtml(k)}')"
+          ondragend="onKeyRowDragEnd(event)">
+        <td class="drag-cell" title="拖动调整顺序">⠿</td>
         <td class="cell-nowrap">
           <span class="tag ${enabled ? "ok" : "bad"}" style="cursor:pointer" onclick="quickToggleKeyEnabled('${escapeHtml(k)}')" title="点击切换启用/禁用">
             ${enabled ? "● 启用" : "⛔ 禁用"}
@@ -1997,6 +2028,87 @@
 
   function copyText(txt) {
     navigator.clipboard.writeText(txt).then(() => showToast("已复制到剪贴板"));
+  }
+
+  // ==================== API KEY DRAG & DROP ORDERING ====================
+  let dragSrcKey = null;
+  let dragOverKey = null;
+
+  function onKeyRowDragStart(ev, key) {
+    dragSrcKey = key;
+    dragOverKey = null;
+    if (ev.dataTransfer) {
+      ev.dataTransfer.effectAllowed = "move";
+      try { ev.dataTransfer.setData("text/plain", key); } catch (_) {}
+    }
+    if (ev.currentTarget && ev.currentTarget.classList) {
+      ev.currentTarget.classList.add("dragging");
+    }
+  }
+
+  function onKeyRowDragOver(ev, key) {
+    if (!dragSrcKey) return;
+    ev.preventDefault();
+    if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
+    if (dragOverKey === key) return;
+    dragOverKey = key;
+    document.querySelectorAll("#crudKeysTableBody tr.key-row").forEach(tr => {
+      tr.classList.toggle("drag-over", tr.getAttribute("data-key") === key && key !== dragSrcKey);
+    });
+  }
+
+  function onKeyRowDragEnd(ev) {
+    dragSrcKey = null;
+    dragOverKey = null;
+    document.querySelectorAll("#crudKeysTableBody tr.key-row").forEach(tr => {
+      tr.classList.remove("dragging", "drag-over");
+    });
+  }
+
+  async function onKeyRowDrop(ev, targetKey) {
+    ev.preventDefault();
+    const srcKey = dragSrcKey;
+    onKeyRowDragEnd(ev);
+    if (!srcKey || srcKey === targetKey) return;
+
+    const current = ((overviewData && overviewData.keys) || []).map(k => k.api_key);
+    const from = current.indexOf(srcKey);
+    const to = current.indexOf(targetKey);
+    if (from < 0 || to < 0) return;
+
+    const next = current.slice();
+    next.splice(from, 1);
+    next.splice(to, 0, srcKey);
+
+    // Optimistic reorder so the table does not flicker while saving.
+    applyKeyOrderLocally(next);
+    try {
+      await callManagementAPI(API_KEYS_REORDER, {
+        method: "POST",
+        body: JSON.stringify({ keys: next })
+      });
+      showToast("API Key 顺序已保存");
+      await loadAdminOverview();
+    } catch (err) {
+      showToast(err.message, true);
+      await loadAdminOverview();
+    }
+  }
+
+  function applyKeyOrderLocally(order) {
+    if (!overviewData || !Array.isArray(overviewData.keys)) return;
+    const byKey = {};
+    overviewData.keys.forEach(kr => { if (kr && kr.api_key) byKey[kr.api_key] = kr; });
+    const next = [];
+    order.forEach(key => {
+      if (byKey[key]) {
+        next.push(byKey[key]);
+        delete byKey[key];
+      }
+    });
+    Object.keys(byKey).forEach(key => next.push(byKey[key]));
+    overviewData.keys = next;
+    renderKeysCrudTable();
   }
 
   function generateRandomSkKey() {

@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -77,14 +78,61 @@ type KeyRuleConfig struct {
 // DynamicRulesState is persisted to `storage.rules_file` (default `./data/key_guard_rules.json`)
 // whenever rules, keys, or custom prices are modified via the Web UI / Management API.
 type DynamicRulesState struct {
-	Version       int                           `json:"version"`
-	UpdatedAt     string                        `json:"updated_at"`
-	DefaultPolicy *DefaultPolicyConfig          `json:"default_policy,omitempty"`
-	Keys          []KeyRuleConfig               `json:"keys"`
+	Version       int                  `json:"version"`
+	UpdatedAt     string               `json:"updated_at"`
+	DefaultPolicy *DefaultPolicyConfig `json:"default_policy,omitempty"`
+	Keys          []KeyRuleConfig      `json:"keys"`
+	// KeyOrder is the administrator-defined display order (drag & drop) of API keys.
+	KeyOrder      []string                      `json:"key_order,omitempty"`
 	DeletedKeys   []string                      `json:"deleted_keys,omitempty"`
 	CustomPrices  map[string]pricing.ModelPrice `json:"custom_prices,omitempty"`
 	DeletedPrices []string                      `json:"deleted_prices,omitempty"`
 	DefaultPrice  *pricing.ModelPrice           `json:"default_price,omitempty"`
+}
+
+// applyKeyOrder stable-sorts merged keys following the persisted display order.
+// Keys missing from the order list keep their original relative position at the end.
+func applyKeyOrder(keys []KeyRuleConfig, order []string) []KeyRuleConfig {
+	if len(order) == 0 || len(keys) < 2 {
+		return keys
+	}
+	rank := make(map[string]int, len(order))
+	for i, raw := range order {
+		key := strings.TrimSpace(raw)
+		if key == "" {
+			continue
+		}
+		if _, exists := rank[key]; !exists {
+			rank[key] = i
+		}
+	}
+	if len(rank) == 0 {
+		return keys
+	}
+	type ranked struct {
+		rule KeyRuleConfig
+		pos  int
+		rank int
+	}
+	out := make([]ranked, 0, len(keys))
+	for i, rule := range keys {
+		r, ok := rank[strings.TrimSpace(rule.APIKey)]
+		if !ok {
+			r = len(rank) + i
+		}
+		out = append(out, ranked{rule: rule, pos: i, rank: r})
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].rank != out[j].rank {
+			return out[i].rank < out[j].rank
+		}
+		return out[i].pos < out[j].pos
+	})
+	sorted := make([]KeyRuleConfig, 0, len(out))
+	for _, item := range out {
+		sorted = append(sorted, item.rule)
+	}
+	return sorted
 }
 
 // IsEnabled returns true unless Enabled was explicitly set to false.
@@ -1112,7 +1160,7 @@ func MergeDynamicState(seed Config, state *DynamicRulesState, hostAPIKeys ...str
 			mergedKeys = append(mergedKeys, r)
 		}
 	}
-	out.Keys = mergedKeys
+	out.Keys = applyKeyOrder(mergedKeys, state.KeyOrder)
 
 	deletedPriceSet := make(map[string]struct{}, len(state.DeletedPrices))
 	for _, dp := range state.DeletedPrices {

@@ -7,16 +7,17 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	"github.com/YzMzx/cpa-plugin-key-manager/internal/pricing"
 	"github.com/YzMzx/cpa-plugin-key-manager/internal/usage"
 	"github.com/YzMzx/cpa-plugin-key-manager/web"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 const (
 	RouteManagementOverview      = "/key-guard/overview"
 	RouteManagementKeys          = "/key-guard/keys"
 	RouteManagementKeysSync      = "/key-guard/keys/sync"
+	RouteManagementKeysReorder   = "/key-guard/keys/reorder"
 	RouteManagementDefaultPolicy = "/key-guard/default-policy"
 	RouteManagementAuthFiles     = "/key-guard/auth-files"
 	RouteManagementUsage         = "/key-guard/usage"
@@ -57,6 +58,11 @@ func RegisterManagementEndpoints() ([]pluginapi.ManagementRoute, []pluginapi.Res
 			Method:      http.MethodPost,
 			Path:        RouteManagementKeysSync,
 			Description: "Synchronize global API keys from CLIProxyAPI config.yaml (/v0/management/api-keys) with plugin governance rules.",
+		},
+		{
+			Method:      http.MethodPost,
+			Path:        RouteManagementKeysReorder,
+			Description: "Persist the drag & drop display order of API keys.",
 		},
 		{
 			Method:      http.MethodPost,
@@ -123,6 +129,7 @@ type SnapshotProvider interface {
 	BuildAdminOverview(hostCallbackID string) map[string]any
 	ListKeyRulesAndDefaultPolicy() map[string]any
 	SyncHostAPIKeys(keys []string) error
+	ReorderKeys(keys []string) error
 	UpsertKeyRuleFromJSON(rawBody []byte) (any, error)
 	DeleteKeyRule(apiKey string) error
 	SaveDefaultPolicyFromJSON(rawBody []byte) (any, error)
@@ -155,6 +162,23 @@ func HandleManagementRequest(ctx context.Context, provider SnapshotProvider, req
 	case strings.HasSuffix(path, RouteManagementOverview):
 		if method != http.MethodGet {
 			return jsonError(http.StatusMethodNotAllowed, "method not allowed")
+		}
+		return jsonResponse(http.StatusOK, provider.BuildAdminOverview(hostCallbackID))
+
+	case strings.HasSuffix(path, RouteManagementKeysReorder):
+		if method != http.MethodPost && method != http.MethodPut {
+			return jsonError(http.StatusMethodNotAllowed, "method not allowed")
+		}
+		var body struct {
+			Keys []string `json:"keys"`
+		}
+		if len(req.Body) > 0 {
+			if err := json.Unmarshal(req.Body, &body); err != nil {
+				return jsonError(http.StatusBadRequest, "invalid JSON body: "+err.Error())
+			}
+		}
+		if err := provider.ReorderKeys(body.Keys); err != nil {
+			return jsonError(http.StatusBadRequest, err.Error())
 		}
 		return jsonResponse(http.StatusOK, provider.BuildAdminOverview(hostCallbackID))
 
