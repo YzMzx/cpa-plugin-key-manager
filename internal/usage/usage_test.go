@@ -1,6 +1,7 @@
 package usage
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -10,7 +11,26 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestWriteFileAtomicallyOverwrite(t *testing.T) {
+	tmpDir := t.TempDir()
+	p := filepath.Join(tmpDir, "test.json")
+	if err := WriteFileAtomically(p, []byte("first content")); err != nil {
+		t.Fatalf("first write failed: %v", err)
+	}
+	if err := WriteFileAtomically(p, []byte("second content")); err != nil {
+		t.Fatalf("second write failed: %v", err)
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatalf("read failed: %v", err)
+	}
+	if string(data) != "second content" {
+		t.Fatalf("got %q, want %q", string(data), "second content")
+	}
+}
+
 func TestClaudeStreamIncrementalMerge(t *testing.T) {
+
 	// Chunk 1: message_start contains input_tokens, cache_read_input_tokens, cache_creation_input_tokens, and initial output_tokens=1
 	chunk1 := []byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_01\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-3-5-sonnet-20241022\",\"usage\":{\"input_tokens\":150,\"cache_creation_input_tokens\":400,\"cache_read_input_tokens\":1200,\"output_tokens\":1}}}\n\n")
 	// Chunk 2: content_block_delta (no usage)

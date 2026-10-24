@@ -135,17 +135,108 @@ func ParseConfigYAML(raw []byte) (Config, error) {
 	return cfg, nil
 }
 
+// ResolveStoragePath converts a configured relative path (e.g. "./data/key_guard_rules.json")
+// to a robust absolute path, inspecting the process working directory, the host executable directory,
+// and parent directories so that differences in CWD across CLIProxyAPI restarts do not cause data loss.
+func ResolveStoragePath(rawPath string) string {
+	cleaned := strings.TrimSpace(rawPath)
+	if cleaned == "" {
+		return ""
+	}
+	if filepath.IsAbs(cleaned) {
+		return filepath.Clean(cleaned)
+	}
+
+	// 1. If it already exists relative to CWD, resolve to absolute path
+	if _, err := os.Stat(cleaned); err == nil {
+		if abs, errAbs := filepath.Abs(cleaned); errAbs == nil {
+			return abs
+		}
+	}
+
+	// 2. Try relative to the directory of the running host executable
+	if exe, errExe := os.Executable(); errExe == nil && exe != "" {
+		exeDir := filepath.Dir(exe)
+		candidate := filepath.Join(exeDir, cleaned)
+		if _, err := os.Stat(candidate); err == nil {
+			return filepath.Clean(candidate)
+		}
+		// If executable is in a subfolder (like bin/ or dist/), also check parent directory
+		parentCandidate := filepath.Join(filepath.Dir(exeDir), cleaned)
+		if _, err := os.Stat(parentCandidate); err == nil {
+			return filepath.Clean(parentCandidate)
+		}
+	}
+
+	// 3. Fallback: make it absolute relative to CWD
+	if abs, errAbs := filepath.Abs(cleaned); errAbs == nil {
+		return abs
+	}
+	return filepath.Clean(cleaned)
+}
+
+// FindHostConfigFile locates CLIProxyAPI's config.yaml on disk by checking:
+// 1. Explicit path parameter (if non-empty)
+// 2. CPA_CONFIG_FILE environment variable
+// 3. Standard locations relative to CWD ("config.yaml", "../config.yaml")
+// 4. Locations relative to the host executable directory
+func FindHostConfigFile(preferredPath string) string {
+	if strings.TrimSpace(preferredPath) != "" {
+		return preferredPath
+	}
+	if envPath := strings.TrimSpace(os.Getenv("CPA_CONFIG_FILE")); envPath != "" {
+		return envPath
+	}
+
+	candidates := []string{
+		"config.yaml",
+		"../config.yaml",
+	}
+
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			if abs, errAbs := filepath.Abs(c); errAbs == nil {
+				return abs
+			}
+			return c
+		}
+	}
+
+	if exe, errExe := os.Executable(); errExe == nil && exe != "" {
+		exeDir := filepath.Dir(exe)
+		exeCandidates := []string{
+			filepath.Join(exeDir, "config.yaml"),
+			filepath.Join(filepath.Dir(exeDir), "config.yaml"),
+		}
+		for _, c := range exeCandidates {
+			if _, err := os.Stat(c); err == nil {
+				return c
+			}
+		}
+	}
+
+	// Default fallback to "config.yaml"
+	if abs, errAbs := filepath.Abs("config.yaml"); errAbs == nil {
+		return abs
+	}
+	return "config.yaml"
+}
+
 // Normalize fills in missing defaults and builds fast lookup maps.
 func (c *Config) Normalize() {
 	if strings.TrimSpace(c.Storage.UsageFile) == "" {
 		c.Storage.UsageFile = "./data/key_usage_stats.json"
 	}
+	c.Storage.UsageFile = ResolveStoragePath(c.Storage.UsageFile)
+
 	if c.Storage.FlushIntervalSeconds <= 0 {
 		c.Storage.FlushIntervalSeconds = 10
 	}
 	if strings.TrimSpace(c.Storage.PricingCacheFile) == "" {
 		c.Storage.PricingCacheFile = "./data/models_dev.json"
 	}
+	c.Storage.PricingCacheFile = ResolveStoragePath(c.Storage.PricingCacheFile)
+
 	if strings.TrimSpace(c.Storage.RulesFile) == "" {
 		dir := filepath.Dir(filepath.Clean(c.Storage.UsageFile))
 		if dir == "" || dir == "." {
@@ -154,6 +245,7 @@ func (c *Config) Normalize() {
 			c.Storage.RulesFile = filepath.Join(dir, "key_guard_rules.json")
 		}
 	}
+	c.Storage.RulesFile = ResolveStoragePath(c.Storage.RulesFile)
 	if strings.TrimSpace(c.Pricing.SyncURL) == "" {
 		c.Pricing.SyncURL = "https://models.dev/api.json"
 	}
@@ -279,13 +371,8 @@ func SaveDynamicRulesFile(filePath string, state *DynamicRulesState) error {
 
 // ReadHostConfigAPIKeys reads global client `api-keys` (or `access.api-keys`) from CLIProxyAPI's config.yaml on disk.
 func ReadHostConfigAPIKeys(configPath string) []string {
-	if strings.TrimSpace(configPath) == "" {
-		configPath = os.Getenv("CPA_CONFIG_FILE")
-		if strings.TrimSpace(configPath) == "" {
-			configPath = "config.yaml"
-		}
-	}
-	raw, err := os.ReadFile(configPath)
+	resolvedPath := FindHostConfigFile(configPath)
+	raw, err := os.ReadFile(resolvedPath)
 	if err != nil || len(raw) == 0 {
 		return nil
 	}
@@ -318,13 +405,8 @@ func ReadHostConfigAPIKeys(configPath string) []string {
 // WriteHostConfigAPIKeys updates the global `api-keys` list in CLIProxyAPI's config.yaml on disk
 // while preserving all other YAML nodes and comments.
 func WriteHostConfigAPIKeys(configPath string, keys []string) error {
-	if strings.TrimSpace(configPath) == "" {
-		configPath = os.Getenv("CPA_CONFIG_FILE")
-		if strings.TrimSpace(configPath) == "" {
-			configPath = "config.yaml"
-		}
-	}
-	raw, err := os.ReadFile(configPath)
+	resolvedPath := FindHostConfigFile(configPath)
+	raw, err := os.ReadFile(resolvedPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -392,7 +474,7 @@ func WriteHostConfigAPIKeys(configPath string, keys []string) error {
 		return err
 	}
 	_ = enc.Close()
-	return usage.WriteFileAtomically(configPath, []byte(buf.String()))
+	return usage.WriteFileAtomically(resolvedPath, []byte(buf.String()))
 }
 
 // MergeDynamicState combines CPA's global `api-keys`, the base config.yaml seed, and dynamic Web UI changes from DynamicRulesState.

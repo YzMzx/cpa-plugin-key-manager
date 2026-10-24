@@ -21,7 +21,7 @@ import (
 
 const (
 	PluginID      = "cpa-plugin-key-manager"
-	PluginVersion = "0.5.3"
+	PluginVersion = "0.5.4"
 	PluginAuthor  = "YzMzx"
 	PluginRepo    = "https://github.com/YzMzx/cpa-plugin-key-manager"
 	PluginLogoSVG = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%238b8680'/><path d='M24 22a10 10 0 1 0 9.5 13H42v5h6v-5h4v-6H33.5A10 10 0 0 0 24 22zm0 6a4 4 0 1 1 0 8 4 4 0 0 1 0-8z' fill='%23fff'/></svg>"
@@ -907,6 +907,12 @@ func (m *Manager) SyncHostAPIKeys(keys []string) error {
 	m.cfg = MergeDynamicState(m.seedCfg, m.dynamicState, m.hostAPIKeys...)
 	rulesFile := m.cfg.Storage.RulesFile
 	errSave := SaveDynamicRulesFile(rulesFile, m.dynamicState)
+	if errSave != nil {
+		m.host.Log("error", "failed to save dynamic rules file on sync host keys", map[string]any{
+			"file":  rulesFile,
+			"error": errSave.Error(),
+		})
+	}
 	m.mu.Unlock()
 	return errSave
 }
@@ -931,11 +937,16 @@ func (m *Manager) BuildAdminOverview(hostCallbackID string) map[string]any {
 	keysCopy := make([]KeyRuleConfig, len(cfg.Keys))
 	for i, k := range cfg.Keys {
 		cp := cloneKeyRule(k)
-		cp.AllowedModels = filterAllowedModelsToExisting(cp.AllowedModels, availableModels)
+		// Only filter allowed_models if availableModels is non-empty; never erase configured models when host auth models are not loaded yet!
+		if len(availableModels) > 0 {
+			cp.AllowedModels = filterAllowedModelsToExisting(cp.AllowedModels, availableModels)
+		}
 		keysCopy[i] = cp
 	}
 	dpCopy := cfg.DefaultPolicy
-	dpCopy.AllowedModels = filterAllowedModelsToExisting(dpCopy.AllowedModels, availableModels)
+	if len(availableModels) > 0 {
+		dpCopy.AllowedModels = filterAllowedModelsToExisting(dpCopy.AllowedModels, availableModels)
+	}
 	m.mu.RUnlock()
 
 	var totalCostNano int64
@@ -1074,9 +1085,19 @@ func (m *Manager) UpsertKeyRuleFromJSON(rawBody []byte) (any, error) {
 	}
 	rulesFile := m.cfg.Storage.RulesFile
 	errSave := SaveDynamicRulesFile(rulesFile, m.dynamicState)
+	if errSave != nil {
+		m.host.Log("error", "failed to save dynamic rules file on upsert", map[string]any{
+			"file":  rulesFile,
+			"error": errSave.Error(),
+		})
+	}
 	m.mu.Unlock()
 
-	_ = WriteHostConfigAPIKeys("", allKeys)
+	if errHost := WriteHostConfigAPIKeys("", allKeys); errHost != nil {
+		m.host.Log("warn", "failed to write host config api-keys", map[string]any{
+			"error": errHost.Error(),
+		})
+	}
 	if errSave != nil {
 		return nil, fmt.Errorf("failed to persist rules to %s: %w", rulesFile, errSave)
 	}
@@ -1128,9 +1149,19 @@ func (m *Manager) DeleteKeyRule(apiKey string) error {
 	}
 	rulesFile := m.cfg.Storage.RulesFile
 	errSave := SaveDynamicRulesFile(rulesFile, m.dynamicState)
+	if errSave != nil {
+		m.host.Log("error", "failed to save dynamic rules file on delete", map[string]any{
+			"file":  rulesFile,
+			"error": errSave.Error(),
+		})
+	}
 	m.mu.Unlock()
 
-	_ = WriteHostConfigAPIKeys("", allKeys)
+	if errHost := WriteHostConfigAPIKeys("", allKeys); errHost != nil {
+		m.host.Log("warn", "failed to write host config api-keys on delete", map[string]any{
+			"error": errHost.Error(),
+		})
+	}
 	return errSave
 }
 
@@ -1163,6 +1194,12 @@ func (m *Manager) SaveDefaultPolicyFromJSON(rawBody []byte) (any, error) {
 	m.cfg = MergeDynamicState(m.seedCfg, m.dynamicState, m.hostAPIKeys...)
 	rulesFile := m.cfg.Storage.RulesFile
 	errSave := SaveDynamicRulesFile(rulesFile, m.dynamicState)
+	if errSave != nil {
+		m.host.Log("error", "failed to save dynamic rules file on save default policy", map[string]any{
+			"file":  rulesFile,
+			"error": errSave.Error(),
+		})
+	}
 	m.mu.Unlock()
 
 	if errSave != nil {

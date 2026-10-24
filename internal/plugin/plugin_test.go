@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -29,6 +30,187 @@ func decodeEnvelope[T any](t *testing.T, raw []byte) T {
 		}
 	}
 	return out
+}
+
+func TestRestartPersistenceBugReproduction(t *testing.T) {
+	tmpDir := t.TempDir()
+	origWD, _ := os.Getwd()
+	defer func() { _ = os.Chdir(origWD) }()
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("chdir failed: %v", err)
+	}
+
+	rulesFile := "./data/key_guard_rules.json"
+	cpaConfigPath := "config.yaml"
+
+	// Initial config.yaml as installed by install.ps1
+	initialCPAConfig := `port: 8317
+api-keys: []
+plugins:
+  enabled: true
+  dir: ./plugins
+  configs:
+    cpa-plugin-key-manager:
+      enabled: true
+      priority: 100
+      storage:
+        usage_file: "./data/key_usage_stats.json"
+        rules_file: "./data/key_guard_rules.json"
+`
+	if err := os.WriteFile(cpaConfigPath, []byte(initialCPAConfig), 0644); err != nil {
+		t.Fatalf("failed to write initial config.yaml: %v", err)
+	}
+
+	pluginConfigYAML := `enabled: true
+priority: 100
+storage:
+  usage_file: "./data/key_usage_stats.json"
+  rules_file: "./data/key_guard_rules.json"
+`
+	regReq, _ := json.Marshal(lifecycleRequest{
+		ConfigYAML:    []byte(pluginConfigYAML),
+		SchemaVersion: pluginabi.SchemaVersion,
+	})
+
+	hostInvoker := func(method string, payload []byte) ([]byte, error) {
+		return okEnvelope(struct{}{})
+	}
+
+	// Session 1: Manager starts
+	mgr1 := NewManager(hostInvoker)
+	if _, err := mgr1.HandleRPC(pluginabi.MethodPluginRegister, regReq); err != nil {
+		t.Fatalf("mgr1 register failed: %v", err)
+	}
+
+	// User creates a key rule via Web UI (POST /v0/management/key-guard/keys)
+	keyRuleJSON := []byte(`{
+		"api_key": "sk-user-test-123",
+		"name": "Production Key",
+		"enabled": true,
+		"max_concurrency": 2,
+		"allowed_models": ["gpt-4o", "claude-sonnet-4-20250514"],
+		"upstream_binding": {
+			"strategy": "strict",
+			"credentials": ["claude-team-1.json"]
+		}
+	}`)
+	if _, err := mgr1.UpsertKeyRuleFromJSON(keyRuleJSON); err != nil {
+		t.Fatalf("UpsertKeyRuleFromJSON failed: %v", err)
+	}
+
+	// User updates default policy via Web UI (POST /v0/management/key-guard/default-policy)
+	dpJSON := []byte(`{
+		"allow_unlisted_keys": false,
+		"max_concurrency": 10,
+		"allowed_models": ["gpt-4o"],
+		"upstream_binding": {
+			"strategy": "round-robin",
+			"credentials": []
+		}
+	}`)
+	if _, err := mgr1.SaveDefaultPolicyFromJSON(dpJSON); err != nil {
+		t.Fatalf("SaveDefaultPolicyFromJSON failed: %v", err)
+	}
+
+	// Verify file content on disk before restart
+	dataBefore, err := os.ReadFile(rulesFile)
+	if err != nil {
+		t.Fatalf("failed to read rulesFile before restart: %v", err)
+	}
+	t.Logf("rulesFile before restart:\n%s", string(dataBefore))
+	if !strings.Contains(string(dataBefore), "sk-user-test-123") {
+		t.Fatalf("rulesFile missing sk-user-test-123 before restart")
+	}
+
+	// Simulate CLIProxyAPI shutdown
+	mgr1.Shutdown()
+
+	// ==========================================
+	// Session 2: CLIProxyAPI Restarts!
+	// ==========================================
+	mgr2 := NewManager(hostInvoker)
+	defer mgr2.Shutdown()
+
+	// Plugin registers during host startup
+	if _, err := mgr2.HandleRPC(pluginabi.MethodPluginRegister, regReq); err != nil {
+		t.Fatalf("mgr2 register failed: %v", err)
+	}
+
+	// Browser opens Web UI and calls SyncHostAPIKeys with empty or existing CPA keys
+	// Note: in CPA config.yaml, what was in api-keys?
+	cpaKeys := ReadHostConfigAPIKeys(cpaConfigPath)
+	t.Logf("CPA keys in config.yaml on restart: %v", cpaKeys)
+
+	// Web UI calls sync
+	if err := mgr2.SyncHostAPIKeys(cpaKeys); err != nil {
+		t.Fatalf("SyncHostAPIKeys failed: %v", err)
+	}
+
+	// Web UI calls BuildAdminOverview
+	overview := mgr2.BuildAdminOverview("")
+	rawOv, _ := json.MarshalIndent(overview, "", "  ")
+	t.Logf("Overview after restart:\n%s", string(rawOv))
+
+	// Check if key is still present!
+	keysList, ok := overview["keys"].([]KeyRuleConfig)
+	if !ok || len(keysList) == 0 {
+		t.Fatalf("CRITICAL BUG: keys disappeared after restart! overview keys = %+v", overview["keys"])
+	}
+	if keysList[0].APIKey != "sk-user-test-123" {
+		t.Fatalf("expected sk-user-test-123, got %s", keysList[0].APIKey)
+	}
+	if keysList[0].Name != "Production Key" {
+		t.Fatalf("expected Production Key, got %s", keysList[0].Name)
+	}
+	if keysList[0].MaxConcurrency != 2 {
+		t.Fatalf("expected MaxConcurrency 2, got %d", keysList[0].MaxConcurrency)
+	}
+
+	// Check if default_policy is still present!
+	dp, ok := overview["default_policy"].(DefaultPolicyConfig)
+	if !ok {
+		t.Fatalf("default_policy missing or wrong type")
+	}
+	if dp.AllowUnlistedKeys == nil || *dp.AllowUnlistedKeys != false {
+		t.Fatalf("expected AllowUnlistedKeys=false, got %v", dp.AllowUnlistedKeys)
+	}
+	if dp.MaxConcurrency != 10 {
+		t.Fatalf("expected MaxConcurrency=10, got %d", dp.MaxConcurrency)
+	}
+}
+
+func TestWriteHostConfigAPIKeysFormatting(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "config.yaml")
+	sampleYAML := `port: 8317
+api-keys:
+  - sk-old
+plugins:
+  enabled: true
+  dir: ./plugins
+  configs:
+    cpa-plugin-key-manager:
+      enabled: true
+      priority: 100
+      storage:
+        usage_file: "./data/key_usage_stats.json"
+        rules_file: "./data/key_guard_rules.json"
+`
+	if err := os.WriteFile(cfgPath, []byte(sampleYAML), 0644); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+	if err := WriteHostConfigAPIKeys(cfgPath, []string{"sk-new-1", "sk-new-2"}); err != nil {
+		t.Fatalf("WriteHostConfigAPIKeys failed: %v", err)
+	}
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read failed: %v", err)
+	}
+	t.Logf("Resulting config.yaml:\n%s", string(data))
+	keys := ReadHostConfigAPIKeys(cfgPath)
+	if len(keys) != 2 || keys[0] != "sk-new-1" || keys[1] != "sk-new-2" {
+		t.Fatalf("unexpected keys: %v", keys)
+	}
 }
 
 func TestFullPluginLifecycleAndGovernance(t *testing.T) {
@@ -495,5 +677,100 @@ storage:
 	// sk-dynamic-user-1 was configured with allowed_models = ["gpt-4o"]
 	if len(filteredCatalog.Data) != 1 || filteredCatalog.Data[0].ID != "gpt-4o" {
 		t.Fatalf("expected only gpt-4o in filtered catalog, got: %+v", filteredCatalog.Data)
+	}
+}
+
+func TestResolveStoragePathAndHostConfigFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	origWD, _ := os.Getwd()
+	defer func() { _ = os.Chdir(origWD) }()
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("chdir failed: %v", err)
+	}
+
+	// 1. When file exists in relative path
+	rulesRel := "./data/key_guard_rules.json"
+	if err := os.MkdirAll("./data", 0755); err != nil {
+		t.Fatalf("mkdir failed: %v", err)
+	}
+	if err := os.WriteFile(rulesRel, []byte(`{"version":1}`), 0644); err != nil {
+		t.Fatalf("write rulesRel failed: %v", err)
+	}
+
+	resolvedRules := ResolveStoragePath(rulesRel)
+	if !filepath.IsAbs(resolvedRules) {
+		t.Fatalf("expected absolute path, got %s", resolvedRules)
+	}
+	if _, err := os.Stat(resolvedRules); err != nil {
+		t.Fatalf("expected resolved rules file to exist: %v", err)
+	}
+
+	// 2. FindHostConfigFile
+	cfgRel := "config.yaml"
+	if err := os.WriteFile(cfgRel, []byte("port: 8317\napi-keys: [sk-test]\n"), 0644); err != nil {
+		t.Fatalf("write cfgRel failed: %v", err)
+	}
+	foundCfg := FindHostConfigFile("")
+	if !filepath.IsAbs(foundCfg) {
+		t.Fatalf("expected absolute path for found config, got %s", foundCfg)
+	}
+	keys := ReadHostConfigAPIKeys("")
+	if len(keys) != 1 || keys[0] != "sk-test" {
+		t.Fatalf("expected [sk-test], got %v", keys)
+	}
+
+	// 3. Test changing CWD to a different directory; ResolveStoragePath should keep working
+	subDir := filepath.Join(tmpDir, "some-other-cwd")
+	if err := os.MkdirAll(subDir, 0755); err != nil {
+		t.Fatalf("mkdir subDir failed: %v", err)
+	}
+	if err := os.Chdir(subDir); err != nil {
+		t.Fatalf("chdir subDir failed: %v", err)
+	}
+
+	// With CPA_CONFIG_FILE set to absolute path
+	t.Setenv("CPA_CONFIG_FILE", foundCfg)
+	keysFromEnv := ReadHostConfigAPIKeys("")
+	if len(keysFromEnv) != 1 || keysFromEnv[0] != "sk-test" {
+		t.Fatalf("expected [sk-test] via CPA_CONFIG_FILE, got %v", keysFromEnv)
+	}
+}
+
+func TestBuildAdminOverviewPreservesAllowedModelsWhenAuthModelsEmpty(t *testing.T) {
+	mgr := NewManager(func(method string, payload []byte) ([]byte, error) {
+		return okEnvelope(struct{}{})
+	})
+	defer mgr.Shutdown()
+
+	regReq, _ := json.Marshal(lifecycleRequest{
+		ConfigYAML: []byte(`
+default_policy:
+  allowed_models: ["gpt-4o", "claude-3-5-sonnet"]
+keys:
+  - api_key: "sk-special"
+    allowed_models: ["gemini-1.5-pro"]
+`),
+		SchemaVersion: pluginabi.SchemaVersion,
+	})
+	if _, err := mgr.HandleRPC(pluginabi.MethodPluginRegister, regReq); err != nil {
+		t.Fatalf("register failed: %v", err)
+	}
+
+	// BuildAdminOverview when host has no auth files / models loaded yet (e.g. at startup)
+	overview := mgr.BuildAdminOverview("")
+	keysList, ok := overview["keys"].([]KeyRuleConfig)
+	if !ok || len(keysList) == 0 {
+		t.Fatalf("keys missing in overview")
+	}
+	if len(keysList[0].AllowedModels) != 1 || keysList[0].AllowedModels[0] != "gemini-1.5-pro" {
+		t.Fatalf("allowed_models got erased! got %v", keysList[0].AllowedModels)
+	}
+
+	dp, ok := overview["default_policy"].(DefaultPolicyConfig)
+	if !ok {
+		t.Fatalf("default_policy missing")
+	}
+	if len(dp.AllowedModels) != 2 || dp.AllowedModels[0] != "gpt-4o" {
+		t.Fatalf("default_policy allowed_models got erased! got %v", dp.AllowedModels)
 	}
 }
