@@ -16,7 +16,10 @@ import (
 
 // ModelStats stores cumulative usage and USD billing statistics for a single model under an API Key.
 type ModelStats struct {
-	Model            string             `json:"model"`
+	Model string `json:"model"`
+	// RequestedModels lists the client-requested model names that resolved to this
+	// upstream-served model, so a substitution stays traceable in the dashboard.
+	RequestedModels  []string           `json:"requested_models,omitempty"`
 	Requests         int64              `json:"requests"`
 	SuccessRequests  int64              `json:"success_requests"`
 	FailedRequests   int64              `json:"failed_requests"`
@@ -666,6 +669,16 @@ func (s *Store) reconcileTrackerDeltaLocked(tr *TrackedRequest) {
 	}
 
 	ks := s.getOrCreateKeyStatsLocked(apiKey, tr.KeyName)
+
+	// A streaming response can only reveal the served model mid-flight, after the
+	// first usage delta has already been attributed to the requested name. Move
+	// that early bucket onto the served model so the dashboard shows one row.
+	if served := strings.TrimSpace(tr.ExtractedUsage.ResponseModel); !isInvalidModelID(served) && !strings.EqualFold(served, model) {
+		s.migrateModelBucketLocked(ks, model, served)
+		model = served
+		tr.BilledModel = served
+	}
+
 	ms := s.getOrCreateModelStatsLocked(ks, model)
 	nowStr := time.Now().UTC().Format(time.RFC3339)
 
@@ -695,9 +708,11 @@ func (s *Store) reconcileTrackerDeltaLocked(tr *TrackedRequest) {
 	dWrite := target.CacheWriteTokens - tr.BilledUsage.CacheWriteTokens
 
 	if dIn <= 0 && dOut <= 0 && dReason <= 0 && dRead <= 0 && dWrite <= 0 {
-		// Refresh unit price display even if 0 tokens
+		// Refresh unit price display even if 0 tokens. The requested model is
+		// preferred for pricing because upstream variant names rarely have a
+		// published price.
 		if ms.UnitPricePer1M.Source == "" {
-			if p, ok := s.pricing.Lookup(tr.ExtractedUsage.ResponseModel, tr.Model, tr.RequestedModel, model); ok {
+			if p, ok := s.pricing.Lookup(tr.Model, tr.RequestedModel, tr.ExtractedUsage.ResponseModel, model); ok {
 				ms.UnitPricePer1M = p
 			}
 		}
@@ -721,8 +736,9 @@ func (s *Store) reconcileTrackerDeltaLocked(tr *TrackedRequest) {
 	}
 	dTotal := dIn + dOut + dRead + dWrite
 
-	costBreakdown := s.pricing.Calculate(dIn, dOut, dRead, dWrite, tr.ExtractedUsage.ResponseModel, tr.Model, tr.RequestedModel, model)
+	costBreakdown := s.pricing.Calculate(dIn, dOut, dRead, dWrite, tr.Model, tr.RequestedModel, tr.ExtractedUsage.ResponseModel, model)
 	tr.BilledUsage = target
+	recordRequestedAlias(ms, []string{tr.Model, tr.RequestedModel})
 
 	// Update ModelStats
 	ms.InputTokens += dIn
@@ -752,14 +768,84 @@ func (s *Store) reconcileTrackerDeltaLocked(tr *TrackedRequest) {
 	s.dirty = true
 }
 
+// canonicalBillingModel picks the model name used as the statistics bucket. The
+// upstream-served model wins when the provider reported one, so the dashboard
+// attributes usage to what the server actually ran (e.g. an A/B variant),
+// falling back to the client-requested name when no response model was seen.
 func (s *Store) canonicalBillingModel(tr *TrackedRequest) string {
-	for _, cand := range []string{tr.Model, tr.RequestedModel, tr.ExtractedUsage.ResponseModel} {
+	for _, cand := range []string{tr.ExtractedUsage.ResponseModel, tr.Model, tr.RequestedModel} {
 		cand = strings.TrimSpace(cand)
 		if !isInvalidModelID(cand) {
 			return cand
 		}
 	}
 	return ""
+}
+
+// migrateModelBucketLocked moves all statistics accumulated under `from` onto the
+// `to` bucket, merging counters when the destination already exists.
+func (s *Store) migrateModelBucketLocked(ks *KeyStats, from, to string) {
+	from = strings.TrimSpace(from)
+	to = strings.TrimSpace(to)
+	if ks == nil || from == "" || to == "" || strings.EqualFold(from, to) {
+		return
+	}
+	src, ok := ks.Models[from]
+	if !ok || src == nil {
+		return
+	}
+	dst, exists := ks.Models[to]
+	if !exists || dst == nil {
+		src.Model = to
+		ks.Models[to] = src
+		delete(ks.Models, from)
+		return
+	}
+	dst.Requests += src.Requests
+	dst.SuccessRequests += src.SuccessRequests
+	dst.FailedRequests += src.FailedRequests
+	dst.InputTokens += src.InputTokens
+	dst.OutputTokens += src.OutputTokens
+	dst.ReasoningTokens += src.ReasoningTokens
+	dst.CacheReadTokens += src.CacheReadTokens
+	dst.CacheWriteTokens += src.CacheWriteTokens
+	dst.TotalTokens += src.TotalTokens
+	dst.CostNanoUSD += src.CostNanoUSD
+	dst.CostUSD = pricing.NanoToUSD(dst.CostNanoUSD)
+	dst.CostFormatted = pricing.FormatUSD(dst.CostNanoUSD)
+	if dst.UnitPricePer1M.Source == "" {
+		dst.UnitPricePer1M = src.UnitPricePer1M
+	}
+	if src.LastUsedAt > dst.LastUsedAt {
+		dst.LastUsedAt = src.LastUsedAt
+	}
+	recordRequestedAlias(dst, append([]string{from}, src.RequestedModels...))
+	delete(ks.Models, from)
+}
+
+// recordRequestedAlias keeps the client-requested model names attached to the
+// upstream-served bucket so a substitution remains traceable.
+func recordRequestedAlias(ms *ModelStats, requested []string) {
+	for _, raw := range requested {
+		name := strings.TrimSpace(raw)
+		if name == "" || strings.EqualFold(name, ms.Model) {
+			continue
+		}
+		exists := false
+		for _, known := range ms.RequestedModels {
+			if strings.EqualFold(known, name) {
+				exists = true
+				break
+			}
+		}
+		if exists {
+			continue
+		}
+		if len(ms.RequestedModels) >= 8 {
+			return
+		}
+		ms.RequestedModels = append(ms.RequestedModels, name)
+	}
 }
 
 func (s *Store) getOrCreateKeyStatsLocked(apiKey, keyName string) *KeyStats {

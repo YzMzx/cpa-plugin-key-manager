@@ -2169,8 +2169,12 @@
         if (isExpanded && validModels.length > 0) {
           const mList = validModels.slice().sort((a, b) => (b.total_tokens || 0) - (a.total_tokens || 0));
           for (const ms of mList) {
+            const aliases = (ms.requested_models || []).filter(Boolean);
+            const aliasHint = aliases.length
+              ? `<span class="tag plain" style="font-size:10px" title="客户端请求的模型名">请求: ${escapeHtml(aliases.join(", "))}</span>`
+              : "";
             html += `<tr class="sub-row">
-              <td class="cell-nowrap">↳ <span class="mono" style="color:var(--text-primary);font-weight:600">${escapeHtml(ms.model)}</span></td>
+              <td class="cell-nowrap">↳ <span class="mono" style="color:var(--text-primary);font-weight:600">${escapeHtml(ms.model)}</span> ${aliasHint}</td>
               <td class="cell-nowrap mono">${fmtInt(ms.requests)} (${fmtInt(ms.success_requests)}/${fmtInt(ms.failed_requests)})</td>
               <td class="cell-nowrap mono">${fmtInt(ms.input_tokens)}</td>
               <td class="cell-nowrap mono">${fmtInt(ms.output_tokens)} (推理 ${fmtInt(ms.reasoning_tokens)})</td>

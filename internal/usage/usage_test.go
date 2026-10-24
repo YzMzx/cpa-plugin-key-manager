@@ -336,3 +336,73 @@ func TestLegacyUsageMirrorIsMigratedNotDeleted(t *testing.T) {
 		t.Fatalf("legacy snapshot should be removed after migration, got err=%v", errStat)
 	}
 }
+
+// TestServedModelBecomesTheUsageBucket verifies that per-model statistics are
+// attributed to the model the upstream actually reported, while the
+// client-requested name is kept as a traceable alias.
+func TestServedModelBecomesTheUsageBucket(t *testing.T) {
+	eng := pricing.NewEngine()
+	eng.SetCustomPrices(map[string]pricing.ModelPrice{
+		"gemini-3.8-flash-high": {Input: 1.0, Output: 2.0},
+	}, nil)
+
+	store := NewStore(eng)
+	if err := store.ConfigurePersistence(filepath.Join(t.TempDir(), "usage.json"), time.Hour); err != nil {
+		t.Fatalf("configure store: %v", err)
+	}
+	defer store.Close()
+
+	const requested = "gemini-3.8-flash-high"
+	const served = "gemini-3.8-flash-n"
+
+	store.BeginRequest("req-served", "sk-served", "Served Key", requested, requested, "openai", false)
+	store.ObserveHostUsageRecord(pluginapi.UsageRecord{
+		RequestID:     "attempt-served",
+		Provider:      "antigravity",
+		Model:         requested,
+		ResponseModel: served,
+		APIKey:        "sk-served",
+		Detail: pluginapi.UsageDetail{
+			InputTokens:  1000,
+			OutputTokens: 500,
+			TotalTokens:  1500,
+		},
+	}, "Served Key")
+
+	snap := store.Snapshot("sk-served", "", nil, nil, nil, false)
+	ks := snap.Keys["sk-served"]
+	if ks == nil {
+		t.Fatalf("expected key stats for sk-served")
+	}
+	servedStats := ks.Models[served]
+	if servedStats == nil {
+		t.Fatalf("usage was not attributed to the served model %q; models=%v", served, modelKeys(ks.Models))
+	}
+	if servedStats.Requests != 1 || servedStats.TotalTokens != 1500 {
+		t.Fatalf("unexpected served-model stats: %+v", servedStats)
+	}
+	if _, ok := ks.Models[requested]; ok {
+		t.Fatalf("requested model must not own a separate bucket; models=%v", modelKeys(ks.Models))
+	}
+	foundAlias := false
+	for _, alias := range servedStats.RequestedModels {
+		if alias == requested {
+			foundAlias = true
+		}
+	}
+	if !foundAlias {
+		t.Fatalf("requested model alias missing from the served bucket: %+v", servedStats.RequestedModels)
+	}
+	// Pricing still resolves through the requested model name.
+	if servedStats.CostFormatted != "$0.002000" {
+		t.Fatalf("cost should be priced from the requested model, got %s", servedStats.CostFormatted)
+	}
+}
+
+func modelKeys(models map[string]*ModelStats) []string {
+	out := make([]string, 0, len(models))
+	for k := range models {
+		out = append(out, k)
+	}
+	return out
+}
