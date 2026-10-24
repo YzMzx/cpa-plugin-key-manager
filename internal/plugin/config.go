@@ -561,19 +561,51 @@ func StateDirs() []string {
 }
 
 // stateSubdirName is the dedicated directory created inside CLIProxyAPI's auth
-// directory. Keeping mirrors in a subdirectory prevents CLIProxyAPI from listing
-// them as (broken) OAuth credential files.
+// directory for plugin state.
 const stateSubdirName = "key-manager"
 
-// legacyAuthMirrorPaths returns the pre-0.5.8 mirror locations directly inside the
-// auth directory. They are still read once for migration but never written again.
+// stateFileExtension is used for mirrors that live inside CLIProxyAPI's auth
+// directory. CLIProxyAPI walks that directory RECURSIVELY and treats every
+// `*.json` file as an OAuth credential (and its ID then contains a path
+// separator, which the management API refuses to delete). Mirrors therefore use
+// a non-`.json` extension so they are invisible to the credential scanner.
+const stateFileExtension = ".state"
+
+// isInsideAuthDir reports whether dir is an CLIProxyAPI auth directory (or a
+// subdirectory of one).
+func isInsideAuthDir(dir string) bool {
+	dir = filepath.Clean(dir)
+	for _, authDir := range existingAuthDirs() {
+		authDir = filepath.Clean(authDir)
+		if dir == authDir || strings.HasPrefix(dir, authDir+string(os.PathSeparator)) {
+			return true
+		}
+	}
+	return false
+}
+
+// mirrorNameInDir maps a JSON base name to the file name used inside dir: files
+// placed under the auth directory must not end in `.json`.
+func mirrorNameInDir(dir, baseName string) string {
+	if !isInsideAuthDir(dir) {
+		return baseName
+	}
+	return strings.TrimSuffix(baseName, ".json") + stateFileExtension
+}
+
+// legacyAuthMirrorPaths returns the mirror locations used by older releases
+// (auth-dir root and the key-manager subdirectory, both ending in `.json`).
+// They are still read once for migration but never written again.
 func legacyAuthMirrorPaths(baseName string) []string {
 	if strings.TrimSpace(os.Getenv("CPA_KEY_MANAGER_STATE_DIRS")) != "" {
 		return nil
 	}
-	out := make([]string, 0, 4)
+	out := make([]string, 0, 8)
 	for _, authDir := range existingAuthDirs() {
-		out = append(out, filepath.Clean(filepath.Join(authDir, baseName)))
+		out = append(out,
+			filepath.Clean(filepath.Join(authDir, baseName)),
+			filepath.Clean(filepath.Join(authDir, stateSubdirName, baseName)),
+		)
 	}
 	return out
 }
@@ -602,27 +634,24 @@ func RulesFileCandidates(primary string) []string {
 		baseName = filepath.Base(filepath.Clean(primary))
 	}
 	for _, dir := range StateDirs() {
-		add(filepath.Join(dir, baseName))
+		add(filepath.Join(dir, mirrorNameInDir(dir, baseName)))
 	}
-	// Pre-0.5.8 mirrors written directly into the auth directory are still read
-	// so that upgrades never lose the administrator's rules.
+	// Older releases wrote mirrors ending in `.json` into the auth directory.
+	// They are still read so upgrades never lose the administrator's rules.
 	for _, legacy := range legacyAuthMirrorPaths(baseName) {
 		add(legacy)
 	}
 	return out
 }
 
-// isLegacyAuthMirror reports whether path is a mirror written directly inside the
-// CLIProxyAPI auth directory (pre-0.5.8 layout). Such files must never be written
-// again because CLIProxyAPI would list them as credential files.
+// isLegacyAuthMirror reports whether path is a stale mirror that lives inside the
+// CLIProxyAPI auth directory and would be picked up as an OAuth credential file.
+// Such files must never be written again and are removed after migration.
 func isLegacyAuthMirror(path string) bool {
-	parent := filepath.Clean(filepath.Dir(path))
-	for _, authDir := range existingAuthDirs() {
-		if parent == filepath.Clean(authDir) {
-			return true
-		}
+	if !strings.HasSuffix(strings.ToLower(path), ".json") {
+		return false
 	}
-	return false
+	return isInsideAuthDir(filepath.Dir(path))
 }
 
 // readDynamicRulesFile reads and decodes a DynamicRulesState from an explicit path.
@@ -750,8 +779,13 @@ func SaveDynamicRulesFile(filePath string, state *DynamicRulesState) error {
 	primaryClean := filepath.Clean(cleanPath)
 	for _, path := range RulesFileCandidates(cleanPath) {
 		if isLegacyAuthMirror(path) {
-			// migrate away from the pre-0.5.8 layout so CLIProxyAPI stops
-			// listing the mirror as a credential file
+			// Legacy mirrors used a `.json` name inside the auth directory, which
+			// CLIProxyAPI exposes as an undeletable credential. Write the new
+			// mirror first, then drop the legacy file.
+			if path == primaryClean {
+				primaryErr = usage.WriteFileAtomically(path, raw)
+				continue
+			}
 			_ = os.Remove(path)
 			continue
 		}
@@ -787,7 +821,7 @@ func UsageFileCandidates(configured string) []string {
 		baseName = filepath.Base(filepath.Clean(configured))
 	}
 	for _, dir := range StateDirs() {
-		add(filepath.Join(dir, baseName))
+		add(filepath.Join(dir, mirrorNameInDir(dir, baseName)))
 	}
 	for _, legacy := range legacyAuthMirrorPaths(baseName) {
 		add(legacy)
@@ -796,7 +830,9 @@ func UsageFileCandidates(configured string) []string {
 }
 
 // UsageMirrorFiles returns the mirror paths that receive a copy of the usage
-// snapshot after every flush (the configured file stays authoritative).
+// snapshot after every flush (the configured file stays authoritative). Stale
+// `.json` mirrors inside the auth directory are excluded because CLIProxyAPI
+// would treat them as OAuth credential files.
 func UsageMirrorFiles(configured string) []string {
 	configuredClean := filepath.Clean(strings.TrimSpace(configured))
 	out := make([]string, 0, 8)
@@ -804,9 +840,26 @@ func UsageMirrorFiles(configured string) []string {
 		if path == configuredClean {
 			continue
 		}
+		if isLegacyAuthMirror(path) {
+			continue
+		}
 		out = append(out, path)
 	}
 	return out
+}
+
+// CleanupLegacyAuthMirrors removes plugin state files that older releases left
+// inside CLIProxyAPI's auth directory as `*.json`. CLIProxyAPI lists them as
+// credentials with a path separator in the ID, which cannot be deleted from the
+// dashboard, so they must disappear after a successful migration.
+func CleanupLegacyAuthMirrors() {
+	for _, baseName := range []string{"key_guard_rules.json", "key_usage_stats.json"} {
+		for _, legacy := range legacyAuthMirrorPaths(baseName) {
+			if info, errStat := os.Stat(legacy); errStat == nil && !info.IsDir() {
+				_ = os.Remove(legacy)
+			}
+		}
+	}
 }
 
 // ReadHostConfigAPIKeys reads global client `api-keys` (or `access.api-keys`) from CLIProxyAPI's config.yaml on disk.

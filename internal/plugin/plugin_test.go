@@ -945,9 +945,20 @@ storage:
 	if _, errStat := os.Stat(legacyMirror); !os.IsNotExist(errStat) {
 		t.Fatalf("legacy auth-dir mirror should have been removed, got err=%v", errStat)
 	}
-	newMirror := filepath.Join(authDir, "key-manager", "key_guard_rules.json")
+	newMirror := filepath.Join(authDir, "key-manager", "key_guard_rules.state")
 	if _, errStat := os.Stat(newMirror); errStat != nil {
-		t.Fatalf("mirror was not written into the auth subdirectory: %v", errStat)
+		t.Fatalf("mirror was not written into the auth subdirectory with a non-json name: %v", errStat)
+	}
+	// CLIProxyAPI scans the auth dir recursively for *.json; the mirror must never
+	// use that extension or it surfaces as an undeletable credential entry.
+	for _, banned := range []string{
+		filepath.Join(authDir, "key-manager", "key_guard_rules.json"),
+		filepath.Join(authDir, "key_usage_stats.json"),
+		filepath.Join(authDir, "key-manager", "key_usage_stats.json"),
+	} {
+		if _, errStat := os.Stat(banned); errStat == nil {
+			t.Fatalf("plugin state must not be stored as .json inside the auth dir: %s", banned)
+		}
 	}
 }
 
