@@ -448,86 +448,253 @@ func (c *Config) ResolveKeyRule(apiKey string) (rule KeyRuleConfig, listed bool)
 	}, false
 }
 
+// AuthDirCandidates returns candidate CLIProxyAPI auth-token directories.
+// These directories hold OAuth credentials, so they are guaranteed to be on a
+// persistent volume that survives CLIProxyAPI restarts and container recreation.
+func AuthDirCandidates() []string {
+	out := make([]string, 0, 6)
+	add := func(dir string) {
+		dir = strings.TrimSpace(dir)
+		if dir == "" {
+			return
+		}
+		if strings.HasPrefix(dir, "~/") || dir == "~" {
+			home, errHome := os.UserHomeDir()
+			if errHome != nil || home == "" {
+				return
+			}
+			if dir == "~" {
+				dir = home
+			} else {
+				dir = filepath.Join(home, strings.TrimPrefix(dir, "~/"))
+			}
+		}
+		dir = filepath.Clean(dir)
+		for _, existing := range out {
+			if existing == dir {
+				return
+			}
+		}
+		out = append(out, dir)
+	}
+
+	for _, envName := range []string{"CPA_AUTH_DIR", "AUTH_DIR", "CLI_PROXY_AUTH_DIR"} {
+		add(os.Getenv(envName))
+	}
+	if home, errHome := os.UserHomeDir(); errHome == nil && home != "" {
+		add(filepath.Join(home, ".cli-proxy-api"))
+		add(filepath.Join(home, ".cli-proxy-api", "auths"))
+	}
+	add("/root/.cli-proxy-api")
+	add("/home/cliproxy/.cli-proxy-api")
+	return out
+}
+
+// existingAuthDirs returns only the auth directory candidates that exist on disk.
+func existingAuthDirs() []string {
+	out := make([]string, 0, 4)
+	for _, dir := range AuthDirCandidates() {
+		if info, err := os.Stat(dir); err == nil && info.IsDir() {
+			out = append(out, dir)
+		}
+	}
+	return out
+}
+
+// StateDirs returns the directories (in priority order) where the dynamic rules
+// JSON may be persisted. Persistent auth directories come first so that state
+// survives container recreation even when the working directory is ephemeral.
+//
+// The `CPA_KEY_MANAGER_STATE_DIRS` environment variable (comma separated) can be
+// used to pin the mirror locations explicitly; those directories are always used
+// and are created on demand.
+func StateDirs() []string {
+	out := make([]string, 0, 10)
+	add := func(dir string, mustExist bool) {
+		dir = strings.TrimSpace(dir)
+		if dir == "" {
+			return
+		}
+		dir = filepath.Clean(dir)
+		if mustExist {
+			if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+				return
+			}
+		}
+		for _, existing := range out {
+			if existing == dir {
+				return
+			}
+		}
+		out = append(out, dir)
+	}
+
+	if raw := strings.TrimSpace(os.Getenv("CPA_KEY_MANAGER_STATE_DIRS")); raw != "" {
+		for _, part := range strings.Split(raw, ",") {
+			add(part, false)
+		}
+		return out
+	}
+
+	for _, dir := range existingAuthDirs() {
+		add(dir, true)
+	}
+	if cfgPath := FindHostConfigFile(""); cfgPath != "" {
+		if info, errStat := os.Stat(cfgPath); errStat == nil && !info.IsDir() {
+			add(filepath.Dir(cfgPath), true)
+		}
+	}
+	root := FindCPARootDir()
+	add(filepath.Join(root, "data"), true)
+	add(root, true)
+	if wd, errWD := os.Getwd(); errWD == nil && wd != "" {
+		add(wd, true)
+	}
+	if exe, errExe := os.Executable(); errExe == nil && exe != "" {
+		exeDir := filepath.Dir(exe)
+		add(filepath.Join(exeDir, "data"), true)
+	}
+	return out
+}
+
+// RulesFileCandidates returns every path where the dynamic rules file may live,
+// starting with the canonical primary path.
+func RulesFileCandidates(primary string) []string {
+	out := make([]string, 0, 12)
+	add := func(path string) {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			return
+		}
+		path = filepath.Clean(path)
+		for _, existing := range out {
+			if existing == path {
+				return
+			}
+		}
+		out = append(out, path)
+	}
+
+	add(primary)
+	baseName := "key_guard_rules.json"
+	if strings.TrimSpace(primary) != "" {
+		baseName = filepath.Base(filepath.Clean(primary))
+	}
+	for _, dir := range StateDirs() {
+		add(filepath.Join(dir, baseName))
+	}
+	return out
+}
+
+// readDynamicRulesFile reads and decodes a DynamicRulesState from an explicit path.
+func readDynamicRulesFile(path string) (*DynamicRulesState, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(strings.TrimSpace(string(raw))) == 0 {
+		return nil, io.EOF
+	}
+	var state DynamicRulesState
+	if err := json.Unmarshal(raw, &state); err != nil {
+		return nil, err
+	}
+	if state.Version == 0 {
+		state.Version = 1
+	}
+	if state.CustomPrices == nil {
+		state.CustomPrices = make(map[string]pricing.ModelPrice)
+	}
+	return &state, nil
+}
+
+// DynamicRulesFileReport describes one candidate rules-file location (used for live diagnostics).
+func DynamicRulesFileReport(primary string) []map[string]any {
+	reports := make([]map[string]any, 0, 8)
+	for _, path := range RulesFileCandidates(primary) {
+		entry := map[string]any{"path": path, "exists": false}
+		info, errStat := os.Stat(path)
+		if errStat != nil || info.IsDir() {
+			reports = append(reports, entry)
+			continue
+		}
+		entry["exists"] = true
+		entry["size"] = info.Size()
+		entry["mtime"] = info.ModTime().UTC().Format(time.RFC3339)
+		if state, errRead := readDynamicRulesFile(path); errRead == nil && state != nil {
+			entry["keys"] = len(state.Keys)
+			entry["updated_at"] = state.UpdatedAt
+			entry["has_default_policy"] = state.DefaultPolicy != nil
+		} else if errRead != nil {
+			entry["error"] = errRead.Error()
+		}
+		reports = append(reports, entry)
+	}
+	return reports
+}
+
 // LoadDynamicRulesFile loads the persisted DynamicRulesState from disk.
-// If the primary file does not exist or has empty rules, it checks other candidate locations
-// for an existing non-empty rules file, automatically adopting and migrating it to the canonical path.
+// It inspects every candidate location and adopts the most recently written
+// non-empty state, so that an ephemeral `./data` directory (recreated by a
+// container restart) can never wipe the administrator's configured rules.
 func LoadDynamicRulesFile(filePath string) (*DynamicRulesState, error) {
 	cleanPath := strings.TrimSpace(filePath)
 	if cleanPath == "" {
-		return &DynamicRulesState{Version: 1, CustomPrices: make(map[string]pricing.ModelPrice)}, nil
+		cleanPath = "key_guard_rules.json"
 	}
 
-	readState := func(path string) (*DynamicRulesState, error) {
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			return nil, err
-		}
-		if len(strings.TrimSpace(string(raw))) == 0 {
-			return nil, io.EOF
-		}
-		var state DynamicRulesState
-		if err := json.Unmarshal(raw, &state); err != nil {
-			return nil, err
-		}
-		if state.Version == 0 {
-			state.Version = 1
-		}
-		if state.CustomPrices == nil {
-			state.CustomPrices = make(map[string]pricing.ModelPrice)
-		}
-		return &state, nil
+	type candidateState struct {
+		path  string
+		state *DynamicRulesState
+		score int
 	}
+	best := (*candidateState)(nil)
+	var firstErr error
 
-	primaryState, errPrimary := readState(cleanPath)
-	if errPrimary == nil && primaryState != nil && (len(primaryState.Keys) > 0 || primaryState.DefaultPolicy != nil) {
-		return primaryState, nil
-	}
-
-	// Search alternate candidate locations if primary is empty or missing
-	baseName := filepath.Base(cleanPath)
-	subRel := filepath.Join("data", baseName)
-
-	cpaRoot := FindCPARootDir()
-	candidates := []string{
-		filepath.Clean(filepath.Join(cpaRoot, subRel)),
-		filepath.Clean(filepath.Join(cpaRoot, baseName)),
-		filepath.Clean(filepath.Join("/CLIProxyAPI", subRel)),
-		filepath.Clean(filepath.Join("/CLIProxyAPI", baseName)),
-		filepath.Clean(filepath.Join("/CLIProxyAPI/data", baseName)),
-	}
-	if wd, err := os.Getwd(); err == nil && wd != "" {
-		candidates = append(candidates, filepath.Clean(filepath.Join(wd, subRel)), filepath.Clean(filepath.Join(wd, baseName)))
-	}
-	if exe, err := os.Executable(); err == nil && exe != "" {
-		exeDir := filepath.Dir(exe)
-		candidates = append(candidates, filepath.Clean(filepath.Join(exeDir, subRel)), filepath.Clean(filepath.Join(filepath.Dir(exeDir), subRel)))
-	}
-	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		candidates = append(candidates, filepath.Clean(filepath.Join(home, ".cli-proxy-api", subRel)), filepath.Clean(filepath.Join(home, subRel)))
-	}
-	candidates = append(candidates, filepath.Clean(filepath.Join("/CLIProxyAPI", subRel)))
-
-	for _, cand := range candidates {
-		if cand == cleanPath {
+	for _, path := range RulesFileCandidates(cleanPath) {
+		state, errRead := readDynamicRulesFile(path)
+		if errRead != nil {
+			if firstErr == nil && !os.IsNotExist(errRead) && !errors.Is(errRead, io.EOF) {
+				firstErr = errRead
+			}
 			continue
 		}
-		candState, errCand := readState(cand)
-		if errCand == nil && candState != nil && (len(candState.Keys) > 0 || candState.DefaultPolicy != nil) {
-			_ = SaveDynamicRulesFile(cleanPath, candState)
-			return candState, nil
+		score := len(state.Keys) * 1000
+		if state.DefaultPolicy != nil {
+			score++
+		}
+		cand := &candidateState{path: path, state: state, score: score}
+		if best == nil {
+			best = cand
+			continue
+		}
+		if state.UpdatedAt != best.state.UpdatedAt {
+			if state.UpdatedAt > best.state.UpdatedAt {
+				best = cand
+			}
+			continue
+		}
+		if score > best.score {
+			best = cand
 		}
 	}
 
-	if primaryState != nil {
-		return primaryState, nil
-	}
-	if os.IsNotExist(errPrimary) {
+	if best == nil {
+		if firstErr != nil {
+			return nil, firstErr
+		}
 		return &DynamicRulesState{Version: 1, CustomPrices: make(map[string]pricing.ModelPrice)}, nil
 	}
-	return nil, errPrimary
+
+	// Converge all candidate locations onto the winning state so that every
+	// persistent location holds the same authoritative snapshot.
+	_ = SaveDynamicRulesFile(cleanPath, best.state)
+	return best.state, nil
 }
 
-// SaveDynamicRulesFile atomically writes DynamicRulesState to disk.
+// SaveDynamicRulesFile atomically writes DynamicRulesState to every candidate
+// location (auth dir, config dir, CPA root data dir, ...). The primary path
+// write is authoritative; mirror failures are tolerated.
 func SaveDynamicRulesFile(filePath string, state *DynamicRulesState) error {
 	cleanPath := strings.TrimSpace(filePath)
 	if cleanPath == "" || state == nil {
@@ -535,11 +702,19 @@ func SaveDynamicRulesFile(filePath string, state *DynamicRulesState) error {
 	}
 	state.Version = 1
 	state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	raw, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		return err
+	raw, errMarshal := json.MarshalIndent(state, "", "  ")
+	if errMarshal != nil {
+		return errMarshal
 	}
-	return usage.WriteFileAtomically(cleanPath, raw)
+
+	var primaryErr error
+	for _, path := range RulesFileCandidates(cleanPath) {
+		errWrite := usage.WriteFileAtomically(path, raw)
+		if path == filepath.Clean(cleanPath) {
+			primaryErr = errWrite
+		}
+	}
+	return primaryErr
 }
 
 // ReadHostConfigAPIKeys reads global client `api-keys` (or `access.api-keys`) from CLIProxyAPI's config.yaml on disk.
@@ -570,6 +745,63 @@ func ReadHostConfigAPIKeys(configPath string) []string {
 				seen[k] = struct{}{}
 				out = append(out, k)
 			}
+		}
+	}
+	return out
+}
+
+// ReadHostConfigPluginRules reads the plugin rule snapshot that is mirrored into
+// CLIProxyAPI's config.yaml under `plugins.configs.<plugin id>`. It returns the
+// decoded DynamicRulesState when present, so that a wiped `data/` directory can
+// always be rebuilt from the host's persistent config file.
+func ReadHostConfigPluginRules(configPath string) *DynamicRulesState {
+	resolvedPath := FindHostConfigFile(configPath)
+	raw, err := os.ReadFile(resolvedPath)
+	if err != nil || len(raw) == 0 {
+		return nil
+	}
+	var root struct {
+		Plugins struct {
+			Configs map[string]yaml.Node `yaml:"configs"`
+		} `yaml:"plugins"`
+	}
+	if errUnmarshal := yaml.Unmarshal(raw, &root); errUnmarshal != nil {
+		return nil
+	}
+	node, ok := root.Plugins.Configs[PluginID]
+	if !ok {
+		return nil
+	}
+	var snapshot struct {
+		DefaultPolicy *DefaultPolicyConfig `yaml:"default_policy"`
+		Keys          []KeyRuleConfig      `yaml:"keys"`
+	}
+	if errDecode := node.Decode(&snapshot); errDecode != nil {
+		return nil
+	}
+	if snapshot.DefaultPolicy == nil && len(snapshot.Keys) == 0 {
+		return nil
+	}
+	state := &DynamicRulesState{
+		Version:       1,
+		DefaultPolicy: snapshot.DefaultPolicy,
+		Keys:          snapshot.Keys,
+		CustomPrices:  make(map[string]pricing.ModelPrice),
+	}
+	return state
+}
+
+// ReadHostConfigPluginKeys returns just the API keys of the plugin rule snapshot
+// mirrored inside CLIProxyAPI's config.yaml (used for live diagnostics).
+func ReadHostConfigPluginKeys() []string {
+	state := ReadHostConfigPluginRules("")
+	if state == nil {
+		return nil
+	}
+	out := make([]string, 0, len(state.Keys))
+	for _, rule := range state.Keys {
+		if key := strings.TrimSpace(rule.APIKey); key != "" {
+			out = append(out, key)
 		}
 	}
 	return out

@@ -24,6 +24,8 @@ state/
 *.sqlite
 *.sqlite3
 *usage*.json
+key_guard_rules.json
+key_guard_rules*.json
 *models_dev*.json
 *.tmp.*
 

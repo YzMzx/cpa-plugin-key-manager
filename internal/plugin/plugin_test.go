@@ -8,11 +8,31 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/YzMzx/cpa-plugin-key-manager/internal/handler"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
-	"github.com/YzMzx/cpa-plugin-key-manager/internal/handler"
 )
+
+// TestMain keeps every mirror location inside a throwaway directory so tests never
+// write into the developer/production host state directories.
+func TestMain(m *testing.M) {
+	dir, errTemp := os.MkdirTemp("", "km-state-dirs-")
+	if errTemp != nil {
+		os.Exit(m.Run())
+	}
+	_ = os.Setenv("CPA_KEY_MANAGER_STATE_DIRS", dir)
+	code := m.Run()
+	_ = os.RemoveAll(dir)
+	os.Exit(code)
+}
+
+// isolateStateDirs gives a single test its own private set of mirror directories.
+func isolateStateDirs(t *testing.T) {
+	t.Helper()
+	t.Setenv("CPA_KEY_MANAGER_STATE_DIRS", t.TempDir())
+}
 
 func decodeEnvelope[T any](t *testing.T, raw []byte) T {
 	t.Helper()
@@ -33,6 +53,7 @@ func decodeEnvelope[T any](t *testing.T, raw []byte) T {
 }
 
 func TestRestartPersistenceBugReproduction(t *testing.T) {
+	isolateStateDirs(t)
 	tmpDir := t.TempDir()
 	origWD, _ := os.Getwd()
 	defer func() { _ = os.Chdir(origWD) }()
@@ -283,6 +304,7 @@ plugins:
 }
 
 func TestFullPluginLifecycleAndGovernance(t *testing.T) {
+	isolateStateDirs(t)
 	tmpDir := t.TempDir()
 	usageFile := filepath.Join(tmpDir, "usage_stats.json")
 	cacheFile := filepath.Join(tmpDir, "models_dev.json")
@@ -512,6 +534,7 @@ keys:
 }
 
 func TestWebUIDynamicCRUDAndTokenTracking(t *testing.T) {
+	isolateStateDirs(t)
 	tmpDir := t.TempDir()
 	usageFile := filepath.Join(tmpDir, "usage_stats.json")
 	rulesFile := filepath.Join(tmpDir, "key_guard_rules.json")
@@ -806,6 +829,7 @@ func TestResolveStoragePathAndHostConfigFile(t *testing.T) {
 }
 
 func TestBuildAdminOverviewPreservesAllowedModelsWhenAuthModelsEmpty(t *testing.T) {
+	isolateStateDirs(t)
 	tmpDir := t.TempDir()
 	rulesFile := filepath.Join(tmpDir, "key_guard_rules.json")
 	usageFile := filepath.Join(tmpDir, "key_usage_stats.json")
@@ -848,5 +872,139 @@ keys:
 	}
 	if len(dp.AllowedModels) != 2 || dp.AllowedModels[0] != "gpt-4o" {
 		t.Fatalf("default_policy allowed_models got erased! got %v", dp.AllowedModels)
+	}
+}
+
+// TestRestartSurvivesEphemeralDataDir reproduces the production failure where the
+// container's `./data` directory is recreated empty on restart: remarks and model
+// whitelists must be recovered from the durable mirror next to config.yaml.
+func TestRestartSurvivesEphemeralDataDir(t *testing.T) {
+	sandbox := t.TempDir()
+	cpaDir := filepath.Join(sandbox, "CLIProxyAPI")
+	if err := os.MkdirAll(cpaDir, 0o755); err != nil {
+		t.Fatalf("mkdir cpa dir: %v", err)
+	}
+	// Mirror locations: a durable dir (stands in for ~/.cli-proxy-api) plus the
+	// directory that holds config.yaml.
+	durableDir := filepath.Join(sandbox, "durable")
+	if err := os.MkdirAll(durableDir, 0o755); err != nil {
+		t.Fatalf("mkdir durable: %v", err)
+	}
+	t.Setenv("CPA_KEY_MANAGER_STATE_DIRS", strings.Join([]string{durableDir, cpaDir}, ","))
+	configPath := filepath.Join(cpaDir, "config.yaml")
+	configYAML := `port: 8317
+api-keys:
+  - sk-survive-1
+plugins:
+  enabled: true
+  dir: ./plugins
+  configs:
+    cpa-plugin-key-manager:
+      enabled: true
+      priority: 100
+`
+	if err := os.WriteFile(configPath, []byte(configYAML), 0o644); err != nil {
+		t.Fatalf("write config.yaml: %v", err)
+	}
+
+	// Durable mirror living next to config.yaml — this is what a previous run wrote.
+	mirrorState := `{
+  "version": 1,
+  "updated_at": "2026-10-24T09:00:00Z",
+  "default_policy": {
+    "allow_unlisted_keys": true,
+    "max_concurrency": 7,
+    "allowed_models": ["gemini-3.8-flash-high"]
+  },
+  "keys": [
+    {
+      "api_key": "sk-survive-1",
+      "name": "生产主力Key",
+      "enabled": true,
+      "max_concurrency": 4,
+      "allowed_models": ["gemini-3.8-flash-high", "minimax-m3"],
+      "upstream_binding": {"strategy": "round-robin"}
+    }
+  ]
+}`
+	if err := os.WriteFile(filepath.Join(cpaDir, "key_guard_rules.json"), []byte(mirrorState), 0o644); err != nil {
+		t.Fatalf("write mirror rules: %v", err)
+	}
+
+	// The configured primary path points into an ephemeral data directory that
+	// does NOT exist yet (simulating a freshly recreated container).
+	ephemeralDir := filepath.Join(sandbox, "ephemeral")
+	if err := os.MkdirAll(ephemeralDir, 0o755); err != nil {
+		t.Fatalf("mkdir ephemeral: %v", err)
+	}
+	primaryRules := filepath.Join(ephemeralDir, "data", "key_guard_rules.json")
+
+	t.Setenv("CPA_DIR", cpaDir)
+	t.Setenv("CPA_CONFIG_FILE", configPath)
+
+	mgr := NewManager(func(method string, payload []byte) ([]byte, error) {
+		return okEnvelope(map[string]any{"files": []any{}})
+	})
+	defer mgr.Shutdown()
+
+	regReq, _ := json.Marshal(lifecycleRequest{
+		ConfigYAML: []byte(`
+storage:
+  rules_file: "` + filepath.ToSlash(primaryRules) + `"
+  usage_file: "` + filepath.ToSlash(filepath.Join(ephemeralDir, "key_usage_stats.json")) + `"
+  pricing_cache_file: "` + filepath.ToSlash(filepath.Join(ephemeralDir, "models_dev.json")) + `"
+`),
+		SchemaVersion: pluginabi.SchemaVersion,
+	})
+	if _, err := mgr.HandleRPC(pluginabi.MethodPluginRegister, regReq); err != nil {
+		t.Fatalf("register failed: %v", err)
+	}
+
+	overview := mgr.BuildAdminOverview("")
+	keysList, ok := overview["keys"].([]KeyRuleConfig)
+	if !ok || len(keysList) == 0 {
+		t.Fatalf("CRITICAL: keys disappeared after simulated restart")
+	}
+	if keysList[0].Name != "生产主力Key" {
+		t.Fatalf("remark name lost after restart! got %q", keysList[0].Name)
+	}
+	if len(keysList[0].AllowedModels) != 2 || keysList[0].AllowedModels[0] != "gemini-3.8-flash-high" {
+		t.Fatalf("model whitelist lost after restart! got %v", keysList[0].AllowedModels)
+	}
+	if keysList[0].MaxConcurrency != 4 {
+		t.Fatalf("max_concurrency lost after restart! got %d", keysList[0].MaxConcurrency)
+	}
+	dp, ok := overview["default_policy"].(DefaultPolicyConfig)
+	if !ok || dp.MaxConcurrency != 7 {
+		t.Fatalf("default_policy lost after restart! got %+v", dp)
+	}
+
+	// The recovered state must be re-mirrored into the ephemeral primary path...
+	if _, errStat := os.Stat(primaryRules); errStat != nil {
+		t.Fatalf("recovered state was not converged to the primary rules file: %v", errStat)
+	}
+	// ...and into the durable config.yaml plugin snapshot.
+	pinned := ReadHostConfigPluginKeys()
+	if len(pinned) != 1 || pinned[0] != "sk-survive-1" {
+		t.Fatalf("config.yaml plugin snapshot not repaired, got %v", pinned)
+	}
+	if snap := ReadHostConfigPluginRules(""); snap == nil || len(snap.Keys) != 1 || snap.Keys[0].Name != "生产主力Key" {
+		t.Fatalf("config.yaml snapshot is missing the remark name: %+v", snap)
+	}
+
+	// A management save from CLIProxyAPI's stale in-memory copy wipes the plugin
+	// section; the plugin must restore it on the next overview load.
+	if err := os.WriteFile(configPath, []byte(configYAML), 0o644); err != nil {
+		t.Fatalf("rewrite config.yaml: %v", err)
+	}
+	if len(ReadHostConfigPluginKeys()) != 0 {
+		t.Fatalf("expected plugin snapshot to be wiped before repair")
+	}
+	mgr.mu.Lock()
+	mgr.lastConfigSync = time.Time{}
+	mgr.mu.Unlock()
+	_ = mgr.BuildAdminOverview("")
+	if keys := ReadHostConfigPluginKeys(); len(keys) != 1 || keys[0] != "sk-survive-1" {
+		t.Fatalf("config.yaml snapshot was not repaired after a management save, got %v", keys)
 	}
 }
