@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	"github.com/YzMzx/cpa-plugin-key-manager/internal/pricing"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	"github.com/tidwall/gjson"
 )
 
@@ -224,5 +224,57 @@ func TestStoreDeduplicationAndProtocolConversionReconciliation(t *testing.T) {
 	snapAfterReload := store.Snapshot(apiKey, "", nil, nil, nil, false)
 	if snapAfterReload.Keys[apiKey].TotalRequests != 1 || snapAfterReload.Keys[apiKey].TotalCostFormatted != "$0.012300" {
 		t.Fatalf("stats lost after hot-reload: %+v", snapAfterReload.Keys[apiKey])
+	}
+}
+
+// TestUsageMirrorSurvivesEphemeralTarget verifies that billing history is mirrored
+// to durable paths and restored when the configured file is recreated empty.
+func TestUsageMirrorSurvivesEphemeralTarget(t *testing.T) {
+	tmpDir := t.TempDir()
+	ephemeralFile := filepath.Join(tmpDir, "data", "key_usage_stats.json")
+	durableMirror := filepath.Join(tmpDir, "durable", "key_usage_stats.json")
+
+	eng := pricing.NewEngine()
+	source := NewStore(eng)
+	source.SetMirrorFiles([]string{durableMirror})
+	if err := source.ConfigurePersistence(ephemeralFile, time.Hour); err != nil {
+		t.Fatalf("configure source: %v", err)
+	}
+	source.BeginRequest("req-1", "sk-mirror", "Mirrored", "gpt-4o", "gpt-4o", "openai", false)
+	source.ObserveStreamChunk("req-1", "gpt-4o", "gpt-4o", []byte(`data: {"id":"1","model":"gpt-4o","usage":{"prompt_tokens":1000,"completion_tokens":500}}`))
+	source.CompleteRequest(pluginapi.RequestCompletion{
+		RequestID:  "req-1",
+		Model:      "gpt-4o",
+		Outcome:    pluginapi.RequestCompletionSucceeded,
+		StatusCode: 200,
+	}, "", "")
+	if err := source.FlushNow(); err != nil {
+		t.Fatalf("flush source: %v", err)
+	}
+	_ = source.Close()
+
+	if info, errStat := os.Stat(durableMirror); errStat != nil || info.Size() == 0 {
+		t.Fatalf("usage mirror was not written: %v", errStat)
+	}
+
+	// Simulate a container restart: the ./data file is gone.
+	if err := os.RemoveAll(filepath.Join(tmpDir, "data")); err != nil {
+		t.Fatalf("remove ephemeral dir: %v", err)
+	}
+
+	restored := NewStore(eng)
+	restored.SetMirrorFiles([]string{durableMirror})
+	if err := restored.ConfigurePersistence(ephemeralFile, time.Hour); err != nil {
+		t.Fatalf("configure restored: %v", err)
+	}
+	defer restored.Close()
+
+	snap := restored.Snapshot("sk-mirror", "", nil, nil, nil, false)
+	stats := snap.Keys["sk-mirror"]
+	if stats == nil || stats.TotalRequests != 1 {
+		t.Fatalf("usage history was not restored from the durable mirror: %+v", stats)
+	}
+	if info, errStat := os.Stat(ephemeralFile); errStat != nil || info.Size() == 0 {
+		t.Fatalf("restored snapshot was not written back to the configured path: %v", errStat)
 	}
 }

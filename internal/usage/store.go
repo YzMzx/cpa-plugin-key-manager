@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	"github.com/YzMzx/cpa-plugin-key-manager/internal/pricing"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // ModelStats stores cumulative usage and USD billing statistics for a single model under an API Key.
@@ -99,6 +99,7 @@ type Store struct {
 	seenHostReqID map[string]time.Time
 
 	storageFile   string
+	mirrorFiles   []string
 	dirty         bool
 	flushInterval time.Duration
 	stopFlushCh   chan struct{}
@@ -119,6 +120,74 @@ func NewStore(pricingEngine *pricing.Engine) *Store {
 	}
 }
 
+// SetMirrorFiles registers extra paths that receive a copy of the usage snapshot
+// after every flush. This keeps billing history alive when the configured file
+// lives in an ephemeral directory (e.g. a container's ./data).
+func (s *Store) SetMirrorFiles(paths []string) {
+	cleaned := make([]string, 0, len(paths))
+	seen := make(map[string]struct{}, len(paths))
+	for _, raw := range paths {
+		path := strings.TrimSpace(raw)
+		if path == "" {
+			continue
+		}
+		path = filepath.Clean(path)
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		cleaned = append(cleaned, path)
+	}
+	s.mu.Lock()
+	s.mirrorFiles = cleaned
+	s.mu.Unlock()
+}
+
+// adoptMirrorIfEmpty restores the configured snapshot from the newest non-empty
+// mirror when the configured file is missing or empty (e.g. after the container
+// recreated its ./data directory).
+func (s *Store) adoptMirrorIfEmpty(target string) {
+	if target == "" {
+		return
+	}
+	if info, errStat := os.Stat(target); errStat == nil && info.Size() > 0 {
+		return
+	}
+
+	s.mu.Lock()
+	mirrors := append([]string(nil), s.mirrorFiles...)
+	s.mu.Unlock()
+	if len(mirrors) == 0 {
+		return
+	}
+
+	bestPath := ""
+	var bestSnap *PersistedSnapshot
+	for _, mirror := range mirrors {
+		raw, errRead := os.ReadFile(mirror)
+		if errRead != nil || len(strings.TrimSpace(string(raw))) == 0 {
+			continue
+		}
+		var snap PersistedSnapshot
+		if errUnmarshal := json.Unmarshal(raw, &snap); errUnmarshal != nil {
+			continue
+		}
+		if bestSnap == nil || snap.UpdatedAt > bestSnap.UpdatedAt {
+			cp := snap
+			bestSnap = &cp
+			bestPath = mirror
+		}
+	}
+	if bestSnap == nil || bestPath == "" || len(bestSnap.Keys) == 0 {
+		return
+	}
+	raw, errRead := os.ReadFile(bestPath)
+	if errRead != nil {
+		return
+	}
+	_ = writeFileAtomicallyWindowsSafe(target, raw)
+}
+
 // ConfigurePersistence sets the persistence file path and periodic flush interval.
 // Calling ConfigurePersistence during hot-reload (`plugin.reconfigure`) preserves all in-memory
 // usage statistics while loading any existing disk history on initial startup.
@@ -132,6 +201,8 @@ func (s *Store) ConfigurePersistence(filePath string, flushInterval time.Duratio
 	if flushInterval <= 0 {
 		flushInterval = 10 * time.Second
 	}
+
+	s.adoptMirrorIfEmpty(cleanPath)
 
 	s.mu.Lock()
 	wasEmpty := len(s.keys) == 0
@@ -797,6 +868,7 @@ func (s *Store) FlushIfDirty() error {
 func (s *Store) FlushNow() error {
 	s.mu.Lock()
 	targetFile := s.storageFile
+	mirrors := append([]string(nil), s.mirrorFiles...)
 	if targetFile == "" {
 		s.mu.Unlock()
 		return nil
@@ -826,7 +898,14 @@ func (s *Store) FlushNow() error {
 	if err != nil {
 		return err
 	}
-	return writeFileAtomicallyWindowsSafe(targetFile, raw)
+	errWrite := writeFileAtomicallyWindowsSafe(targetFile, raw)
+	for _, mirror := range mirrors {
+		if mirror == targetFile {
+			continue
+		}
+		_ = writeFileAtomicallyWindowsSafe(mirror, raw)
+	}
+	return errWrite
 }
 
 func (s *Store) loadFromDisk(filePath string) error {

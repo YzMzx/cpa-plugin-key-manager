@@ -875,6 +875,82 @@ keys:
 	}
 }
 
+// TestRulesMirrorUsesAuthSubdirAndMigratesLegacy verifies that mirrors live in a
+// dedicated subdirectory of the auth dir (so CLIProxyAPI never lists them as
+// credentials) and that a pre-0.5.8 mirror in the auth dir root is migrated.
+func TestRulesMirrorUsesAuthSubdirAndMigratesLegacy(t *testing.T) {
+	sandbox := t.TempDir()
+	origWD, _ := os.Getwd()
+	if err := os.Chdir(sandbox); err != nil {
+		t.Fatalf("chdir sandbox: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(origWD) })
+
+	home := filepath.Join(sandbox, "home")
+	authDir := filepath.Join(home, ".cli-proxy-api")
+	if err := os.MkdirAll(authDir, 0o755); err != nil {
+		t.Fatalf("mkdir auth dir: %v", err)
+	}
+	cpaDir := filepath.Join(sandbox, "cpa")
+	if err := os.MkdirAll(cpaDir, 0o755); err != nil {
+		t.Fatalf("mkdir cpa dir: %v", err)
+	}
+	configPath := filepath.Join(cpaDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("api-keys:\n  - sk-legacy-1\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("CPA_DIR", cpaDir)
+	t.Setenv("CPA_CONFIG_FILE", configPath)
+	t.Setenv("CPA_KEY_MANAGER_STATE_DIRS", "")
+
+	legacyMirror := filepath.Join(authDir, "key_guard_rules.json")
+	legacyState := `{
+  "version": 1,
+  "updated_at": "2026-10-24T10:00:00Z",
+  "keys": [
+    {"api_key": "sk-legacy-1", "name": "旧版备注", "allowed_models": ["gpt-4o"]}
+  ]
+}`
+	if err := os.WriteFile(legacyMirror, []byte(legacyState), 0o644); err != nil {
+		t.Fatalf("write legacy mirror: %v", err)
+	}
+
+	mgr := NewManager(func(method string, payload []byte) ([]byte, error) {
+		return okEnvelope(map[string]any{"files": []any{}})
+	})
+	defer mgr.Shutdown()
+
+	regReq, _ := json.Marshal(lifecycleRequest{
+		ConfigYAML: []byte(`
+storage:
+  rules_file: "` + filepath.ToSlash(filepath.Join(cpaDir, "data", "key_guard_rules.json")) + `"
+  usage_file: "` + filepath.ToSlash(filepath.Join(cpaDir, "data", "key_usage_stats.json")) + `"
+  pricing_cache_file: "` + filepath.ToSlash(filepath.Join(cpaDir, "data", "models_dev.json")) + `"
+`),
+		SchemaVersion: pluginabi.SchemaVersion,
+	})
+	if _, err := mgr.HandleRPC(pluginabi.MethodPluginRegister, regReq); err != nil {
+		t.Fatalf("register failed: %v", err)
+	}
+
+	overview := mgr.BuildAdminOverview("")
+	keysList, ok := overview["keys"].([]KeyRuleConfig)
+	if !ok || len(keysList) == 0 || keysList[0].Name != "旧版备注" {
+		t.Fatalf("legacy mirror was not migrated: %+v", keysList)
+	}
+
+	if _, errStat := os.Stat(legacyMirror); !os.IsNotExist(errStat) {
+		t.Fatalf("legacy auth-dir mirror should have been removed, got err=%v", errStat)
+	}
+	newMirror := filepath.Join(authDir, "key-manager", "key_guard_rules.json")
+	if _, errStat := os.Stat(newMirror); errStat != nil {
+		t.Fatalf("mirror was not written into the auth subdirectory: %v", errStat)
+	}
+}
+
 // TestRestartSurvivesEphemeralDataDir reproduces the production failure where the
 // container's `./data` directory is recreated empty on restart: remarks and model
 // whitelists must be recovered from the durable mirror next to config.yaml.
