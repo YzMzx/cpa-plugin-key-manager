@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/url"
@@ -98,7 +99,7 @@ func (k KeyRuleConfig) IsEnabled() bool {
 func DefaultConfig() Config {
 	allowUnlisted := true
 	autoInject := true
-	cfg := Config{
+	return Config{
 		Enabled:  true,
 		Priority: 100,
 		Storage: StorageConfig{
@@ -119,17 +120,34 @@ func DefaultConfig() Config {
 			AllowedModels:     []string{"*"},
 		},
 	}
-	cfg.Normalize()
-	return cfg
 }
 
 // ParseConfigYAML parses YAML bytes into Config and normalizes defaults and lookup indexes.
+// It supports both raw plugin instance YAML and full CLIProxyAPI config.yaml files.
 func ParseConfigYAML(raw []byte) (Config, error) {
 	cfg := DefaultConfig()
-	if len(strings.TrimSpace(string(raw))) > 0 {
-		if err := yaml.Unmarshal(raw, &cfg); err != nil {
+	cleaned := strings.TrimSpace(string(raw))
+	if len(cleaned) > 0 {
+		var root struct {
+			Plugins struct {
+				Configs map[string]yaml.Node `yaml:"configs"`
+			} `yaml:"plugins"`
+		}
+		if errRoot := yaml.Unmarshal(raw, &root); errRoot == nil && root.Plugins.Configs != nil {
+			if node, ok := root.Plugins.Configs[PluginID]; ok {
+				var parsed Config
+				if errDecode := node.Decode(&parsed); errDecode == nil {
+					parsed.Normalize()
+					return parsed, nil
+				}
+			}
+		}
+
+		var parsed Config
+		if err := yaml.Unmarshal(raw, &parsed); err != nil {
 			return Config{}, err
 		}
+		cfg = parsed
 	}
 	cfg.Normalize()
 	return cfg, nil
@@ -171,7 +189,6 @@ func FindCPARootDir() string {
 		if _, err := os.Stat(filepath.Join(parentDir, "plugins")); err == nil {
 			return parentDir
 		}
-		return exeDir
 	}
 
 	if wd, err := os.Getwd(); err == nil && wd != "" {
@@ -240,20 +257,63 @@ func ResolveStoragePath(rawPath string) string {
 
 // FindHostConfigFile locates CLIProxyAPI's config.yaml on disk by checking:
 // 1. Explicit path parameter (if non-empty)
-// 2. CPA_CONFIG_FILE environment variable
-// 3. Standard locations relative to CWD ("config.yaml", "../config.yaml")
-// 4. Locations relative to the host executable directory
+// 2. Command-line arguments of current process (-config, --config, -config=..., --config=...)
+// 3. CPA_CONFIG_FILE environment variable
+// 4. CPA_DIR environment variable (filepath.Join(CPA_DIR, "config.yaml"))
+// 5. Standard locations relative to CWD ("config.yaml", "../config.yaml")
+// 6. Locations relative to the host executable directory
+// 7. Common container/deployment locations ("/CLIProxyAPI/config.yaml")
 func FindHostConfigFile(preferredPath string) string {
 	if strings.TrimSpace(preferredPath) != "" {
 		return preferredPath
 	}
+
+	// Check CLI flags from os.Args (-config or --config)
+	for i := 0; i < len(os.Args); i++ {
+		arg := os.Args[i]
+		if arg == "-config" || arg == "--config" {
+			if i+1 < len(os.Args) {
+				candidate := strings.TrimSpace(os.Args[i+1])
+				if candidate != "" {
+					if _, err := os.Stat(candidate); err == nil {
+						if abs, errAbs := filepath.Abs(candidate); errAbs == nil {
+							return abs
+						}
+						return candidate
+					}
+				}
+			}
+		} else if strings.HasPrefix(arg, "-config=") || strings.HasPrefix(arg, "--config=") {
+			candidate := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(arg, "--config="), "-config="))
+			if candidate != "" {
+				if _, err := os.Stat(candidate); err == nil {
+					if abs, errAbs := filepath.Abs(candidate); errAbs == nil {
+						return abs
+					}
+					return candidate
+				}
+			}
+		}
+	}
+
 	if envPath := strings.TrimSpace(os.Getenv("CPA_CONFIG_FILE")); envPath != "" {
 		return envPath
+	}
+
+	if envDir := strings.TrimSpace(os.Getenv("CPA_DIR")); envDir != "" {
+		candidate := filepath.Join(envDir, "config.yaml")
+		if _, err := os.Stat(candidate); err == nil {
+			if abs, errAbs := filepath.Abs(candidate); errAbs == nil {
+				return abs
+			}
+			return candidate
+		}
 	}
 
 	candidates := []string{
 		"config.yaml",
 		"../config.yaml",
+		"/CLIProxyAPI/config.yaml",
 	}
 
 	for _, c := range candidates {
@@ -431,6 +491,9 @@ func LoadDynamicRulesFile(filePath string) (*DynamicRulesState, error) {
 	candidates := []string{
 		filepath.Clean(filepath.Join(cpaRoot, subRel)),
 		filepath.Clean(filepath.Join(cpaRoot, baseName)),
+		filepath.Clean(filepath.Join("/CLIProxyAPI", subRel)),
+		filepath.Clean(filepath.Join("/CLIProxyAPI", baseName)),
+		filepath.Clean(filepath.Join("/CLIProxyAPI/data", baseName)),
 	}
 	if wd, err := os.Getwd(); err == nil && wd != "" {
 		candidates = append(candidates, filepath.Clean(filepath.Join(wd, subRel)), filepath.Clean(filepath.Join(wd, baseName)))
@@ -512,9 +575,31 @@ func ReadHostConfigAPIKeys(configPath string) []string {
 	return out
 }
 
+func valueToYAMLNode(v any) (*yaml.Node, error) {
+	raw, err := yaml.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		return nil, err
+	}
+	if len(doc.Content) == 0 {
+		return nil, errors.New("empty yaml node")
+	}
+	return doc.Content[0], nil
+}
+
 // WriteHostConfigAPIKeys updates the global `api-keys` list in CLIProxyAPI's config.yaml on disk
 // while preserving all other YAML nodes and comments.
 func WriteHostConfigAPIKeys(configPath string, keys []string) error {
+	return WriteHostConfigState(configPath, keys, nil)
+}
+
+// WriteHostConfigState synchronizes global `api-keys`, `default_policy`, and `keys` into CLIProxyAPI's config.yaml.
+// This guarantees that even if `key_guard_rules.json` is missing or cleared across container restarts,
+// CLIProxyAPI and the plugin will ALWAYS restore the exact remarks, model whitelists, and default policies on startup.
+func WriteHostConfigState(configPath string, keys []string, state *DynamicRulesState) error {
 	resolvedPath := FindHostConfigFile(configPath)
 	raw, err := os.ReadFile(resolvedPath)
 	if err != nil {
@@ -532,6 +617,7 @@ func WriteHostConfigAPIKeys(configPath string, keys []string) error {
 	}
 	rootMap := doc.Content[0]
 
+	// 1. Update api-keys list
 	seqNode := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
 	seen := make(map[string]struct{}, len(keys))
 	for _, rawKey := range keys {
@@ -574,6 +660,109 @@ func WriteHostConfigAPIKeys(configPath string, keys []string) error {
 			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "api-keys"},
 			seqNode,
 		)
+	}
+
+	// 2. Synchronize plugins.configs.cpa-plugin-key-manager
+	if state != nil {
+		var pluginsMap *yaml.Node
+		for i := 0; i+1 < len(rootMap.Content); i += 2 {
+			if rootMap.Content[i].Value == "plugins" && rootMap.Content[i+1].Kind == yaml.MappingNode {
+				pluginsMap = rootMap.Content[i+1]
+				break
+			}
+		}
+		if pluginsMap == nil {
+			pluginsMap = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+			rootMap.Content = append(rootMap.Content,
+				&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "plugins"},
+				pluginsMap,
+			)
+		}
+
+		var configsMap *yaml.Node
+		for i := 0; i+1 < len(pluginsMap.Content); i += 2 {
+			if pluginsMap.Content[i].Value == "configs" && pluginsMap.Content[i+1].Kind == yaml.MappingNode {
+				configsMap = pluginsMap.Content[i+1]
+				break
+			}
+		}
+		if configsMap == nil {
+			configsMap = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+			pluginsMap.Content = append(pluginsMap.Content,
+				&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "configs"},
+				configsMap,
+			)
+		}
+
+		var pluginConfigMap *yaml.Node
+		for i := 0; i+1 < len(configsMap.Content); i += 2 {
+			if configsMap.Content[i].Value == PluginID && configsMap.Content[i+1].Kind == yaml.MappingNode {
+				pluginConfigMap = configsMap.Content[i+1]
+				break
+			}
+		}
+		if pluginConfigMap == nil {
+			pluginConfigMap = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+			configsMap.Content = append(configsMap.Content,
+				&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: PluginID},
+				pluginConfigMap,
+			)
+		}
+
+		// Ensure enabled: true
+		hasEnabled := false
+		for i := 0; i+1 < len(pluginConfigMap.Content); i += 2 {
+			if pluginConfigMap.Content[i].Value == "enabled" {
+				hasEnabled = true
+				break
+			}
+		}
+		if !hasEnabled {
+			pluginConfigMap.Content = append(pluginConfigMap.Content,
+				&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "enabled"},
+				&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: "true"},
+			)
+		}
+
+		// Update default_policy
+		if state.DefaultPolicy != nil {
+			if dpVal, errDP := valueToYAMLNode(state.DefaultPolicy); errDP == nil && dpVal != nil {
+				updatedDP := false
+				for i := 0; i+1 < len(pluginConfigMap.Content); i += 2 {
+					if pluginConfigMap.Content[i].Value == "default_policy" {
+						pluginConfigMap.Content[i+1] = dpVal
+						updatedDP = true
+						break
+					}
+				}
+				if !updatedDP {
+					pluginConfigMap.Content = append(pluginConfigMap.Content,
+						&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "default_policy"},
+						dpVal,
+					)
+				}
+			}
+		}
+
+		// Update keys
+		if len(state.Keys) > 0 {
+			if keysVal, errKeys := valueToYAMLNode(state.Keys); errKeys == nil && keysVal != nil {
+				updatedKeyList := false
+				for i := 0; i+1 < len(pluginConfigMap.Content); i += 2 {
+					if pluginConfigMap.Content[i].Value == "keys" {
+						pluginConfigMap.Content[i+1] = keysVal
+						updatedKeyList = true
+						break
+					}
+				}
+				if !updatedKeyList {
+					pluginConfigMap.Content = append(pluginConfigMap.Content,
+						&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "keys"},
+						keysVal,
+					)
+				}
+			}
+		}
 	}
 
 	var buf strings.Builder

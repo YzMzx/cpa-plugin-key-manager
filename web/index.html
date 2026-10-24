@@ -2035,20 +2035,24 @@
     };
 
     try {
-      const currentKeys = ((overviewData && overviewData.keys) || []).map(k => k.api_key);
-      let nextCpaKeys = currentKeys.slice();
-      if (origKey && origKey !== apiKey) {
-        nextCpaKeys = nextCpaKeys.filter(k => k !== origKey);
-      }
-      if (!nextCpaKeys.includes(apiKey)) {
-        nextCpaKeys.push(apiKey);
-      }
-      await writeCPAGlobalKeysSilent(nextCpaKeys);
+      const isNewOrRenamed = !origKey || origKey !== apiKey;
 
       await callManagementAPI(API_KEYS_CRUD, {
         method: "POST",
         body: JSON.stringify(Object.assign({ orig_key: origKey }, payload))
       });
+
+      if (isNewOrRenamed) {
+        const currentKeys = ((overviewData && overviewData.keys) || []).map(k => k.api_key);
+        let nextCpaKeys = currentKeys.slice();
+        if (origKey && origKey !== apiKey) {
+          nextCpaKeys = nextCpaKeys.filter(k => k !== origKey);
+        }
+        if (!nextCpaKeys.includes(apiKey)) {
+          nextCpaKeys.push(apiKey);
+        }
+        await writeCPAGlobalKeysSilent(nextCpaKeys);
+      }
 
       closeKeyModal();
       showToast("API Key 与管控规则已保存并同步至 CPA 全局配置");
@@ -2078,11 +2082,11 @@
   async function deleteKeyRule(apiKey) {
     if (!confirm(`确定要删除 API Key [${maskKeyStr(apiKey)}] 吗？`)) return;
     try {
-      const currentKeys = ((overviewData && overviewData.keys) || []).map(k => k.api_key).filter(k => k !== apiKey);
-      await writeCPAGlobalKeysSilent(currentKeys);
       await callManagementAPI(API_KEYS_CRUD + "?api_key=" + encodeURIComponent(apiKey), {
         method: "DELETE"
       });
+      const currentKeys = ((overviewData && overviewData.keys) || []).map(k => k.api_key).filter(k => k !== apiKey);
+      await writeCPAGlobalKeysSilent(currentKeys);
       showToast("已从 CPA 全局配置与插件中删除该 API Key");
       await loadAdminOverview();
     } catch (err) {

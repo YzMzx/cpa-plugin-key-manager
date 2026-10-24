@@ -213,6 +213,75 @@ plugins:
 	}
 }
 
+func TestWriteHostConfigStateFull(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "config.yaml")
+	sampleYAML := `port: 8317
+api-keys:
+  - sk-old
+plugins:
+  enabled: true
+  dir: ./plugins
+  configs:
+    cpa-plugin-key-manager:
+      enabled: true
+      priority: 100
+      storage:
+        usage_file: "./data/key_usage_stats.json"
+        rules_file: "./data/key_guard_rules.json"
+`
+	if err := os.WriteFile(cfgPath, []byte(sampleYAML), 0644); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+
+	enabled := true
+	state := &DynamicRulesState{
+		Version: 1,
+		DefaultPolicy: &DefaultPolicyConfig{
+			AllowUnlistedKeys: &enabled,
+			MaxConcurrency:    12,
+			AllowedModels:     []string{"gpt-4o", "gemini-3.8-flash-high"},
+		},
+		Keys: []KeyRuleConfig{
+			{
+				APIKey:         "sk-new-1",
+				Name:           "Production Main",
+				Enabled:        &enabled,
+				MaxConcurrency: 5,
+				AllowedModels:  []string{"gpt-4o"},
+			},
+		},
+	}
+
+	if err := WriteHostConfigState(cfgPath, []string{"sk-new-1"}, state); err != nil {
+		t.Fatalf("WriteHostConfigState failed: %v", err)
+	}
+
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read failed: %v", err)
+	}
+	t.Logf("Resulting YAML:\n%s", string(data))
+
+	// Re-parse with ParseConfigYAML
+	parsedCfg, err := ParseConfigYAML(data)
+	if err != nil {
+		t.Fatalf("ParseConfigYAML failed: %v", err)
+	}
+	if len(parsedCfg.Keys) != 1 {
+		t.Fatalf("expected 1 key, got %d", len(parsedCfg.Keys))
+	}
+	if parsedCfg.Keys[0].Name != "Production Main" {
+		t.Fatalf("expected 'Production Main', got %s", parsedCfg.Keys[0].Name)
+	}
+	if len(parsedCfg.Keys[0].AllowedModels) != 1 || parsedCfg.Keys[0].AllowedModels[0] != "gpt-4o" {
+		t.Fatalf("expected ['gpt-4o'], got %v", parsedCfg.Keys[0].AllowedModels)
+	}
+	if parsedCfg.DefaultPolicy.MaxConcurrency != 12 {
+		t.Fatalf("expected DefaultPolicy.MaxConcurrency 12, got %d", parsedCfg.DefaultPolicy.MaxConcurrency)
+	}
+}
+
 func TestFullPluginLifecycleAndGovernance(t *testing.T) {
 	tmpDir := t.TempDir()
 	usageFile := filepath.Join(tmpDir, "usage_stats.json")
@@ -737,6 +806,10 @@ func TestResolveStoragePathAndHostConfigFile(t *testing.T) {
 }
 
 func TestBuildAdminOverviewPreservesAllowedModelsWhenAuthModelsEmpty(t *testing.T) {
+	tmpDir := t.TempDir()
+	rulesFile := filepath.Join(tmpDir, "key_guard_rules.json")
+	usageFile := filepath.Join(tmpDir, "key_usage_stats.json")
+
 	mgr := NewManager(func(method string, payload []byte) ([]byte, error) {
 		return okEnvelope(struct{}{})
 	})
@@ -744,6 +817,9 @@ func TestBuildAdminOverviewPreservesAllowedModelsWhenAuthModelsEmpty(t *testing.
 
 	regReq, _ := json.Marshal(lifecycleRequest{
 		ConfigYAML: []byte(`
+storage:
+  rules_file: "` + filepath.ToSlash(rulesFile) + `"
+  usage_file: "` + filepath.ToSlash(usageFile) + `"
 default_policy:
   allowed_models: ["gpt-4o", "claude-3-5-sonnet"]
 keys:

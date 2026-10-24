@@ -92,6 +92,18 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+if [ -z "${CPA_DIR:-}" ] && [ "$cpa_dir" = "$(pwd)" ]; then
+  if [ ! -f "$cpa_dir/config.yaml" ] && [ ! -d "$cpa_dir/plugins" ]; then
+    for cand_dir in "/CLIProxyAPI" "/root/CLIProxyAPI" "/opt/CLIProxyAPI" "/etc/CLIProxyAPI" "$HOME/CLIProxyAPI" "$HOME/.cli-proxy-api"; do
+      if [ -f "$cand_dir/config.yaml" ] || [ -d "$cand_dir/plugins" ]; then
+        cpa_dir="$cand_dir"
+        info "Auto-detected CLIProxyAPI directory: ${cpa_dir}"
+        break
+      fi
+    done
+  fi
+fi
+
 checksum_file() {
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum "$1" | awk '{print $1}'
@@ -254,7 +266,15 @@ init_plugin_data() {
 
   rules_file="${data_dir}/key_guard_rules.json"
   if [ ! -f "$rules_file" ] || [ "$reset_data" -eq 1 ]; then
-    cat > "${rules_file}.tmp.$$" <<EOF
+    if [ "$reset_data" -eq 0 ]; then
+      for fallback in "/CLIProxyAPI/data/key_guard_rules.json" "$HOME/.cli-proxy-api/key_guard_rules.json" "$HOME/.cli-proxy-api/data/key_guard_rules.json"; do
+        if [ -f "$fallback" ] && [ "$fallback" != "$rules_file" ] && [ -s "$fallback" ]; then
+          cp -f "$fallback" "$rules_file" 2>/dev/null && info "Preserved existing rules from candidate: ${fallback}" && break
+        fi
+      done
+    fi
+    if [ ! -f "$rules_file" ] || [ "$reset_data" -eq 1 ]; then
+      cat > "${rules_file}.tmp.$$" <<EOF
 {
   "version": 1,
   "updated_at": "${now_utc}",
@@ -271,23 +291,33 @@ init_plugin_data() {
   "keys": []
 }
 EOF
-    mv -f "${rules_file}.tmp.$$" "$rules_file"
-    info "Initialized dynamic rules store: ${rules_file}"
+      mv -f "${rules_file}.tmp.$$" "$rules_file"
+      info "Initialized dynamic rules store: ${rules_file}"
+    fi
   else
     info "Preserved existing dynamic rules store: ${rules_file}"
   fi
 
   usage_file="${data_dir}/key_usage_stats.json"
   if [ ! -f "$usage_file" ] || [ "$reset_data" -eq 1 ]; then
-    cat > "${usage_file}.tmp.$$" <<EOF
+    if [ "$reset_data" -eq 0 ]; then
+      for fallback in "/CLIProxyAPI/data/key_usage_stats.json" "$HOME/.cli-proxy-api/key_usage_stats.json"; do
+        if [ -f "$fallback" ] && [ "$fallback" != "$usage_file" ] && [ -s "$fallback" ]; then
+          cp -f "$fallback" "$usage_file" 2>/dev/null && info "Preserved existing usage stats from candidate: ${fallback}" && break
+        fi
+      done
+    fi
+    if [ ! -f "$usage_file" ] || [ "$reset_data" -eq 1 ]; then
+      cat > "${usage_file}.tmp.$$" <<EOF
 {
   "version": 1,
   "updated_at": "${now_utc}",
   "keys": {}
 }
 EOF
-    mv -f "${usage_file}.tmp.$$" "$usage_file"
-    info "Initialized token usage store: ${usage_file}"
+      mv -f "${usage_file}.tmp.$$" "$usage_file"
+      info "Initialized token usage store: ${usage_file}"
+    fi
   else
     info "Preserved existing token usage store: ${usage_file}"
   fi

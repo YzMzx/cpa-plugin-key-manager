@@ -21,7 +21,7 @@ import (
 
 const (
 	PluginID      = "cpa-plugin-key-manager"
-	PluginVersion = "0.5.5"
+	PluginVersion = "0.5.6"
 	PluginAuthor  = "YzMzx"
 	PluginRepo    = "https://github.com/YzMzx/cpa-plugin-key-manager"
 	PluginLogoSVG = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%238b8680'/><path d='M24 22a10 10 0 1 0 9.5 13H42v5h6v-5h4v-6H33.5A10 10 0 0 0 24 22zm0 6a4 4 0 1 1 0 8 4 4 0 0 1 0-8z' fill='%23fff'/></svg>"
@@ -194,6 +194,41 @@ func (m *Manager) Configure(raw []byte) error {
 			"error": errDyn.Error(),
 		})
 		dynState = &DynamicRulesState{Version: 1, CustomPrices: make(map[string]pricing.ModelPrice)}
+	}
+
+	// 1. Seed synchronization: If disk rules file has no keys, but config.yaml seed has keys,
+	// restore dynamic rules state from seedCfg
+	if len(dynState.Keys) == 0 && len(seedCfg.Keys) > 0 {
+		dynState.Keys = make([]KeyRuleConfig, len(seedCfg.Keys))
+		for i, k := range seedCfg.Keys {
+			dynState.Keys[i] = cloneKeyRule(k)
+		}
+		if dynState.DefaultPolicy == nil && (seedCfg.DefaultPolicy.AllowUnlistedKeys != nil || len(seedCfg.DefaultPolicy.AllowedModels) > 0) {
+			dp := seedCfg.DefaultPolicy
+			dynState.DefaultPolicy = &dp
+		}
+		_ = SaveDynamicRulesFile(seedCfg.Storage.RulesFile, dynState)
+	}
+
+	// 2. Hot-reload safety: If in-memory state already has dynamic rules (e.g. during plugin.reconfigure),
+	// make sure we never erase in-flight rules that may not yet be on disk
+	m.mu.RLock()
+	existingDyn := m.dynamicState
+	m.mu.RUnlock()
+	if existingDyn != nil && len(existingDyn.Keys) > 0 {
+		diskKeyMap := make(map[string]struct{}, len(dynState.Keys))
+		for _, dk := range dynState.Keys {
+			diskKeyMap[dk.APIKey] = struct{}{}
+		}
+		for _, ek := range existingDyn.Keys {
+			if _, exists := diskKeyMap[ek.APIKey]; !exists {
+				dynState.Keys = append(dynState.Keys, cloneKeyRule(ek))
+			}
+		}
+		if dynState.DefaultPolicy == nil && existingDyn.DefaultPolicy != nil {
+			dp := *existingDyn.DefaultPolicy
+			dynState.DefaultPolicy = &dp
+		}
 	}
 
 	hostKeys := ReadHostConfigAPIKeys("")
@@ -1085,8 +1120,8 @@ func (m *Manager) UpsertKeyRuleFromJSON(rawBody []byte) (any, error) {
 	}
 	m.mu.Unlock()
 
-	if errHost := WriteHostConfigAPIKeys("", allKeys); errHost != nil {
-		m.host.Log("warn", "failed to write host config api-keys", map[string]any{
+	if errHost := WriteHostConfigState("", allKeys, m.dynamicState); errHost != nil {
+		m.host.Log("warn", "failed to write host config api-keys and plugin state", map[string]any{
 			"error": errHost.Error(),
 		})
 	}
@@ -1149,7 +1184,7 @@ func (m *Manager) DeleteKeyRule(apiKey string) error {
 	}
 	m.mu.Unlock()
 
-	if errHost := WriteHostConfigAPIKeys("", allKeys); errHost != nil {
+	if errHost := WriteHostConfigState("", allKeys, m.dynamicState); errHost != nil {
 		m.host.Log("warn", "failed to write host config api-keys on delete", map[string]any{
 			"error": errHost.Error(),
 		})
@@ -1192,7 +1227,17 @@ func (m *Manager) SaveDefaultPolicyFromJSON(rawBody []byte) (any, error) {
 			"error": errSave.Error(),
 		})
 	}
+	allKeys := make([]string, 0, len(m.cfg.Keys))
+	for _, k := range m.cfg.Keys {
+		allKeys = append(allKeys, k.APIKey)
+	}
 	m.mu.Unlock()
+
+	if errHost := WriteHostConfigState("", allKeys, m.dynamicState); errHost != nil {
+		m.host.Log("warn", "failed to write host config default policy", map[string]any{
+			"error": errHost.Error(),
+		})
+	}
 
 	if errSave != nil {
 		return nil, errSave
