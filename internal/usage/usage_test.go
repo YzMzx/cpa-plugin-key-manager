@@ -406,3 +406,102 @@ func modelKeys(models map[string]*ModelStats) []string {
 	}
 	return out
 }
+
+// TestAccountStatsGroupByProviderAndCredential verifies the account/provider
+// dimension used by the dashboard's "by account & provider" list, including its
+// persistence roundtrip.
+func TestAccountStatsGroupByProviderAndCredential(t *testing.T) {
+	eng := pricing.NewEngine()
+	eng.SetCustomPrices(map[string]pricing.ModelPrice{
+		"gemini-3.8-flash-high": {Input: 1.0, Output: 2.0},
+	}, nil)
+
+	usageFile := filepath.Join(t.TempDir(), "usage.json")
+	store := NewStore(eng)
+	if err := store.ConfigurePersistence(usageFile, time.Hour); err != nil {
+		t.Fatalf("configure store: %v", err)
+	}
+
+	feed := func(reqID, authID, authIndex string, input, output int64) {
+		// The plugin opens a tracker at intercept time; the host record arrives
+		// later carrying the same request id plus the credential that served it.
+		store.BeginRequest(reqID, "sk-acct", "Account Key", "gemini-3.8-flash-high", "gemini-3.8-flash-high", "openai", false)
+		store.ObserveHostUsageRecord(pluginapi.UsageRecord{
+			RequestID:     reqID,
+			Provider:      "antigravity",
+			AuthID:        authID,
+			AuthIndex:     authIndex,
+			AuthType:      "oauth",
+			Model:         "gemini-3.8-flash-high",
+			ResponseModel: "gemini-3.8-flash-n",
+			APIKey:        "sk-acct",
+			Detail: pluginapi.UsageDetail{
+				InputTokens:  input,
+				OutputTokens: output,
+				TotalTokens:  input + output,
+			},
+		}, "Account Key")
+	}
+	feed("req-a", "antigravity-sly538876@gmail.com.json", "idx-a", 1000, 500)
+	feed("req-b", "antigravity-sly538876@gmail.com.json", "idx-a", 200, 100)
+	feed("req-c", "antigravity-yzmzxa@gmail.com.json", "idx-b", 400, 400)
+
+	snap := store.Snapshot("", "", nil, nil, nil, false)
+	if len(snap.Accounts) != 2 {
+		t.Fatalf("expected 2 account buckets, got %d: %v", len(snap.Accounts), snap.Accounts)
+	}
+
+	var first, second *AccountStats
+	for _, acct := range snap.Accounts {
+		switch acct.AuthID {
+		case "antigravity-sly538876@gmail.com.json":
+			first = acct
+		case "antigravity-yzmzxa@gmail.com.json":
+			second = acct
+		}
+	}
+	if first == nil || second == nil {
+		t.Fatalf("account buckets missing credential ids: %+v", snap.Accounts)
+	}
+	if first.Provider != "antigravity" || first.AuthType != "oauth" {
+		t.Fatalf("provider/type not captured: %+v", first)
+	}
+	if first.Requests != 2 || first.SuccessRequests != 2 {
+		t.Fatalf("expected 2 requests on first credential, got %+v", first)
+	}
+	if first.InputTokens != 1200 || first.OutputTokens != 600 || first.TotalTokens != 1800 {
+		t.Fatalf("token totals wrong for first credential: %+v", first)
+	}
+	if second.Requests != 1 || second.TotalTokens != 800 {
+		t.Fatalf("token totals wrong for second credential: %+v", second)
+	}
+	if first.LastModel != "gemini-3.8-flash-n" {
+		t.Fatalf("last served model not recorded: %q", first.LastModel)
+	}
+	// 1200*1.0 + 600*2.0 = 2400 nano-units of $0.000001 → $0.002400
+	if first.CostFormatted != "$0.002400" {
+		t.Fatalf("unexpected cost for first credential: %s", first.CostFormatted)
+	}
+	if errFlush := store.FlushNow(); errFlush != nil {
+		t.Fatalf("flush: %v", errFlush)
+	}
+	_ = store.Close()
+
+	reloaded := NewStore(eng)
+	if err := reloaded.ConfigurePersistence(usageFile, time.Hour); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	defer reloaded.Close()
+
+	reloadedSnap := reloaded.Snapshot("", "", nil, nil, nil, false)
+	if len(reloadedSnap.Accounts) != 2 {
+		t.Fatalf("account buckets did not survive persistence: %+v", reloadedSnap.Accounts)
+	}
+	var survived int64
+	for _, acct := range reloadedSnap.Accounts {
+		survived += acct.TotalTokens
+	}
+	if survived != 2600 {
+		t.Fatalf("account token totals lost across reload: %d", survived)
+	}
+}

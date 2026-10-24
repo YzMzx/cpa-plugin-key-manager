@@ -957,6 +957,38 @@
 
     <div class="card">
       <div class="card-header">
+        <div>
+          <h2 class="card-title">按账号 & 提供商 Token 用量</h2>
+          <div style="font-size:12px;color:var(--text-tertiary);margin-top:4px">按上游实际服务的凭据（账号）与提供商聚合；来源为 CLIProxyAPI <code class="mono">usage.handle</code> 的 AuthID / Provider</div>
+        </div>
+        <div class="input-row">
+          <input type="text" class="input" style="width:200px" id="dashAccountSearch" placeholder="搜索账号 / 提供商..." oninput="renderDashboardTables()">
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>提供商</th>
+              <th>账号凭据</th>
+              <th>请求数</th>
+              <th>Input Tokens</th>
+              <th>Output Tokens</th>
+              <th>Cache Tokens</th>
+              <th>总 Tokens</th>
+              <th>费用</th>
+              <th>最后使用</th>
+            </tr>
+          </thead>
+          <tbody id="dashAccountTableBody">
+            <tr><td colspan="9" style="text-align:center;color:var(--text-tertiary)">加载中...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
         <h2 class="card-title">按模型全局 Token 用量排行</h2>
       </div>
       <div class="table-wrap">
@@ -2246,6 +2278,55 @@
         </tr>`;
       }).join("");
     }
+
+    renderAccountUsageTable();
+  }
+
+  // ==================== USAGE BY UPSTREAM ACCOUNT & PROVIDER ====================
+  function renderAccountUsageTable() {
+    const tbody = document.getElementById("dashAccountTableBody");
+    if (!tbody) return;
+    const accounts = (overviewData && overviewData.usage && overviewData.usage.accounts) || {};
+    const q = (document.getElementById("dashAccountSearch").value || "").toLowerCase().trim();
+
+    const rows = Object.values(accounts)
+      .filter(a => {
+        if (!a) return false;
+        if (!q) return true;
+        return (a.auth_id || "").toLowerCase().includes(q) ||
+          (a.provider || "").toLowerCase().includes(q) ||
+          (a.last_model || "").toLowerCase().includes(q);
+      })
+      .sort((a, b) => (b.total_tokens || 0) - (a.total_tokens || 0) || (b.requests || 0) - (a.requests || 0));
+
+    if (rows.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;color:var(--text-tertiary)">暂无账号维度的用量数据（需上游回报 usage.handle 后自动累计）</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = rows.map(a => {
+      const authID = a.auth_id || a.auth_index || "-";
+      const provider = a.provider || "unknown";
+      const modelHint = a.last_model
+        ? `<div style="font-size:11px;color:var(--text-tertiary)">最近模型: ${escapeHtml(a.last_model)}</div>`
+        : "";
+      const failed = a.failed_requests || 0;
+      const reqCell = `${fmtInt(a.requests)} (<span style="color:var(--text-secondary)">${fmtInt(a.success_requests)}</span>${failed > 0 ? `/<span style="color:var(--danger,#d9534f)">${fmtInt(failed)}</span>` : ""})`;
+      return `<tr>
+        <td class="cell-nowrap"><span class="tag plain mono">${escapeHtml(provider)}</span></td>
+        <td class="cell-nowrap">
+          <div class="mono" style="max-width:280px;overflow:hidden;text-overflow:ellipsis" title="${escapeHtml(authID)}">${escapeHtml(authID)}</div>
+          ${modelHint}
+        </td>
+        <td class="cell-nowrap mono">${reqCell}</td>
+        <td class="cell-nowrap mono">${fmtInt(a.input_tokens)}</td>
+        <td class="cell-nowrap mono">${fmtInt(a.output_tokens)} <span style="color:var(--text-tertiary)">(推理 ${fmtInt(a.reasoning_tokens)})</span></td>
+        <td class="cell-nowrap mono">${fmtInt(a.cache_read_tokens)} / ${fmtInt(a.cache_write_tokens)}</td>
+        <td class="cell-nowrap token-val">${fmtInt(a.total_tokens)}</td>
+        <td class="cell-nowrap mono">${escapeHtml(a.cost_formatted || "$0.000000")}</td>
+        <td class="cell-nowrap" style="font-size:11px;color:var(--text-tertiary)">${escapeHtml(a.last_request_at || "-")}</td>
+      </tr>`;
+    }).join("");
   }
 
   function toggleDashKeyExpand(rawKey) {

@@ -62,11 +62,36 @@ type KeyStats struct {
 	Models             map[string]*ModelStats `json:"models"`
 }
 
+// AccountStats aggregates usage for one upstream credential (provider + auth id).
+type AccountStats struct {
+	Provider         string  `json:"provider"`
+	AuthID           string  `json:"auth_id,omitempty"`
+	AuthIndex        string  `json:"auth_index,omitempty"`
+	AuthType         string  `json:"auth_type,omitempty"`
+	Requests         int64   `json:"requests"`
+	SuccessRequests  int64   `json:"success_requests"`
+	FailedRequests   int64   `json:"failed_requests"`
+	InputTokens      int64   `json:"input_tokens"`
+	OutputTokens     int64   `json:"output_tokens"`
+	ReasoningTokens  int64   `json:"reasoning_tokens"`
+	CacheReadTokens  int64   `json:"cache_read_tokens"`
+	CacheWriteTokens int64   `json:"cache_write_tokens"`
+	TotalTokens      int64   `json:"total_tokens"`
+	CostNanoUSD      int64   `json:"cost_nano_usd"`
+	CostUSD          float64 `json:"cost_usd"`
+	CostFormatted    string  `json:"cost_formatted"`
+	LastModel        string  `json:"last_model,omitempty"`
+	LastRequestAt    string  `json:"last_request_at,omitempty"`
+	// Models counts tokens per upstream-served model for this credential.
+	Models map[string]int64 `json:"models,omitempty"`
+}
+
 // PersistedSnapshot is the root JSON structure persisted to disk.
 type PersistedSnapshot struct {
-	Version   int                  `json:"version"`
-	UpdatedAt string               `json:"updated_at"`
-	Keys      map[string]*KeyStats `json:"keys"`
+	Version   int                      `json:"version"`
+	UpdatedAt string                   `json:"updated_at"`
+	Keys      map[string]*KeyStats     `json:"keys"`
+	Accounts  map[string]*AccountStats `json:"accounts,omitempty"`
 }
 
 // TrackedRequest holds in-flight and recently completed request state for deduplicating
@@ -88,13 +113,20 @@ type TrackedRequest struct {
 	BilledModel    string
 	CountedRequest bool
 	Failed         bool
+
+	// Upstream credential that actually served this request (from `usage.handle`).
+	Provider  string
+	AuthID    string
+	AuthIndex string
+	AuthType  string
 }
 
 // Store manages in-memory usage accounting, request deduplication, and atomic JSON persistence.
 type Store struct {
-	mu      sync.Mutex
-	pricing *pricing.Engine
-	keys    map[string]*KeyStats
+	mu       sync.Mutex
+	pricing  *pricing.Engine
+	keys     map[string]*KeyStats
+	accounts map[string]*AccountStats
 
 	// Active & recently completed request trackers (for coordinating request.complete and usage.handle)
 	byRequestID   map[string]*TrackedRequest
@@ -118,6 +150,7 @@ func NewStore(pricingEngine *pricing.Engine) *Store {
 	return &Store{
 		pricing:       pricingEngine,
 		keys:          make(map[string]*KeyStats),
+		accounts:      make(map[string]*AccountStats),
 		byRequestID:   make(map[string]*TrackedRequest),
 		byTraceID:     make(map[string]*TrackedRequest),
 		seenHostReqID: make(map[string]time.Time),
@@ -585,6 +618,10 @@ func (s *Store) ObserveHostUsageRecord(rec pluginapi.UsageRecord, keyName string
 			StartedAt:      rec.RequestedAt,
 			CompletedAt:    time.Now(),
 			Failed:         rec.Failed,
+			Provider:       strings.TrimSpace(rec.Provider),
+			AuthID:         strings.TrimSpace(rec.AuthID),
+			AuthIndex:      strings.TrimSpace(rec.AuthIndex),
+			AuthType:       strings.TrimSpace(rec.AuthType),
 		}
 		if tr.StartedAt.IsZero() {
 			tr.StartedAt = time.Now()
@@ -607,6 +644,18 @@ func (s *Store) ObserveHostUsageRecord(rec pluginapi.UsageRecord, keyName string
 	}
 	if rec.Alias != "" && tr.RequestedModel == "" {
 		tr.RequestedModel = strings.TrimSpace(rec.Alias)
+	}
+	if provider := strings.TrimSpace(rec.Provider); provider != "" {
+		tr.Provider = provider
+	}
+	if authID := strings.TrimSpace(rec.AuthID); authID != "" {
+		tr.AuthID = authID
+	}
+	if authIndex := strings.TrimSpace(rec.AuthIndex); authIndex != "" {
+		tr.AuthIndex = authIndex
+	}
+	if authType := strings.TrimSpace(rec.AuthType); authType != "" {
+		tr.AuthType = authType
 	}
 
 	// Merge host usage with interceptor usage (taking the more complete value per bucket)
@@ -680,6 +729,7 @@ func (s *Store) reconcileTrackerDeltaLocked(tr *TrackedRequest) {
 	}
 
 	ms := s.getOrCreateModelStatsLocked(ks, model)
+	acct := s.getOrCreateAccountStatsLocked(tr)
 	nowStr := time.Now().UTC().Format(time.RFC3339)
 
 	// 1. Apply request count once
@@ -690,9 +740,19 @@ func (s *Store) reconcileTrackerDeltaLocked(tr *TrackedRequest) {
 		if tr.Failed {
 			ks.FailedRequests++
 			ms.FailedRequests++
+			if acct != nil {
+				acct.FailedRequests++
+			}
 		} else {
 			ks.SuccessRequests++
 			ms.SuccessRequests++
+			if acct != nil {
+				acct.SuccessRequests++
+			}
+		}
+		if acct != nil {
+			acct.Requests++
+			acct.LastRequestAt = nowStr
 		}
 		ks.LastRequestAt = nowStr
 		ms.LastUsedAt = nowStr
@@ -765,7 +825,70 @@ func (s *Store) reconcileTrackerDeltaLocked(tr *TrackedRequest) {
 	ks.TotalCostFormatted = pricing.FormatUSD(ks.TotalCostNanoUSD)
 	ks.LastRequestAt = nowStr
 
+	// Update AccountStats (upstream credential + provider dimension)
+	if acct != nil {
+		acct.InputTokens += dIn
+		acct.OutputTokens += dOut
+		acct.ReasoningTokens += dReason
+		acct.CacheReadTokens += dRead
+		acct.CacheWriteTokens += dWrite
+		acct.TotalTokens += dTotal
+		acct.CostNanoUSD += costBreakdown.NanoUSD
+		acct.CostUSD = pricing.NanoToUSD(acct.CostNanoUSD)
+		acct.CostFormatted = pricing.FormatUSD(acct.CostNanoUSD)
+		acct.LastModel = model
+		acct.LastRequestAt = nowStr
+		if acct.Models == nil {
+			acct.Models = make(map[string]int64)
+		}
+		acct.Models[model] += dTotal
+	}
+
 	s.dirty = true
+}
+
+// accountBucketKey builds the stable identifier for one upstream credential.
+func accountBucketKey(provider, authID, authIndex string) string {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	authID = strings.TrimSpace(authID)
+	if authID == "" {
+		authID = strings.TrimSpace(authIndex)
+	}
+	if provider == "" && authID == "" {
+		return ""
+	}
+	return provider + "::" + authID
+}
+
+// getOrCreateAccountStatsLocked returns the account bucket for a tracked request,
+// or nil when the host did not report which credential served it.
+func (s *Store) getOrCreateAccountStatsLocked(tr *TrackedRequest) *AccountStats {
+	key := accountBucketKey(tr.Provider, tr.AuthID, tr.AuthIndex)
+	if key == "" {
+		return nil
+	}
+	if s.accounts == nil {
+		s.accounts = make(map[string]*AccountStats)
+	}
+	acct, ok := s.accounts[key]
+	if !ok || acct == nil {
+		acct = &AccountStats{
+			Provider:      strings.TrimSpace(tr.Provider),
+			AuthID:        strings.TrimSpace(tr.AuthID),
+			AuthIndex:     strings.TrimSpace(tr.AuthIndex),
+			AuthType:      strings.TrimSpace(tr.AuthType),
+			CostFormatted: "$0.000000",
+			Models:        make(map[string]int64),
+		}
+		s.accounts[key] = acct
+	}
+	if acct.AuthIndex == "" && tr.AuthIndex != "" {
+		acct.AuthIndex = strings.TrimSpace(tr.AuthIndex)
+	}
+	if acct.AuthType == "" && tr.AuthType != "" {
+		acct.AuthType = strings.TrimSpace(tr.AuthType)
+	}
+	return acct
 }
 
 // canonicalBillingModel picks the model name used as the statistics bucket. The
@@ -993,7 +1116,32 @@ func (s *Store) Snapshot(filterAPIKey, filterModel string, activeByKey map[strin
 		Version:   1,
 		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
 		Keys:      outKeys,
+		Accounts:  s.snapshotAccountsLocked(),
 	}
+}
+
+// snapshotAccountsLocked copies the account buckets for read-only delivery.
+func (s *Store) snapshotAccountsLocked() map[string]*AccountStats {
+	if len(s.accounts) == 0 {
+		return nil
+	}
+	out := make(map[string]*AccountStats, len(s.accounts))
+	for k, v := range s.accounts {
+		if v == nil {
+			continue
+		}
+		cp := *v
+		cp.CostUSD = pricing.NanoToUSD(cp.CostNanoUSD)
+		cp.CostFormatted = pricing.FormatUSD(cp.CostNanoUSD)
+		if len(v.Models) > 0 {
+			cp.Models = make(map[string]int64, len(v.Models))
+			for mk, mv := range v.Models {
+				cp.Models[mk] = mv
+			}
+		}
+		out[k] = &cp
+	}
+	return out
 }
 
 // Reset clears statistics either for a specific API Key or globally (when apiKey is empty).
@@ -1002,6 +1150,7 @@ func (s *Store) Reset(apiKey string) error {
 	s.mu.Lock()
 	if target == "" {
 		s.keys = make(map[string]*KeyStats)
+		s.accounts = make(map[string]*AccountStats)
 		s.byRequestID = make(map[string]*TrackedRequest)
 		s.byTraceID = make(map[string]*TrackedRequest)
 		s.seenHostReqID = make(map[string]time.Time)
@@ -1037,6 +1186,7 @@ func (s *Store) FlushNow() error {
 		Version:   1,
 		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
 		Keys:      make(map[string]*KeyStats, len(s.keys)),
+		Accounts:  make(map[string]*AccountStats, len(s.accounts)),
 	}
 	for k, v := range s.keys {
 		cp := *v
@@ -1050,6 +1200,21 @@ func (s *Store) FlushNow() error {
 			cp.Models[mk] = &mcp
 		}
 		snap.Keys[k] = &cp
+	}
+	for k, v := range s.accounts {
+		if v == nil {
+			continue
+		}
+		acp := *v
+		acp.CostUSD = pricing.NanoToUSD(acp.CostNanoUSD)
+		acp.CostFormatted = pricing.FormatUSD(acp.CostNanoUSD)
+		if len(v.Models) > 0 {
+			acp.Models = make(map[string]int64, len(v.Models))
+			for mk, mv := range v.Models {
+				acp.Models[mk] = mv
+			}
+		}
+		snap.Accounts[k] = &acp
 	}
 	s.dirty = false
 	s.mu.Unlock()
@@ -1152,6 +1317,29 @@ func (s *Store) loadFromDisk(filePath string) error {
 		ks.TotalCostUSD = pricing.NanoToUSD(ks.TotalCostNanoUSD)
 		ks.TotalCostFormatted = pricing.FormatUSD(ks.TotalCostNanoUSD)
 		s.keys[ks.APIKey] = ks
+	}
+	if s.accounts == nil {
+		s.accounts = make(map[string]*AccountStats)
+	}
+	for k, acct := range snap.Accounts {
+		if acct == nil {
+			cleanedDisk = true
+			continue
+		}
+		key := strings.TrimSpace(k)
+		if key == "" {
+			key = accountBucketKey(acct.Provider, acct.AuthID, acct.AuthIndex)
+		}
+		if key == "" {
+			cleanedDisk = true
+			continue
+		}
+		acct.CostUSD = pricing.NanoToUSD(acct.CostNanoUSD)
+		acct.CostFormatted = pricing.FormatUSD(acct.CostNanoUSD)
+		if acct.Models == nil {
+			acct.Models = make(map[string]int64)
+		}
+		s.accounts[key] = acct
 	}
 	if cleanedDisk {
 		s.dirty = true
