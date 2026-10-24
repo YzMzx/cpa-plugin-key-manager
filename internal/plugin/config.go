@@ -848,16 +848,59 @@ func UsageMirrorFiles(configured string) []string {
 	return out
 }
 
-// CleanupLegacyAuthMirrors removes plugin state files that older releases left
-// inside CLIProxyAPI's auth directory as `*.json`. CLIProxyAPI lists them as
-// credentials with a path separator in the ID, which cannot be deleted from the
-// dashboard, so they must disappear after a successful migration.
-func CleanupLegacyAuthMirrors() {
-	for _, baseName := range []string{"key_guard_rules.json", "key_usage_stats.json"} {
-		for _, legacy := range legacyAuthMirrorPaths(baseName) {
-			if info, errStat := os.Stat(legacy); errStat == nil && !info.IsDir() {
-				_ = os.Remove(legacy)
+// LegacyUsageMirrorFiles returns read-only usage snapshot locations used by older
+// releases. They are restored from and only removed after a successor snapshot has
+// been written, so a migration can never destroy the only surviving copy.
+func LegacyUsageMirrorFiles(configured string) []string {
+	configuredClean := filepath.Clean(strings.TrimSpace(configured))
+	out := make([]string, 0, 4)
+	for _, path := range UsageFileCandidates(configured) {
+		if path == configuredClean || !isLegacyAuthMirror(path) {
+			continue
+		}
+		out = append(out, path)
+	}
+	return out
+}
+
+// UsageFileReport describes each usage-snapshot location for live diagnostics.
+func UsageFileReport(configured string) []map[string]any {
+	reports := make([]map[string]any, 0, 8)
+	for _, path := range UsageFileCandidates(configured) {
+		entry := map[string]any{"path": path, "exists": false}
+		info, errStat := os.Stat(path)
+		if errStat != nil || info.IsDir() {
+			reports = append(reports, entry)
+			continue
+		}
+		entry["exists"] = true
+		entry["size"] = info.Size()
+		entry["mtime"] = info.ModTime().UTC().Format(time.RFC3339)
+		if raw, errRead := os.ReadFile(path); errRead == nil {
+			var snap struct {
+				UpdatedAt string                     `json:"updated_at"`
+				Keys      map[string]json.RawMessage `json:"keys"`
 			}
+			if errUnmarshal := json.Unmarshal(raw, &snap); errUnmarshal == nil {
+				entry["keys"] = len(snap.Keys)
+				entry["updated_at"] = snap.UpdatedAt
+			}
+		}
+		entry["legacy"] = isLegacyAuthMirror(path)
+		reports = append(reports, entry)
+	}
+	return reports
+}
+
+// CleanupLegacyAuthMirrors removes the rules mirror files that older releases left
+// inside CLIProxyAPI's auth directory as `*.json`. CLIProxyAPI lists them as
+// credentials whose ID contains a path separator, so they cannot be deleted from
+// the dashboard. Usage mirrors are cleaned by the usage store after a successful
+// snapshot write (see Store.SetLegacyMirrorFiles).
+func CleanupLegacyAuthMirrors() {
+	for _, legacy := range legacyAuthMirrorPaths("key_guard_rules.json") {
+		if info, errStat := os.Stat(legacy); errStat == nil && !info.IsDir() {
+			_ = os.Remove(legacy)
 		}
 	}
 }

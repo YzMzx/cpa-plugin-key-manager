@@ -278,3 +278,61 @@ func TestUsageMirrorSurvivesEphemeralTarget(t *testing.T) {
 		t.Fatalf("restored snapshot was not written back to the configured path: %v", errStat)
 	}
 }
+
+// TestLegacyUsageMirrorIsMigratedNotDeleted guards the 0.5.9 migration defect: the
+// legacy `.json` snapshot was deleted before its content had been adopted, so the
+// billing history vanished on the next container restart.
+func TestLegacyUsageMirrorIsMigratedNotDeleted(t *testing.T) {
+	tmpDir := t.TempDir()
+	target := filepath.Join(tmpDir, "data", "key_usage_stats.json")
+	authDir := filepath.Join(tmpDir, "auths")
+	legacy := filepath.Join(authDir, "key-manager", "key_usage_stats.json")
+	successor := filepath.Join(authDir, "key-manager", "key_usage_stats.state")
+
+	if err := os.MkdirAll(filepath.Dir(legacy), 0o755); err != nil {
+		t.Fatalf("mkdir legacy dir: %v", err)
+	}
+	legacySnapshot := `{
+  "version": 1,
+  "updated_at": "2026-10-24T10:40:00Z",
+  "keys": {
+    "sk-history": {
+      "api_key": "sk-history",
+      "models": {
+        "gpt-4o": {
+          "model": "gpt-4o",
+          "requests": 42,
+          "success_requests": 42,
+          "input_tokens": 12345,
+          "output_tokens": 678,
+          "total_tokens": 13023
+        }
+      }
+    }
+  }
+}`
+	if err := os.WriteFile(legacy, []byte(legacySnapshot), 0o644); err != nil {
+		t.Fatalf("write legacy snapshot: %v", err)
+	}
+
+	eng := pricing.NewEngine()
+	store := NewStore(eng)
+	store.SetMirrorFiles([]string{successor})
+	store.SetLegacyMirrorFiles([]string{legacy})
+	if err := store.ConfigurePersistence(target, time.Hour); err != nil {
+		t.Fatalf("configure store: %v", err)
+	}
+	defer store.Close()
+
+	snap := store.Snapshot("sk-history", "", nil, nil, nil, false)
+	stats := snap.Keys["sk-history"]
+	if stats == nil || stats.TotalRequests != 42 || stats.TotalTokens != 13023 {
+		t.Fatalf("legacy usage snapshot was not adopted: %+v", stats)
+	}
+	if info, errStat := os.Stat(successor); errStat != nil || info.Size() == 0 {
+		t.Fatalf("successor snapshot was not written before cleanup: %v", errStat)
+	}
+	if _, errStat := os.Stat(legacy); !os.IsNotExist(errStat) {
+		t.Fatalf("legacy snapshot should be removed after migration, got err=%v", errStat)
+	}
+}

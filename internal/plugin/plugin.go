@@ -22,7 +22,7 @@ import (
 
 const (
 	PluginID      = "cpa-plugin-key-manager"
-	PluginVersion = "0.5.9"
+	PluginVersion = "0.5.10"
 	PluginAuthor  = "YzMzx"
 	PluginRepo    = "https://github.com/YzMzx/cpa-plugin-key-manager"
 	PluginLogoSVG = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%238b8680'/><path d='M24 22a10 10 0 1 0 9.5 13H42v5h6v-5h4v-6H33.5A10 10 0 0 0 24 22zm0 6a4 4 0 1 1 0 8 4 4 0 0 1 0-8z' fill='%23fff'/></svg>"
@@ -263,6 +263,7 @@ func (m *Manager) Configure(raw []byte) error {
 	// Durable usage mirrors keep billing history alive when the configured file
 	// lives in an ephemeral directory such as a container's ./data.
 	m.usageStore.SetMirrorFiles(UsageMirrorFiles(cfg.Storage.UsageFile))
+	m.usageStore.SetLegacyMirrorFiles(LegacyUsageMirrorFiles(cfg.Storage.UsageFile))
 	if errPersist := m.usageStore.ConfigurePersistence(cfg.Storage.UsageFile, flushDur); errPersist != nil {
 		m.host.Log("warn", "failed to load previous usage snapshot from disk", map[string]any{
 			"file":  cfg.Storage.UsageFile,
@@ -1153,6 +1154,7 @@ func (m *Manager) BuildPersistenceDiagnostics() map[string]any {
 		"rules_keys_in_memory":      stateKeys,
 		"usage_file":                usageFile,
 		"usage_candidates":          UsageFileCandidates(usageFile),
+		"usage_report":              UsageFileReport(usageFile),
 		"config_file":               configFile,
 		"config_plugin_keys_pinned": len(ReadHostConfigPluginKeys()) > 0,
 		"auth_dirs":                 existingAuthDirs(),

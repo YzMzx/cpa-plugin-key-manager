@@ -98,12 +98,13 @@ type Store struct {
 	byTraceID     map[string]*TrackedRequest
 	seenHostReqID map[string]time.Time
 
-	storageFile   string
-	mirrorFiles   []string
-	dirty         bool
-	flushInterval time.Duration
-	stopFlushCh   chan struct{}
-	flushStopped  chan struct{}
+	storageFile       string
+	mirrorFiles       []string
+	legacyMirrorFiles []string
+	dirty             bool
+	flushInterval     time.Duration
+	stopFlushCh       chan struct{}
+	flushStopped      chan struct{}
 }
 
 // NewStore creates a new usage Store backed by the given pricing Engine.
@@ -124,6 +125,24 @@ func NewStore(pricingEngine *pricing.Engine) *Store {
 // after every flush. This keeps billing history alive when the configured file
 // lives in an ephemeral directory (e.g. a container's ./data).
 func (s *Store) SetMirrorFiles(paths []string) {
+	cleaned := cleanPathList(paths)
+	s.mu.Lock()
+	s.mirrorFiles = cleaned
+	s.mu.Unlock()
+}
+
+// SetLegacyMirrorFiles registers older, read-only snapshot locations (for example
+// `*.json` files that a previous release wrote into CLIProxyAPI's auth dir). They
+// are used to restore history and are removed only after the successor snapshot
+// has been durably written.
+func (s *Store) SetLegacyMirrorFiles(paths []string) {
+	cleaned := cleanPathList(paths)
+	s.mu.Lock()
+	s.legacyMirrorFiles = cleaned
+	s.mu.Unlock()
+}
+
+func cleanPathList(paths []string) []string {
 	cleaned := make([]string, 0, len(paths))
 	seen := make(map[string]struct{}, len(paths))
 	for _, raw := range paths {
@@ -138,33 +157,49 @@ func (s *Store) SetMirrorFiles(paths []string) {
 		seen[path] = struct{}{}
 		cleaned = append(cleaned, path)
 	}
+	return cleaned
+}
+
+// restoreCandidates returns every path that may hold an older snapshot: live
+// mirrors first, then the read-only legacy locations.
+func (s *Store) restoreCandidates() (mirrors []string, legacy []string) {
 	s.mu.Lock()
-	s.mirrorFiles = cleaned
+	mirrors = append([]string(nil), s.mirrorFiles...)
+	legacy = append([]string(nil), s.legacyMirrorFiles...)
 	s.mu.Unlock()
+	return mirrors, legacy
 }
 
 // adoptMirrorIfEmpty restores the configured snapshot from the newest non-empty
 // mirror when the configured file is missing or empty (e.g. after the container
-// recreated its ./data directory).
+// recreated its ./data directory). Legacy locations participate so that an
+// upgrade never drops history before it has been migrated.
 func (s *Store) adoptMirrorIfEmpty(target string) {
 	if target == "" {
 		return
 	}
-	if info, errStat := os.Stat(target); errStat == nil && info.Size() > 0 {
-		return
+	// Keep the configured snapshot when it already carries history; only replace a
+	// missing or history-less file (e.g. the empty skeleton a fresh container writes).
+	if raw, errRead := os.ReadFile(target); errRead == nil && len(strings.TrimSpace(string(raw))) > 0 {
+		var existing PersistedSnapshot
+		if errUnmarshal := json.Unmarshal(raw, &existing); errUnmarshal == nil && len(existing.Keys) > 0 {
+			return
+		}
 	}
 
-	s.mu.Lock()
-	mirrors := append([]string(nil), s.mirrorFiles...)
-	s.mu.Unlock()
-	if len(mirrors) == 0 {
+	mirrors, legacy := s.restoreCandidates()
+	candidates := append(append([]string(nil), mirrors...), legacy...)
+	if len(candidates) == 0 {
 		return
 	}
 
 	bestPath := ""
 	var bestSnap *PersistedSnapshot
-	for _, mirror := range mirrors {
-		raw, errRead := os.ReadFile(mirror)
+	for _, candidate := range candidates {
+		if filepath.Clean(candidate) == filepath.Clean(target) {
+			continue
+		}
+		raw, errRead := os.ReadFile(candidate)
 		if errRead != nil || len(strings.TrimSpace(string(raw))) == 0 {
 			continue
 		}
@@ -175,7 +210,7 @@ func (s *Store) adoptMirrorIfEmpty(target string) {
 		if bestSnap == nil || snap.UpdatedAt > bestSnap.UpdatedAt {
 			cp := snap
 			bestSnap = &cp
-			bestPath = mirror
+			bestPath = candidate
 		}
 	}
 	if bestSnap == nil || bestPath == "" || len(bestSnap.Keys) == 0 {
@@ -186,6 +221,32 @@ func (s *Store) adoptMirrorIfEmpty(target string) {
 		return
 	}
 	_ = writeFileAtomicallyWindowsSafe(target, raw)
+}
+
+// cleanupLegacyMirrors removes legacy snapshot files once the successor locations
+// hold a snapshot, so migration can never delete the only surviving copy.
+func (s *Store) cleanupLegacyMirrors() {
+	s.mu.Lock()
+	legacy := append([]string(nil), s.legacyMirrorFiles...)
+	target := s.storageFile
+	s.mu.Unlock()
+	if len(legacy) == 0 || target == "" {
+		return
+	}
+	if info, errStat := os.Stat(target); errStat != nil || info.Size() == 0 {
+		return
+	}
+	for _, path := range legacy {
+		if filepath.Clean(path) == filepath.Clean(target) {
+			continue
+		}
+		if info, errStat := os.Stat(path); errStat == nil && !info.IsDir() {
+			_ = os.Remove(path)
+		}
+	}
+	s.mu.Lock()
+	s.legacyMirrorFiles = nil
+	s.mu.Unlock()
 }
 
 // ConfigurePersistence sets the persistence file path and periodic flush interval.
@@ -213,6 +274,19 @@ func (s *Store) ConfigurePersistence(filePath string, flushInterval time.Duratio
 	var loadErr error
 	if cleanPath != "" && wasEmpty {
 		loadErr = s.loadFromDisk(cleanPath)
+	}
+
+	// Write the migrated snapshot everywhere immediately so legacy files can be
+	// dropped without risking the only copy.
+	if cleanPath != "" {
+		s.mu.Lock()
+		hasHistory := len(s.keys) > 0
+		legacyPending := len(s.legacyMirrorFiles) > 0
+		s.mu.Unlock()
+		if hasHistory || legacyPending {
+			_ = s.FlushNow()
+			s.cleanupLegacyMirrors()
+		}
 	}
 
 	if cleanPath != "" {
