@@ -374,9 +374,12 @@
   tr:hover td { background: var(--bg-hover); }
   .sub-row td {
     background: var(--bg-quinary);
-    padding-left: 28px;
     font-size: 12px;
     color: var(--text-secondary);
+  }
+  /* Indent only the label cell so numeric columns stay aligned with the header. */
+  .sub-row td:first-child {
+    padding-left: 28px;
   }
   /* Requested-model grouping header inside an expanded usage row */
   .model-group-row td {
@@ -2306,7 +2309,13 @@
       // data) collapses to a plain row for its single served model.
       group.flat = !group.knownRequested;
     }
-    list.sort((a, b) => (b.totals.totalTokens || 0) - (a.totals.totalTokens || 0));
+    // Real request groups first (by volume), then the rows whose requested model
+    // was never recorded, so an unmatched served model can never appear above a
+    // group header and look like it belongs to the account row.
+    list.sort((a, b) => {
+      if (a.flat !== b.flat) return a.flat ? 1 : -1;
+      return (b.totals.totalTokens || 0) - (a.totals.totalTokens || 0);
+    });
     return list;
   }
 
