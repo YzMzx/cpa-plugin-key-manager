@@ -855,6 +855,7 @@ func (s *Store) reconcileTrackerDeltaLocked(tr *TrackedRequest) {
 	costBreakdown := s.pricing.Calculate(dIn, dOut, dRead, dWrite, tr.Model, tr.RequestedModel, tr.ExtractedUsage.ResponseModel, model)
 	tr.BilledUsage = target
 	recordRequestedAlias(ms, []string{tr.Model, tr.RequestedModel})
+	recordRequestedAlias(ams, []string{tr.Model, tr.RequestedModel})
 
 	// Update ModelStats
 	ms.InputTokens += dIn
@@ -1229,6 +1230,9 @@ func (s *Store) migrateModelBucketLocked(ks *KeyStats, from, to string) {
 // recordRequestedAlias keeps the client-requested model names attached to the
 // upstream-served bucket so a substitution remains traceable.
 func recordRequestedAlias(ms *ModelStats, requested []string) {
+	if ms == nil {
+		return
+	}
 	for _, raw := range requested {
 		name := strings.TrimSpace(raw)
 		if name == "" || strings.EqualFold(name, ms.Model) {

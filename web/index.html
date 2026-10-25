@@ -378,6 +378,15 @@
     font-size: 12px;
     color: var(--text-secondary);
   }
+  /* Requested-model grouping header inside an expanded usage row */
+  .model-group-row td {
+    background: var(--bg-quaternary, var(--bg-tertiary));
+    font-size: 12px;
+    border-top: 1px solid var(--border-color, rgba(128, 128, 128, 0.18));
+  }
+  .model-group-row td:first-child {
+    padding-left: 14px;
+  }
 
   /* Tags & Pills (CPAMC .tag style) */
   .tag {
@@ -2253,6 +2262,46 @@
   }
 
   // ==================== TAB 2: TOKEN USAGE LEADERBOARDS ====================
+  // Groups served-model buckets under the client-requested model they came from,
+  // so a substituted request renders as: requested model -> served variants.
+  function buildRequestedModelGroups(servedModels) {
+    const groups = new Map();
+    const ensure = (name) => {
+      if (!groups.has(name)) groups.set(name, { requested: name, children: [] });
+      return groups.get(name);
+    };
+    for (const ms of servedModels) {
+      if (!ms || !ms.model) continue;
+      const aliases = (ms.requested_models || []).filter(Boolean);
+      if (aliases.length === 0) {
+        ensure(ms.model).children.push(ms);
+        continue;
+      }
+      for (const alias of aliases) ensure(alias).children.push(ms);
+    }
+    const list = Array.from(groups.values());
+    for (const group of list) {
+      group.children.sort((a, b) => (b.total_tokens || 0) - (a.total_tokens || 0));
+      group.totals = {
+        requests: 0, success: 0, failed: 0, input: 0, output: 0,
+        reasoning: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0
+      };
+      for (const ms of group.children) {
+        group.totals.requests += ms.requests || 0;
+        group.totals.success += ms.success_requests || 0;
+        group.totals.failed += ms.failed_requests || 0;
+        group.totals.input += ms.input_tokens || 0;
+        group.totals.output += ms.output_tokens || 0;
+        group.totals.reasoning += ms.reasoning_tokens || 0;
+        group.totals.cacheRead += ms.cache_read_tokens || 0;
+        group.totals.cacheWrite += ms.cache_write_tokens || 0;
+        group.totals.totalTokens += ms.total_tokens || 0;
+      }
+    }
+    list.sort((a, b) => (b.totals.totalTokens || 0) - (a.totals.totalTokens || 0));
+    return list;
+  }
+
   function renderDashboardTables() {
     if (!overviewData) return;
     const snapKeys = (overviewData.usage && overviewData.usage.keys) || {};
@@ -2310,21 +2359,28 @@
         </tr>`;
 
         if (isExpanded && validModels.length > 0) {
-          const mList = validModels.slice().sort((a, b) => (b.total_tokens || 0) - (a.total_tokens || 0));
-          for (const ms of mList) {
-            const aliases = (ms.requested_models || []).filter(Boolean);
-            const aliasHint = aliases.length
-              ? `<span class="tag plain" style="font-size:10px" title="客户端请求的模型名">请求: ${escapeHtml(aliases.join(", "))}</span>`
-              : "";
-            html += `<tr class="sub-row">
-              <td class="cell-nowrap">↳ <span class="mono" style="color:var(--text-primary);font-weight:600">${escapeHtml(ms.model)}</span> ${aliasHint}</td>
-              <td class="cell-nowrap mono">${fmtInt(ms.requests)} (${fmtInt(ms.success_requests)}/${fmtInt(ms.failed_requests)})</td>
-              <td class="cell-nowrap mono">${fmtInt(ms.input_tokens)}</td>
-              <td class="cell-nowrap mono">${fmtInt(ms.output_tokens)} (推理 ${fmtInt(ms.reasoning_tokens)})</td>
-              <td class="cell-nowrap mono">${fmtInt(ms.cache_read_tokens)} / ${fmtInt(ms.cache_write_tokens)}</td>
-              <td class="cell-nowrap token-val">${fmtInt(ms.total_tokens)}</td>
-              <td colspan="2" style="font-size:11px;color:var(--text-tertiary)">最后调用: ${escapeHtml(ms.last_used_at || "-")}</td>
+          for (const group of buildRequestedModelGroups(validModels)) {
+            const t = group.totals;
+            html += `<tr class="model-group-row">
+              <td class="cell-nowrap"><span class="mono" style="color:var(--text-primary);font-weight:700">${escapeHtml(group.requested)}</span> <span class="tag plain" style="font-size:10px">请求模型</span></td>
+              <td class="cell-nowrap mono">${fmtInt(t.requests)} (${fmtInt(t.success)}/${fmtInt(t.failed)})</td>
+              <td class="cell-nowrap mono">${fmtInt(t.input)}</td>
+              <td class="cell-nowrap mono">${fmtInt(t.output)} (推理 ${fmtInt(t.reasoning)})</td>
+              <td class="cell-nowrap mono">${fmtInt(t.cacheRead)} / ${fmtInt(t.cacheWrite)}</td>
+              <td class="cell-nowrap token-val">${fmtInt(t.totalTokens)}</td>
+              <td colspan="2" style="font-size:11px;color:var(--text-tertiary)">${group.children.length} 个服务端模型</td>
             </tr>`;
+            for (const ms of group.children) {
+              html += `<tr class="sub-row">
+                <td class="cell-nowrap">↳ <span class="mono">${escapeHtml(ms.model)}</span></td>
+                <td class="cell-nowrap mono">${fmtInt(ms.requests)} (${fmtInt(ms.success_requests)}/${fmtInt(ms.failed_requests)})</td>
+                <td class="cell-nowrap mono">${fmtInt(ms.input_tokens)}</td>
+                <td class="cell-nowrap mono">${fmtInt(ms.output_tokens)} (推理 ${fmtInt(ms.reasoning_tokens)})</td>
+                <td class="cell-nowrap mono">${fmtInt(ms.cache_read_tokens)} / ${fmtInt(ms.cache_write_tokens)}</td>
+                <td class="cell-nowrap token-val">${fmtInt(ms.total_tokens)}</td>
+                <td colspan="2" style="font-size:11px;color:var(--text-tertiary)">最后调用: ${escapeHtml(ms.last_used_at || "-")}</td>
+              </tr>`;
+            }
           }
         }
       }
@@ -2448,17 +2504,30 @@
       </tr>`;
 
       if (isExpanded && modelList.length > 0) {
-        for (const ms of modelList) {
-          html += `<tr class="sub-row">
-            <td class="cell-nowrap" style="font-size:11px;color:var(--text-tertiary)">↳ 模型</td>
-            <td class="cell-nowrap"><span class="mono" style="color:var(--text-primary);font-weight:600">${escapeHtml(ms.model)}</span></td>
-            <td class="cell-nowrap mono">${fmtInt(ms.requests)} (${fmtInt(ms.success_requests)}/${fmtInt(ms.failed_requests)})</td>
-            <td class="cell-nowrap mono">${fmtInt(ms.input_tokens)}</td>
-            <td class="cell-nowrap mono">${fmtInt(ms.output_tokens)} (推理 ${fmtInt(ms.reasoning_tokens)})</td>
-            <td class="cell-nowrap mono">${fmtInt(ms.cache_read_tokens)} / ${fmtInt(ms.cache_write_tokens)}</td>
-            <td class="cell-nowrap token-val">${fmtInt(ms.total_tokens)}</td>
-            <td class="cell-nowrap" style="font-size:11px;color:var(--text-tertiary)">最后调用: ${escapeHtml(ms.last_used_at || "-")}</td>
+        for (const group of buildRequestedModelGroups(modelList)) {
+          const t = group.totals;
+          html += `<tr class="model-group-row">
+            <td class="cell-nowrap" style="font-size:11px;color:var(--text-tertiary)">↳ 请求</td>
+            <td class="cell-nowrap"><span class="mono" style="color:var(--text-primary);font-weight:700">${escapeHtml(group.requested)}</span> <span class="tag plain" style="font-size:10px">请求模型</span></td>
+            <td class="cell-nowrap mono">${fmtInt(t.requests)} (${fmtInt(t.success)}/${fmtInt(t.failed)})</td>
+            <td class="cell-nowrap mono">${fmtInt(t.input)}</td>
+            <td class="cell-nowrap mono">${fmtInt(t.output)} (推理 ${fmtInt(t.reasoning)})</td>
+            <td class="cell-nowrap mono">${fmtInt(t.cacheRead)} / ${fmtInt(t.cacheWrite)}</td>
+            <td class="cell-nowrap token-val">${fmtInt(t.totalTokens)}</td>
+            <td class="cell-nowrap" style="font-size:11px;color:var(--text-tertiary)">${group.children.length} 个服务端模型</td>
           </tr>`;
+          for (const ms of group.children) {
+            html += `<tr class="sub-row">
+              <td class="cell-nowrap" style="font-size:11px;color:var(--text-tertiary)">　↳ 模型</td>
+              <td class="cell-nowrap"><span class="mono">${escapeHtml(ms.model)}</span></td>
+              <td class="cell-nowrap mono">${fmtInt(ms.requests)} (${fmtInt(ms.success_requests)}/${fmtInt(ms.failed_requests)})</td>
+              <td class="cell-nowrap mono">${fmtInt(ms.input_tokens)}</td>
+              <td class="cell-nowrap mono">${fmtInt(ms.output_tokens)} (推理 ${fmtInt(ms.reasoning_tokens)})</td>
+              <td class="cell-nowrap mono">${fmtInt(ms.cache_read_tokens)} / ${fmtInt(ms.cache_write_tokens)}</td>
+              <td class="cell-nowrap token-val">${fmtInt(ms.total_tokens)}</td>
+              <td class="cell-nowrap" style="font-size:11px;color:var(--text-tertiary)">最后调用: ${escapeHtml(ms.last_used_at || "-")}</td>
+            </tr>`;
+          }
         }
       }
     }
