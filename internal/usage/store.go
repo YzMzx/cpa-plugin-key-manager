@@ -1228,14 +1228,16 @@ func (s *Store) migrateModelBucketLocked(ks *KeyStats, from, to string) {
 }
 
 // recordRequestedAlias keeps the client-requested model names attached to the
-// upstream-served bucket so a substitution remains traceable.
+// upstream-served bucket so a substitution remains traceable. The requested name
+// is recorded even when it equals the served name, so the dashboard can always
+// tell "this bucket really was requested as X" instead of guessing.
 func recordRequestedAlias(ms *ModelStats, requested []string) {
 	if ms == nil {
 		return
 	}
 	for _, raw := range requested {
 		name := strings.TrimSpace(raw)
-		if name == "" || strings.EqualFold(name, ms.Model) {
+		if name == "" {
 			continue
 		}
 		exists := false

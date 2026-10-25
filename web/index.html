@@ -2264,10 +2264,11 @@
   // ==================== TAB 2: TOKEN USAGE LEADERBOARDS ====================
   // Groups served-model buckets under the client-requested model they came from,
   // so a substituted request renders as: requested model -> served variants.
+  // A bucket without any recorded requested name is never presented as a request.
   function buildRequestedModelGroups(servedModels) {
     const groups = new Map();
     const ensure = (name) => {
-      if (!groups.has(name)) groups.set(name, { requested: name, children: [] });
+      if (!groups.has(name)) groups.set(name, { requested: name, children: [], knownRequested: false });
       return groups.get(name);
     };
     for (const ms of servedModels) {
@@ -2277,7 +2278,11 @@
         ensure(ms.model).children.push(ms);
         continue;
       }
-      for (const alias of aliases) ensure(alias).children.push(ms);
+      for (const alias of aliases) {
+        const group = ensure(alias);
+        group.children.push(ms);
+        group.knownRequested = true;
+      }
     }
     const list = Array.from(groups.values());
     for (const group of list) {
@@ -2297,6 +2302,9 @@
         group.totals.cacheWrite += ms.cache_write_tokens || 0;
         group.totals.totalTokens += ms.total_tokens || 0;
       }
+      // A group whose name is not backed by a recorded requested model (legacy
+      // data) collapses to a plain row for its single served model.
+      group.flat = !group.knownRequested;
     }
     list.sort((a, b) => (b.totals.totalTokens || 0) - (a.totals.totalTokens || 0));
     return list;
@@ -2359,25 +2367,29 @@
         </tr>`;
 
         if (isExpanded && validModels.length > 0) {
+          const modelCells = (st) => `
+              <td class="cell-nowrap mono">${fmtInt(st.requests)} (${fmtInt(st.success_requests !== undefined ? st.success_requests : st.success)}/${fmtInt(st.failed_requests !== undefined ? st.failed_requests : st.failed)})</td>
+              <td class="cell-nowrap mono">${fmtInt(st.input_tokens !== undefined ? st.input_tokens : st.input)}</td>
+              <td class="cell-nowrap mono">${fmtInt(st.output_tokens !== undefined ? st.output_tokens : st.output)} (推理 ${fmtInt(st.reasoning_tokens !== undefined ? st.reasoning_tokens : st.reasoning)})</td>
+              <td class="cell-nowrap mono">${fmtInt(st.cache_read_tokens !== undefined ? st.cache_read_tokens : st.cacheRead)} / ${fmtInt(st.cache_write_tokens !== undefined ? st.cache_write_tokens : st.cacheWrite)}</td>
+              <td class="cell-nowrap token-val">${fmtInt(st.total_tokens !== undefined ? st.total_tokens : st.totalTokens)}</td>`;
           for (const group of buildRequestedModelGroups(validModels)) {
+            if (group.flat) {
+              const ms = group.children[0];
+              html += `<tr class="sub-row">
+                <td class="cell-nowrap">↳ <span class="mono">${escapeHtml(ms.model)}</span></td>${modelCells(ms)}
+                <td colspan="2" style="font-size:11px;color:var(--text-tertiary)">最后调用: ${escapeHtml(ms.last_used_at || "-")}</td>
+              </tr>`;
+              continue;
+            }
             const t = group.totals;
             html += `<tr class="model-group-row">
-              <td class="cell-nowrap"><span class="mono" style="color:var(--text-primary);font-weight:700">${escapeHtml(group.requested)}</span> <span class="tag plain" style="font-size:10px">请求模型</span></td>
-              <td class="cell-nowrap mono">${fmtInt(t.requests)} (${fmtInt(t.success)}/${fmtInt(t.failed)})</td>
-              <td class="cell-nowrap mono">${fmtInt(t.input)}</td>
-              <td class="cell-nowrap mono">${fmtInt(t.output)} (推理 ${fmtInt(t.reasoning)})</td>
-              <td class="cell-nowrap mono">${fmtInt(t.cacheRead)} / ${fmtInt(t.cacheWrite)}</td>
-              <td class="cell-nowrap token-val">${fmtInt(t.totalTokens)}</td>
+              <td class="cell-nowrap"><span class="mono" style="color:var(--text-primary);font-weight:700">${escapeHtml(group.requested)}</span> <span class="tag plain" style="font-size:10px">请求模型</span></td>${modelCells(t)}
               <td colspan="2" style="font-size:11px;color:var(--text-tertiary)">${group.children.length} 个服务端模型</td>
             </tr>`;
             for (const ms of group.children) {
               html += `<tr class="sub-row">
-                <td class="cell-nowrap">↳ <span class="mono">${escapeHtml(ms.model)}</span></td>
-                <td class="cell-nowrap mono">${fmtInt(ms.requests)} (${fmtInt(ms.success_requests)}/${fmtInt(ms.failed_requests)})</td>
-                <td class="cell-nowrap mono">${fmtInt(ms.input_tokens)}</td>
-                <td class="cell-nowrap mono">${fmtInt(ms.output_tokens)} (推理 ${fmtInt(ms.reasoning_tokens)})</td>
-                <td class="cell-nowrap mono">${fmtInt(ms.cache_read_tokens)} / ${fmtInt(ms.cache_write_tokens)}</td>
-                <td class="cell-nowrap token-val">${fmtInt(ms.total_tokens)}</td>
+                <td class="cell-nowrap">↳ <span class="mono">${escapeHtml(ms.model)}</span></td>${modelCells(ms)}
                 <td colspan="2" style="font-size:11px;color:var(--text-tertiary)">最后调用: ${escapeHtml(ms.last_used_at || "-")}</td>
               </tr>`;
             }
@@ -2504,27 +2516,31 @@
       </tr>`;
 
       if (isExpanded && modelList.length > 0) {
+        // Label + name share one cell (colspan 2) so the arrow and the model name
+        // are not separated by the wide provider/account columns.
+        const acctCells = (st) => `
+            <td class="cell-nowrap mono">${fmtInt(st.requests)} (${fmtInt(st.success_requests !== undefined ? st.success_requests : st.success)}/${fmtInt(st.failed_requests !== undefined ? st.failed_requests : st.failed)})</td>
+            <td class="cell-nowrap mono">${fmtInt(st.input_tokens !== undefined ? st.input_tokens : st.input)}</td>
+            <td class="cell-nowrap mono">${fmtInt(st.output_tokens !== undefined ? st.output_tokens : st.output)} (推理 ${fmtInt(st.reasoning_tokens !== undefined ? st.reasoning_tokens : st.reasoning)})</td>
+            <td class="cell-nowrap mono">${fmtInt(st.cache_read_tokens !== undefined ? st.cache_read_tokens : st.cacheRead)} / ${fmtInt(st.cache_write_tokens !== undefined ? st.cache_write_tokens : st.cacheWrite)}</td>
+            <td class="cell-nowrap token-val">${fmtInt(st.total_tokens !== undefined ? st.total_tokens : st.totalTokens)}</td>`;
         for (const group of buildRequestedModelGroups(modelList)) {
+          if (group.flat) {
+            const ms = group.children[0];
+            html += `<tr class="sub-row">
+              <td class="cell-nowrap" colspan="2">↳ <span class="mono">${escapeHtml(ms.model)}</span></td>${acctCells(ms)}
+              <td class="cell-nowrap" style="font-size:11px;color:var(--text-tertiary)">最后调用: ${escapeHtml(ms.last_used_at || "-")}</td>
+            </tr>`;
+            continue;
+          }
           const t = group.totals;
           html += `<tr class="model-group-row">
-            <td class="cell-nowrap" style="font-size:11px;color:var(--text-tertiary)">↳ 请求</td>
-            <td class="cell-nowrap"><span class="mono" style="color:var(--text-primary);font-weight:700">${escapeHtml(group.requested)}</span> <span class="tag plain" style="font-size:10px">请求模型</span></td>
-            <td class="cell-nowrap mono">${fmtInt(t.requests)} (${fmtInt(t.success)}/${fmtInt(t.failed)})</td>
-            <td class="cell-nowrap mono">${fmtInt(t.input)}</td>
-            <td class="cell-nowrap mono">${fmtInt(t.output)} (推理 ${fmtInt(t.reasoning)})</td>
-            <td class="cell-nowrap mono">${fmtInt(t.cacheRead)} / ${fmtInt(t.cacheWrite)}</td>
-            <td class="cell-nowrap token-val">${fmtInt(t.totalTokens)}</td>
+            <td class="cell-nowrap" colspan="2">↳ 请求 <span class="mono" style="color:var(--text-primary);font-weight:700">${escapeHtml(group.requested)}</span> <span class="tag plain" style="font-size:10px">请求模型</span></td>${acctCells(t)}
             <td class="cell-nowrap" style="font-size:11px;color:var(--text-tertiary)">${group.children.length} 个服务端模型</td>
           </tr>`;
           for (const ms of group.children) {
             html += `<tr class="sub-row">
-              <td class="cell-nowrap" style="font-size:11px;color:var(--text-tertiary)">　↳ 模型</td>
-              <td class="cell-nowrap"><span class="mono">${escapeHtml(ms.model)}</span></td>
-              <td class="cell-nowrap mono">${fmtInt(ms.requests)} (${fmtInt(ms.success_requests)}/${fmtInt(ms.failed_requests)})</td>
-              <td class="cell-nowrap mono">${fmtInt(ms.input_tokens)}</td>
-              <td class="cell-nowrap mono">${fmtInt(ms.output_tokens)} (推理 ${fmtInt(ms.reasoning_tokens)})</td>
-              <td class="cell-nowrap mono">${fmtInt(ms.cache_read_tokens)} / ${fmtInt(ms.cache_write_tokens)}</td>
-              <td class="cell-nowrap token-val">${fmtInt(ms.total_tokens)}</td>
+              <td class="cell-nowrap" colspan="2">　↳ <span class="mono">${escapeHtml(ms.model)}</span></td>${acctCells(ms)}
               <td class="cell-nowrap" style="font-size:11px;color:var(--text-tertiary)">最后调用: ${escapeHtml(ms.last_used_at || "-")}</td>
             </tr>`;
           }

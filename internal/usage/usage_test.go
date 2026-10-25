@@ -618,6 +618,37 @@ func TestServedVariantNeverBecomesARequestedAlias(t *testing.T) {
 	}
 }
 
+// TestRequestedAliasRecordedWhenModelUnchanged pins that a request whose served
+// model equals the requested model still records the requested name, so the
+// dashboard never has to guess what the client asked for.
+func TestRequestedAliasRecordedWhenModelUnchanged(t *testing.T) {
+	store := NewStore(pricing.NewEngine())
+	if err := store.ConfigurePersistence(filepath.Join(t.TempDir(), "usage.json"), time.Hour); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	defer store.Close()
+
+	const model = "gemini-3.8-flash-high"
+	store.BeginRequest("req-same", "sk-same", "Same Key", model, model, "openai", false)
+	store.ObserveHostUsageRecord(pluginapi.UsageRecord{
+		RequestID:     "req-same",
+		Provider:      "antigravity",
+		Model:         model,
+		ResponseModel: model,
+		APIKey:        "sk-same",
+		Detail:        pluginapi.UsageDetail{InputTokens: 10, TotalTokens: 10},
+	}, "Same Key")
+
+	snap := store.Snapshot("sk-same", "", nil, nil, nil, false)
+	stats := snap.Keys["sk-same"].Models[model]
+	if stats == nil {
+		t.Fatalf("missing model bucket")
+	}
+	if len(stats.RequestedModels) != 1 || stats.RequestedModels[0] != model {
+		t.Fatalf("requested name must be recorded even without substitution, got %+v", stats.RequestedModels)
+	}
+}
+
 // TestLegacyAliasListsArePurged covers the one-time repair of snapshots written
 // before served variants were excluded from the requested alias list.
 func TestLegacyAliasListsArePurged(t *testing.T) {
