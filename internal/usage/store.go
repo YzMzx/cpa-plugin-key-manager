@@ -125,11 +125,17 @@ func (m *AccountModelStats) UnmarshalJSON(raw []byte) error {
 
 // PersistedSnapshot is the root JSON structure persisted to disk.
 type PersistedSnapshot struct {
-	Version   int                      `json:"version"`
-	UpdatedAt string                   `json:"updated_at"`
-	Keys      map[string]*KeyStats     `json:"keys"`
-	Accounts  map[string]*AccountStats `json:"accounts,omitempty"`
+	Version   int    `json:"version"`
+	UpdatedAt string `json:"updated_at"`
+	// AliasRevision tracks the format of per-model `requested_models` lists.
+	// Revision 1 dropped aliases that were really served-variant names.
+	AliasRevision int                      `json:"alias_rev,omitempty"`
+	Keys          map[string]*KeyStats     `json:"keys"`
+	Accounts      map[string]*AccountStats `json:"accounts,omitempty"`
 }
+
+// aliasRevisionCurrent is the alias format this build writes.
+const aliasRevisionCurrent = 1
 
 // TrackedRequest holds in-flight and recently completed request state for deduplicating
 // and reconciling usage between response/stream interceptors (`request.complete`) and `usage.handle`.
@@ -959,7 +965,10 @@ func migrateAccountModelBucketLocked(acct *AccountStats, from, to string) {
 	if src.LastUsedAt > dst.LastUsedAt {
 		dst.LastUsedAt = src.LastUsedAt
 	}
-	recordRequestedAlias(dst, append([]string{from}, src.RequestedModels...))
+	// `from` is a previously served model name, never a client-requested one, so it
+	// must not be recorded as a requested alias (that leaked `-control` into the
+	// "请求:" label of the `-n` row). Only carry genuine requested names over.
+	recordRequestedAlias(dst, src.RequestedModels)
 	delete(acct.Models, from)
 }
 
@@ -1212,7 +1221,8 @@ func (s *Store) migrateModelBucketLocked(ks *KeyStats, from, to string) {
 	if src.LastUsedAt > dst.LastUsedAt {
 		dst.LastUsedAt = src.LastUsedAt
 	}
-	recordRequestedAlias(dst, append([]string{from}, src.RequestedModels...))
+	// See migrateAccountModelBucketLocked: `from` is a served variant, not a request.
+	recordRequestedAlias(dst, src.RequestedModels)
 	delete(ks.Models, from)
 }
 
@@ -1457,10 +1467,11 @@ func (s *Store) FlushNow() error {
 		return nil
 	}
 	snap := PersistedSnapshot{
-		Version:   1,
-		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
-		Keys:      make(map[string]*KeyStats, len(s.keys)),
-		Accounts:  make(map[string]*AccountStats, len(s.accounts)),
+		Version:       1,
+		UpdatedAt:     time.Now().UTC().Format(time.RFC3339),
+		AliasRevision: aliasRevisionCurrent,
+		Keys:          make(map[string]*KeyStats, len(s.keys)),
+		Accounts:      make(map[string]*AccountStats, len(s.accounts)),
 	}
 	for k, v := range s.keys {
 		cp := *v
@@ -1532,6 +1543,32 @@ func (s *Store) loadFromDisk(filePath string) error {
 		s.keys = make(map[string]*KeyStats)
 	}
 	cleanedDisk := false
+	// One-time repair: snapshots written before alias revision 1 recorded served
+	// variant names (e.g. gemini-3.8-flash-control) as if a client had requested
+	// them. Drop those lists so the "请求:" label only shows real requests.
+	if snap.AliasRevision < aliasRevisionCurrent {
+		for _, ks := range snap.Keys {
+			if ks == nil {
+				continue
+			}
+			for _, ms := range ks.Models {
+				if ms != nil && len(ms.RequestedModels) > 0 {
+					ms.RequestedModels = nil
+				}
+			}
+		}
+		for _, acct := range snap.Accounts {
+			if acct == nil {
+				continue
+			}
+			for _, ms := range acct.Models {
+				if ms != nil && len(ms.RequestedModels) > 0 {
+					ms.RequestedModels = nil
+				}
+			}
+		}
+		cleanedDisk = true
+	}
 	for k, ks := range snap.Keys {
 		if ks == nil {
 			cleanedDisk = true

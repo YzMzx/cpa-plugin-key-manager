@@ -565,3 +565,100 @@ func TestAccountRowsMergeHashedCredentials(t *testing.T) {
 		t.Fatalf("provider should stay stable for a single provider, got %q", acct.Provider)
 	}
 }
+
+// TestServedVariantNeverBecomesARequestedAlias reproduces the "请求: ... -control"
+// display bug: when two different served variants are reported for one request,
+// the earlier variant must not be listed as a client-requested model.
+func TestServedVariantNeverBecomesARequestedAlias(t *testing.T) {
+	eng := pricing.NewEngine()
+	store := NewStore(eng)
+	if err := store.ConfigurePersistence(filepath.Join(t.TempDir(), "usage.json"), time.Hour); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	defer store.Close()
+
+	const requested = "gemini-3.8-flash-high"
+	store.BeginRequest("req-alias", "sk-alias", "Alias Key", requested, requested, "openai", true)
+	// A chunk reveals one served variant, and the request is accounted for.
+	store.ObserveStreamChunk("req-alias", "gemini-3.8-flash-control", requested,
+		[]byte(`data: {"model":"gemini-3.8-flash-control","usage":{"prompt_tokens":100,"completion_tokens":10}}`))
+	store.CompleteRequest(pluginapi.RequestCompletion{
+		RequestID:  "req-alias",
+		Model:      requested,
+		Stream:     true,
+		Outcome:    pluginapi.RequestCompletionSucceeded,
+		StatusCode: 200,
+	}, "sk-alias", "Alias Key")
+	// A later chunk reports a different served variant, triggering bucket migration.
+	store.ObserveStreamChunk("req-alias", "gemini-3.8-flash-n", requested,
+		[]byte(`data: {"model":"gemini-3.8-flash-n","usage":{"prompt_tokens":100,"completion_tokens":10}}`))
+
+	snap := store.Snapshot("sk-alias", "", nil, nil, nil, false)
+	ks := snap.Keys["sk-alias"]
+	if ks == nil {
+		t.Fatalf("missing key stats")
+	}
+	stats := ks.Models["gemini-3.8-flash-n"]
+	if stats == nil {
+		t.Fatalf("usage not attributed to the final served model: %v", modelKeys(ks.Models))
+	}
+	for _, alias := range stats.RequestedModels {
+		if alias == "gemini-3.8-flash-control" {
+			t.Fatalf("served variant leaked into the requested alias list: %+v", stats.RequestedModels)
+		}
+	}
+	found := false
+	for _, alias := range stats.RequestedModels {
+		if alias == requested {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("genuine requested model missing from alias list: %+v", stats.RequestedModels)
+	}
+}
+
+// TestLegacyAliasListsArePurged covers the one-time repair of snapshots written
+// before served variants were excluded from the requested alias list.
+func TestLegacyAliasListsArePurged(t *testing.T) {
+	tmpDir := t.TempDir()
+	usageFile := filepath.Join(tmpDir, "usage.json")
+	legacy := `{
+  "version": 1,
+  "updated_at": "2026-10-25T02:00:00Z",
+  "keys": {
+    "sk-legacy": {
+      "api_key": "sk-legacy",
+      "models": {
+        "gemini-3.8-flash-n": {
+          "model": "gemini-3.8-flash-n",
+          "requests": 5,
+          "total_tokens": 500,
+          "requested_models": ["gemini-3.8-flash-high", "gemini-3.8-flash-control"]
+        }
+      }
+    }
+  }
+}`
+	if err := os.WriteFile(usageFile, []byte(legacy), 0o644); err != nil {
+		t.Fatalf("write legacy snapshot: %v", err)
+	}
+
+	store := NewStore(pricing.NewEngine())
+	if err := store.ConfigurePersistence(usageFile, time.Hour); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	defer store.Close()
+
+	snap := store.Snapshot("sk-legacy", "", nil, nil, nil, false)
+	stats := snap.Keys["sk-legacy"]
+	if stats == nil || stats.Models["gemini-3.8-flash-n"] == nil {
+		t.Fatalf("legacy stats lost: %+v", stats)
+	}
+	if aliases := stats.Models["gemini-3.8-flash-n"].RequestedModels; len(aliases) != 0 {
+		t.Fatalf("legacy alias list should have been purged, got %+v", aliases)
+	}
+	if stats.Models["gemini-3.8-flash-n"].Requests != 5 || stats.Models["gemini-3.8-flash-n"].TotalTokens != 500 {
+		t.Fatalf("legacy counters must be preserved: %+v", stats.Models["gemini-3.8-flash-n"])
+	}
+}
