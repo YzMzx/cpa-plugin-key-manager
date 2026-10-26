@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><title>模型白名单列 · 重构预览</title>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>模型白名单 + 绑定凭证 · 预览 v0.6.2</title>
 <style>
   /* ==========================================================================
    * CLI-Proxy-API-Management-Center (CPAMC) Unified Design System & Theme Tokens
@@ -491,7 +491,8 @@
     gap: 6px;
     flex-wrap: nowrap;
     white-space: nowrap;
-    max-width: 360px;
+    max-width: 470px;
+    min-width: 0;
   }
   .model-pill {
     display: inline-flex;
@@ -504,9 +505,10 @@
     font-family: var(--font-mono);
     font-size: 11px;
     line-height: 1.7;
-    max-width: 150px;
+    max-width: 210px;
+    min-width: 0;
     overflow: hidden;
-    flex: 0 0 auto;
+    flex: 0 1 auto;
   }
   .model-pill .name {
     overflow: hidden;
@@ -514,6 +516,7 @@
     white-space: nowrap;
   }
   .model-dot { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 auto; }
+  .model-pill.cred { max-width: 240px; }
   .model-core { color: var(--text-primary); }
   .model-tail { color: var(--text-tertiary); }
   .model-pill.prov-claude { border-color: rgba(245, 158, 11, 0.35); }
@@ -931,82 +934,82 @@
   .demo-label { font-size: 12px; color: var(--text-tertiary); margin: 26px 0 8px; }
 </style></head>
 <body>
-<div class="preview-title">「模型白名单规则」列 · 重构预览</div>
-<div class="preview-sub">单行不折行 · 厂商色点与名称高亮拆分 · 前 2 个胶囊 + <code>+N</code> 徽标 · 悬浮浮层检索</div>
+<div class="preview-title">「模型白名单规则」+「绑定账号凭证」两列 · 统一渲染</div>
+<div class="preview-sub">两列都收敛成单行：最多 2 个胶囊 + <code>+N</code>，胶囊上限 210px（凭证 240px），名称按"核心亮 / 后缀暗"拆分</div>
 <div class="table-wrap">
   <table>
     <thead><tr><th style="width:34px"></th><th>状态</th><th>API Key</th><th>备注名称</th><th>并发限制</th><th>请求数</th><th>累计总 Tokens</th><th class="col-models">模型白名单规则</th><th>绑定账号凭证</th><th>操作</th></tr></thead>
     <tbody><tr class="key-row">
   <td class="drag-cell">⠿</td>
   <td class="cell-nowrap"><span class="tag ok">● 启用</span></td>
-  <td class="cell-nowrap"><div class="key-cell"><span class="key-code">sk-all-models</span><button class="btn btn-sm icon-btn">📋</button></div></td>
+  <td class="cell-nowrap"><div class="key-cell"><span class="key-code">sk-all</span><button class="btn btn-sm icon-btn">📋</button></div></td>
   <td class="cell-nowrap" style="font-weight:600">全部放行</td>
   <td class="cell-nowrap mono">不限</td>
   <td class="cell-nowrap mono">1,204 <span style="color:var(--text-tertiary)">(1180/24)</span></td>
   <td class="cell-nowrap"><span class="token-val">12,340,221</span> <span class="mono" style="font-size:12px;color:var(--text-secondary)"> (9,800,000 / 2,540,221)</span></td>
   <td class="col-models"><span class="tag ok">全部已有模型</span></td>
-  <td><div class="tag-group"><span class="tag warn">轮询</span><span class="tag plain mono">antigravity-a@gmail.com</span></div></td>
-  <td class="cell-nowrap"><div class="row-actions"><button class="btn btn-sm">编辑规则</button><button class="btn btn-sm">清零用量</button><button class="btn btn-sm btn-danger">删除</button></div></td>
+  <td><span class="tag ok">全部可用凭证</span></td>
+  <td class="cell-nowrap"><div class="row-actions"><button class="btn btn-sm">编辑规则</button><button class="btn btn-sm">清零用量</button><button class="btn btn-sm">删除</button></div></td>
 </tr>
 <tr class="key-row">
   <td class="drag-cell">⠿</td>
   <td class="cell-nowrap"><span class="tag ok">● 启用</span></td>
-  <td class="cell-nowrap"><div class="key-cell"><span class="key-code">sk-one-model</span><button class="btn btn-sm icon-btn">📋</button></div></td>
-  <td class="cell-nowrap" style="font-weight:600">单模型</td>
+  <td class="cell-nowrap"><div class="key-cell"><span class="key-code">sk-claude</span><button class="btn btn-sm icon-btn">📋</button></div></td>
+  <td class="cell-nowrap" style="font-weight:600">Claude 15 个 / 多凭证</td>
   <td class="cell-nowrap mono">不限</td>
   <td class="cell-nowrap mono">1,204 <span style="color:var(--text-tertiary)">(1180/24)</span></td>
   <td class="cell-nowrap"><span class="token-val">12,340,221</span> <span class="mono" style="font-size:12px;color:var(--text-secondary)"> (9,800,000 / 2,540,221)</span></td>
-  <td class="col-models"><div class="model-cell"><span class="model-pill prov-gemini" title="gemini-3.8-flash-high"><span class="model-dot dot-gemini"></span><span class="name mono"><span class="model-core">gemini-3.8</span><span class="model-tail">-flash-high</span></span></span></div></td>
-  <td><div class="tag-group"><span class="tag warn">轮询</span><span class="tag plain mono">antigravity-a@gmail.com</span></div></td>
-  <td class="cell-nowrap"><div class="row-actions"><button class="btn btn-sm">编辑规则</button><button class="btn btn-sm">清零用量</button><button class="btn btn-sm btn-danger">删除</button></div></td>
+  <td class="col-models"><div class="model-cell"><span class="model-pill prov-claude" title="claude-opus-4-6-thinking"><span class="model-dot dot-claude"></span><span class="name mono"><span class="model-core">claude-opus</span><span class="model-tail">-4-6-thinking</span></span></span><span class="model-pill prov-claude" title="claude-sonnet-4-6-thinking"><span class="model-dot dot-claude"></span><span class="name mono"><span class="model-core">claude-sonnet</span><span class="model-tail">-4-6-thinking</span></span></span><button type="button" class="model-more" data-key="sk-claude" data-kind="models" onclick="openEntityPopover(event, this)" title="查看全部 15 个模型">+13</button></div></td>
+  <td><div class="model-cell"><span class="tag warn" style="font-size:11px;padding:1px 7px">轮询</span><span class="model-pill cred prov-gemini" title="antigravity-sly538876@gmail.com.json"><span class="model-dot dot-gemini"></span><span class="name mono"><span class="model-core">antigravity</span><span class="model-tail">-sly538876@gmail.com.json</span></span></span><span class="model-pill cred prov-openai" title="openai-compatibility:上海人工智能实验室"><span class="model-dot dot-openai"></span><span class="name mono"><span class="model-core">openai-compatibility</span><span class="model-tail">:上海人工智能实验室</span></span></span><button type="button" class="model-more" data-key="sk-claude" data-kind="creds" onclick="openEntityPopover(event, this)" title="查看全部 4 个凭证">+2</button></div></td>
+  <td class="cell-nowrap"><div class="row-actions"><button class="btn btn-sm">编辑规则</button><button class="btn btn-sm">清零用量</button><button class="btn btn-sm">删除</button></div></td>
 </tr>
 <tr class="key-row">
   <td class="drag-cell">⠿</td>
   <td class="cell-nowrap"><span class="tag ok">● 启用</span></td>
-  <td class="cell-nowrap"><div class="key-cell"><span class="key-code">sk-two-models</span><button class="btn btn-sm icon-btn">📋</button></div></td>
+  <td class="cell-nowrap"><div class="key-cell"><span class="key-code">sk-gemini</span><button class="btn btn-sm icon-btn">📋</button></div></td>
+  <td class="cell-nowrap" style="font-weight:600">Gemini 12 个</td>
+  <td class="cell-nowrap mono">不限</td>
+  <td class="cell-nowrap mono">1,204 <span style="color:var(--text-tertiary)">(1180/24)</span></td>
+  <td class="cell-nowrap"><span class="token-val">12,340,221</span> <span class="mono" style="font-size:12px;color:var(--text-secondary)"> (9,800,000 / 2,540,221)</span></td>
+  <td class="col-models"><div class="model-cell"><span class="model-pill prov-gemini" title="gemini-3-flash"><span class="model-dot dot-gemini"></span><span class="name mono"><span class="model-core">gemini-3</span><span class="model-tail">-flash</span></span></span><span class="model-pill prov-gemini" title="gemini-3.1-flash-image"><span class="model-dot dot-gemini"></span><span class="name mono"><span class="model-core">gemini-3.1</span><span class="model-tail">-flash-image</span></span></span><button type="button" class="model-more" data-key="sk-gemini" data-kind="models" onclick="openEntityPopover(event, this)" title="查看全部 12 个模型">+10</button></div></td>
+  <td><div class="model-cell"><span class="tag warn" style="font-size:11px;padding:1px 7px">优先级</span><span class="model-pill cred prov-gemini" title="antigravity-zusiyuan2@gmail.com.json"><span class="model-dot dot-gemini"></span><span class="name mono"><span class="model-core">antigravity</span><span class="model-tail">-zusiyuan2@gmail.com.json</span></span></span></div></td>
+  <td class="cell-nowrap"><div class="row-actions"><button class="btn btn-sm">编辑规则</button><button class="btn btn-sm">清零用量</button><button class="btn btn-sm">删除</button></div></td>
+</tr>
+<tr class="key-row">
+  <td class="drag-cell">⠿</td>
+  <td class="cell-nowrap"><span class="tag ok">● 启用</span></td>
+  <td class="cell-nowrap"><div class="key-cell"><span class="key-code">sk-two</span><button class="btn btn-sm icon-btn">📋</button></div></td>
   <td class="cell-nowrap" style="font-weight:600">双模型</td>
   <td class="cell-nowrap mono">不限</td>
   <td class="cell-nowrap mono">1,204 <span style="color:var(--text-tertiary)">(1180/24)</span></td>
   <td class="cell-nowrap"><span class="token-val">12,340,221</span> <span class="mono" style="font-size:12px;color:var(--text-secondary)"> (9,800,000 / 2,540,221)</span></td>
-  <td class="col-models"><div class="model-cell"><span class="model-pill prov-gemini" title="gemini-3.8-flash-high"><span class="model-dot dot-gemini"></span><span class="name mono"><span class="model-core">gemini-3.8</span><span class="model-tail">-flash-high</span></span></span><span class="model-pill prov-claude" title="claude-opus-4-6-thinking"><span class="model-dot dot-claude"></span><span class="name mono"><span class="model-core">claude-opus</span><span class="model-tail">-4-6-thinking</span></span></span></div></td>
-  <td><div class="tag-group"><span class="tag warn">轮询</span><span class="tag plain mono">antigravity-a@gmail.com</span></div></td>
-  <td class="cell-nowrap"><div class="row-actions"><button class="btn btn-sm">编辑规则</button><button class="btn btn-sm">清零用量</button><button class="btn btn-sm btn-danger">删除</button></div></td>
+  <td class="col-models"><div class="model-cell"><span class="model-pill prov-claude" title="claude-opus-4-6-thinking"><span class="model-dot dot-claude"></span><span class="name mono"><span class="model-core">claude-opus</span><span class="model-tail">-4-6-thinking</span></span></span><span class="model-pill prov-claude" title="claude-sonnet-4-6-thinking"><span class="model-dot dot-claude"></span><span class="name mono"><span class="model-core">claude-sonnet</span><span class="model-tail">-4-6-thinking</span></span></span></div></td>
+  <td><div class="model-cell"><span class="tag warn" style="font-size:11px;padding:1px 7px">严格</span><span class="model-pill cred prov-gemini" title="antigravity-sly538876@gmail.com.json"><span class="model-dot dot-gemini"></span><span class="name mono"><span class="model-core">antigravity</span><span class="model-tail">-sly538876@gmail.com.json</span></span></span><span class="model-pill cred prov-openai" title="openai-compatibility:上海人工智能实验室"><span class="model-dot dot-openai"></span><span class="name mono"><span class="model-core">openai-compatibility</span><span class="model-tail">:上海人工智能实验室</span></span></span><button type="button" class="model-more" data-key="sk-two" data-kind="creds" onclick="openEntityPopover(event, this)" title="查看全部 4 个凭证">+2</button></div></td>
+  <td class="cell-nowrap"><div class="row-actions"><button class="btn btn-sm">编辑规则</button><button class="btn btn-sm">清零用量</button><button class="btn btn-sm">删除</button></div></td>
 </tr>
 <tr class="key-row">
   <td class="drag-cell">⠿</td>
   <td class="cell-nowrap"><span class="tag ok">● 启用</span></td>
-  <td class="cell-nowrap"><div class="key-cell"><span class="key-code">sk-many-models</span><button class="btn btn-sm icon-btn">📋</button></div></td>
-  <td class="cell-nowrap" style="font-weight:600">14 个模型</td>
+  <td class="cell-nowrap"><div class="key-cell"><span class="key-code">sk-one</span><button class="btn btn-sm icon-btn">📋</button></div></td>
+  <td class="cell-nowrap" style="font-weight:600">单模型 / 单凭证</td>
   <td class="cell-nowrap mono">不限</td>
   <td class="cell-nowrap mono">1,204 <span style="color:var(--text-tertiary)">(1180/24)</span></td>
   <td class="cell-nowrap"><span class="token-val">12,340,221</span> <span class="mono" style="font-size:12px;color:var(--text-secondary)"> (9,800,000 / 2,540,221)</span></td>
-  <td class="col-models"><div class="model-cell"><span class="model-pill prov-gemini" title="gemini-3.8-flash-high"><span class="model-dot dot-gemini"></span><span class="name mono"><span class="model-core">gemini-3.8</span><span class="model-tail">-flash-high</span></span></span><span class="model-pill prov-gemini" title="gemini-3.8-flash-control"><span class="model-dot dot-gemini"></span><span class="name mono"><span class="model-core">gemini-3.8</span><span class="model-tail">-flash-control</span></span></span><button type="button" class="model-more" data-key="sk-many-models" onclick="openModelPopover(event, this)" title="查看全部 14 个模型">+12</button></div></td>
-  <td><div class="tag-group"><span class="tag warn">轮询</span><span class="tag plain mono">antigravity-a@gmail.com</span></div></td>
-  <td class="cell-nowrap"><div class="row-actions"><button class="btn btn-sm">编辑规则</button><button class="btn btn-sm">清零用量</button><button class="btn btn-sm btn-danger">删除</button></div></td>
-</tr>
-<tr class="key-row">
-  <td class="drag-cell">⠿</td>
-  <td class="cell-nowrap"><span class="tag ok">● 启用</span></td>
-  <td class="cell-nowrap"><div class="key-cell"><span class="key-code">sk-mixed</span><button class="btn btn-sm icon-btn">📋</button></div></td>
-  <td class="cell-nowrap" style="font-weight:600">混合厂商</td>
-  <td class="cell-nowrap mono">不限</td>
-  <td class="cell-nowrap mono">1,204 <span style="color:var(--text-tertiary)">(1180/24)</span></td>
-  <td class="cell-nowrap"><span class="token-val">12,340,221</span> <span class="mono" style="font-size:12px;color:var(--text-secondary)"> (9,800,000 / 2,540,221)</span></td>
-  <td class="col-models"><div class="model-cell"><span class="model-pill prov-deepseek" title="deepseek-v4.1-flash"><span class="model-dot dot-deepseek"></span><span class="name mono"><span class="model-core">deepseek-v4.1</span><span class="model-tail">-flash</span></span></span><span class="model-pill prov-openai" title="gpt-4o-mini"><span class="model-dot dot-openai"></span><span class="name mono"><span class="model-core">gpt-4o</span><span class="model-tail">-mini</span></span></span><button type="button" class="model-more" data-key="sk-mixed" onclick="openModelPopover(event, this)" title="查看全部 3 个模型">+1</button></div></td>
-  <td><div class="tag-group"><span class="tag warn">轮询</span><span class="tag plain mono">antigravity-a@gmail.com</span></div></td>
-  <td class="cell-nowrap"><div class="row-actions"><button class="btn btn-sm">编辑规则</button><button class="btn btn-sm">清零用量</button><button class="btn btn-sm btn-danger">删除</button></div></td>
+  <td class="col-models"><div class="model-cell"><span class="model-pill prov-gemini" title="gemini-3.8-flash-high"><span class="model-dot dot-gemini"></span><span class="name mono"><span class="model-core">gemini-3.8</span><span class="model-tail">-flash-high</span></span></span></div></td>
+  <td><div class="model-cell"><span class="tag warn" style="font-size:11px;padding:1px 7px">轮询</span><span class="model-pill cred prov-gemini" title="antigravity-zusiyuan2@gmail.com.json"><span class="model-dot dot-gemini"></span><span class="name mono"><span class="model-core">antigravity</span><span class="model-tail">-zusiyuan2@gmail.com.json</span></span></span></div></td>
+  <td class="cell-nowrap"><div class="row-actions"><button class="btn btn-sm">编辑规则</button><button class="btn btn-sm">清零用量</button><button class="btn btn-sm">删除</button></div></td>
 </tr></tbody>
   </table>
 </div>
 
-<div class="demo-label">点击 <code>+12</code> 后弹出的浮层（静态示范，实际会按触发器位置定位）</div>
+<div class="demo-label">点击凭证列的 <code>+1</code> 后弹出的浮层（静态示范）</div>
 <div class="model-popover open demo-popover">
   <div class="model-popover-head">
-    <span>共允许 <span class="mono" style="color:var(--text-primary)">14</span> 个模型</span>
+    <span>共绑定 <span class="mono" style="color:var(--text-primary)">4</span> 个凭证</span>
     <button class="model-popover-close">✕</button>
   </div>
-  <input class="model-popover-search" placeholder="搜索模型名..." value="">
-  <div class="model-popover-list"><div class="model-popover-item"><span class="model-dot dot-gemini"></span><span>gemini-3.8-flash-high</span></div><div class="model-popover-item"><span class="model-dot dot-gemini"></span><span>gemini-3.8-flash-control</span></div><div class="model-popover-item"><span class="model-dot dot-gemini"></span><span>gemini-3.8-flash-n</span></div><div class="model-popover-item"><span class="model-dot dot-gemini"></span><span>gemini-3.1-pro</span></div><div class="model-popover-item"><span class="model-dot dot-gemini"></span><span>gemini-3-pro-preview</span></div><div class="model-popover-item"><span class="model-dot dot-gemini"></span><span>gemini-2.5-flash</span></div><div class="model-popover-item"><span class="model-dot dot-gemini"></span><span>gemini-2.5-pro</span></div><div class="model-popover-item"><span class="model-dot dot-gemini"></span><span>gemini-3-flash-lite</span></div><div class="model-popover-item"><span class="model-dot dot-gemini"></span><span>gemini-3.8-flash-image</span></div><div class="model-popover-item"><span class="model-dot dot-gemini"></span><span>gemini-3.8-flash-thinking</span></div><div class="model-popover-item"><span class="model-dot dot-gemini"></span><span>gemini-3.8-flash-lite</span></div><div class="model-popover-item"><span class="model-dot dot-gemini"></span><span>gemini-3.1-flash</span></div><div class="model-popover-item"><span class="model-dot dot-gemini"></span><span>gemini-3.1-pro-exp</span></div><div class="model-popover-item"><span class="model-dot dot-gemini"></span><span>gemini-3.0-flash</span></div></div>
+  <input class="model-popover-search" placeholder="搜索凭证..." value="">
+  <div class="model-popover-list"><div class="model-popover-item"><span class="model-dot dot-gemini"></span><span>antigravity-sly538876@gmail.com.json</span></div><div class="model-popover-item"><span class="model-dot dot-openai"></span><span>openai-compatibility:上海人工智能实验室</span></div><div class="model-popover-item"><span class="model-dot dot-claude"></span><span>claude-oauth-b@gmail.com.json</span></div><div class="model-popover-item"><span class="model-dot dot-deepseek"></span><span>deepseek-key-1</span></div></div>
   <div class="model-popover-foot">
     <button class="btn btn-sm">复制全部</button>
     <button class="btn btn-sm">编辑规则</button>

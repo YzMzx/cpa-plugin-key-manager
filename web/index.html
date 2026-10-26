@@ -495,7 +495,8 @@
     gap: 6px;
     flex-wrap: nowrap;
     white-space: nowrap;
-    max-width: 360px;
+    max-width: 470px;
+    min-width: 0;
   }
   .model-pill {
     display: inline-flex;
@@ -508,9 +509,10 @@
     font-family: var(--font-mono);
     font-size: 11px;
     line-height: 1.7;
-    max-width: 150px;
+    max-width: 210px;
+    min-width: 0;
     overflow: hidden;
-    flex: 0 0 auto;
+    flex: 0 1 auto;
   }
   .model-pill .name {
     overflow: hidden;
@@ -518,6 +520,7 @@
     white-space: nowrap;
   }
   .model-dot { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 auto; }
+  .model-pill.cred { max-width: 240px; }
   .model-core { color: var(--text-primary); }
   .model-tail { color: var(--text-tertiary); }
   .model-pill.prov-claude { border-color: rgba(245, 158, 11, 0.35); }
@@ -2114,13 +2117,58 @@
     const shown = models.slice(0, 2).map(modelPillHtml).join("");
     const hidden = models.length - 2;
     const moreBtn = hidden > 0
-      ? `<button type="button" class="model-more" data-key="${escapeHtml(apiKey)}" onclick="openModelPopover(event, this)" title="查看全部 ${models.length} 个模型">+${hidden}</button>`
+      ? `<button type="button" class="model-more" data-key="${escapeHtml(apiKey)}" data-kind="models" onclick="openEntityPopover(event, this)" title="查看全部 ${models.length} 个模型">+${hidden}</button>`
       : "";
     return `<div class="model-cell">${shown}${moreBtn}</div>`;
   }
 
-  // ---- Whitelist popover (rendered into <body> so table overflow never clips it) ----
-  let popoverState = { apiKey: "", models: [], anchor: null };
+  // ---- Bound credentials: same single-line pill + popover treatment ----
+  // The credential id is split at ':' (openai-compatibility:<name>) or '-' (provider-<account>)
+  // so the provider prefix stays bright and the identity is dimmed.
+  function credProviderKey(name) {
+    const n = String(name || "").toLowerCase();
+    if (n.includes("claude")) return "claude";
+    if (n.includes("gemini") || n.includes("antigravity") || n.includes("vertex")) return "gemini";
+    if (n.includes("openai") || n.includes("gpt") || n.includes("codex") || n.includes("azure")) return "openai";
+    if (n.includes("deepseek")) return "deepseek";
+    return "other";
+  }
+
+  function splitCredentialName(name) {
+    const raw = String(name || "");
+    const colon = raw.indexOf(":");
+    if (colon > 0) return { core: raw.slice(0, colon), tail: raw.slice(colon) };
+    const dash = raw.indexOf("-");
+    if (dash > 0) return { core: raw.slice(0, dash), tail: raw.slice(dash) };
+    return { core: raw, tail: "" };
+  }
+
+  function credPillHtml(name) {
+    const provider = credProviderKey(name);
+    const split = splitCredentialName(name);
+    return `<span class="model-pill cred prov-${provider}" title="${escapeHtml(name)}">` +
+      `<span class="model-dot dot-${provider}"></span>` +
+      `<span class="name mono"><span class="model-core">${escapeHtml(split.core)}</span>` +
+      `<span class="model-tail">${escapeHtml(split.tail)}</span></span></span>`;
+  }
+
+  function credentialCellHtml(apiKey, strategyLabel, creds) {
+    if (!creds.length) {
+      return `<span class="tag ok">全部可用凭证</span>`;
+    }
+    const shown = creds.slice(0, 2).map(credPillHtml).join("");
+    const hidden = creds.length - 2;
+    const moreBtn = hidden > 0
+      ? `<button type="button" class="model-more" data-key="${escapeHtml(apiKey)}" data-kind="creds" onclick="openEntityPopover(event, this)" title="查看全部 ${creds.length} 个凭证">+${hidden}</button>`
+      : "";
+    const strategy = strategyLabel
+      ? `<span class="tag warn" style="font-size:11px;padding:1px 7px">${escapeHtml(strategyLabel)}</span>`
+      : "";
+    return `<div class="model-cell">${strategy}${shown}${moreBtn}</div>`;
+  }
+
+  // ---- Shared popover (rendered into <body> so table overflow never clips it) ----
+  let popoverState = { apiKey: "", kind: "models", items: [], anchor: null };
 
   function allowedModelsFor(apiKey) {
     const rule = ((overviewData && overviewData.keys) || []).find(r => r.api_key === apiKey);
@@ -2128,21 +2176,29 @@
     return Array.from(new Set(raw.filter(m => m && m !== "*")));
   }
 
-  function openModelPopover(ev, trigger) {
+  function boundCredentialsFor(apiKey) {
+    const rule = ((overviewData && overviewData.keys) || []).find(r => r.api_key === apiKey);
+    const ub = (rule && rule.upstream_binding) || {};
+    return Array.from(new Set([].concat(ub.auth_ids || [], ub.credentials || []).filter(Boolean)));
+  }
+
+  function openEntityPopover(ev, trigger) {
     ev.preventDefault();
     ev.stopPropagation();
     const apiKey = trigger.getAttribute("data-key") || "";
-    const models = allowedModelsFor(apiKey);
+    const kind = trigger.getAttribute("data-kind") || "models";
+    const items = kind === "creds" ? boundCredentialsFor(apiKey) : allowedModelsFor(apiKey);
     const popover = document.getElementById("modelPopover");
     if (!popover) return;
 
     // Toggle off when the same trigger is clicked again.
-    if (popover.classList.contains("open") && popoverState.apiKey === apiKey && popoverState.anchor === trigger) {
+    if (popover.classList.contains("open") && popoverState.apiKey === apiKey &&
+        popoverState.kind === kind && popoverState.anchor === trigger) {
       closeModelPopover();
       return;
     }
-    popoverState = { apiKey: apiKey, models: models, anchor: trigger };
-    renderModelPopover("");
+    popoverState = { apiKey: apiKey, kind: kind, items: items, anchor: trigger };
+    renderEntityPopover("");
     popover.classList.add("open");
 
     const rect = trigger.getBoundingClientRect();
@@ -2161,26 +2217,32 @@
     if (input) input.focus();
   }
 
-  function renderModelPopover(query, keepFocus) {
+  function renderEntityPopover(query, keepFocus) {
     const popover = document.getElementById("modelPopover");
     if (!popover) return;
+    const isCreds = popoverState.kind === "creds";
     const q = String(query || "").trim().toLowerCase();
-    const models = q ? popoverState.models.filter(m => m.toLowerCase().includes(q)) : popoverState.models;
-    const items = models.map(m => {
-      const provider = modelProviderKey(m);
+    const all = popoverState.items;
+    const matched = q ? all.filter(m => m.toLowerCase().includes(q)) : all;
+    const items = matched.map(m => {
+      const provider = isCreds ? credProviderKey(m) : modelProviderKey(m);
       return `<div class="model-popover-item"><span class="model-dot dot-${provider}"></span><span>${escapeHtml(m)}</span></div>`;
     }).join("");
+    const headLabel = isCreds ? "共绑定" : "共允许";
+    const unit = isCreds ? "个凭证" : "个模型";
+    const placeholder = isCreds ? "搜索凭证..." : "搜索模型名...";
+    const emptyLabel = isCreds ? "没有匹配的凭证" : "没有匹配的模型";
 
     popover.innerHTML = `
       <div class="model-popover-head">
-        <span>共允许 <span class="mono" style="color:var(--text-primary)">${popoverState.models.length}</span> 个模型${q ? `（匹配 ${models.length}）` : ""}</span>
+        <span>${headLabel} <span class="mono" style="color:var(--text-primary)">${all.length}</span> ${unit}${q ? `（匹配 ${matched.length}）` : ""}</span>
         <button type="button" class="model-popover-close" onclick="closeModelPopover()" title="关闭">✕</button>
       </div>
-      <input type="text" class="model-popover-search" id="modelPopoverSearch" placeholder="搜索模型名..." value="${escapeHtml(query || "")}" oninput="renderModelPopover(this.value, true)">
-      <div class="model-popover-list">${items || `<div class="model-popover-empty">没有匹配的模型</div>`}</div>
+      <input type="text" class="model-popover-search" id="modelPopoverSearch" placeholder="${placeholder}" value="${escapeHtml(query || "")}" oninput="renderEntityPopover(this.value, true)">
+      <div class="model-popover-list">${items || `<div class="model-popover-empty">${emptyLabel}</div>`}</div>
       <div class="model-popover-foot">
-        <button type="button" class="btn btn-sm" onclick="copyPopoverModels()">复制全部</button>
-        <button type="button" class="btn btn-sm" onclick="editFromModelPopover()">编辑规则</button>
+        <button type="button" class="btn btn-sm" onclick="copyPopoverItems()">复制全部</button>
+        <button type="button" class="btn btn-sm" onclick="editFromPopover()">编辑规则</button>
       </div>`;
 
     // Re-rendering replaces the input, so restore focus and caret while typing.
@@ -2197,15 +2259,15 @@
   function closeModelPopover() {
     const popover = document.getElementById("modelPopover");
     if (popover) popover.classList.remove("open");
-    popoverState = { apiKey: "", models: [], anchor: null };
+    popoverState = { apiKey: "", kind: "models", items: [], anchor: null };
   }
 
-  function copyPopoverModels() {
-    if (!popoverState.models.length) return;
-    copyText(popoverState.models.join("\n"));
+  function copyPopoverItems() {
+    if (!popoverState.items.length) return;
+    copyText(popoverState.items.join("\n"));
   }
 
-  function editFromModelPopover() {
+  function editFromPopover() {
     const apiKey = popoverState.apiKey;
     closeModelPopover();
     if (apiKey) openKeyModalByKey(apiKey);
@@ -2250,19 +2312,12 @@
       const ub = kr.upstream_binding || {};
       const creds = Array.from(new Set([].concat(ub.auth_ids || [], ub.credentials || [])));
       const strategyLabelMap = {
-        "round-robin": "轮询 (round-robin)",
-        "fill-first": "优先级 (fill-first)",
-        "strict": "严格 (strict)"
+        "round-robin": "轮询",
+        "fill-first": "优先级",
+        "strict": "严格"
       };
-      let bindHtml = `<span class="tag ok">全部可用凭证</span>`;
-      if (creds.length > 0) {
-        const shownCreds = creds.slice(0, 2).map(c => `<span class="tag plain mono">${escapeHtml(c)}</span>`).join("");
-        const moreCreds = creds.length - 2;
-        const moreCredTag = moreCreds > 0 ? `<span class="tag plain" title="${escapeHtml(creds.join(", "))}">+${moreCreds}</span>` : "";
-        const strat = ub.strategy || "round-robin";
-        const dispStrat = strategyLabelMap[strat] || strat;
-        bindHtml = `<div class="tag-group"><span class="tag warn">${escapeHtml(dispStrat)}</span>${shownCreds}${moreCredTag}</div>`;
-      }
+      const dispStrat = strategyLabelMap[ub.strategy || "round-robin"] || (ub.strategy || "");
+      const bindHtml = credentialCellHtml(k, creds.length > 0 ? dispStrat : "", creds);
 
       return `<tr class="key-row" data-key="${escapeHtml(k)}" draggable="true"
           ondragstart="onKeyRowDragStart(event, '${escapeHtml(k)}')"
