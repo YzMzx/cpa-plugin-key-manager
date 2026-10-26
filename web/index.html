@@ -568,6 +568,15 @@
     border-radius: 999px;
     padding: 0 6px;
   }
+  .cred-channel-provider {
+    font-weight: 400;
+    font-size: 10px;
+    color: var(--text-tertiary);
+    border: 1px solid var(--border-primary);
+    border-radius: 999px;
+    padding: 0 6px;
+    margin-left: 2px;
+  }
   .cred-row {
     display: flex;
     align-items: center;
@@ -2197,31 +2206,66 @@
     return `<div class="model-cell">${shown}${moreBtn}</div>`;
   }
 
-  // ---- Bound credentials: aggregated vendor badges + grouped popover ----
-  // Credential ids look like `antigravity-<email>.json` or
-  // `openai-compatibility:<name>:<hash>`; the prefix identifies the channel family.
-  function credFamilyOf(name) {
-    const n = String(name || "").toLowerCase();
-    if (n.includes("claude") || n.includes("anthropic")) {
-      return { key: "claude", label: "Claude", dot: "claude" };
+  // ---- Bound credentials: aggregated channel badges + grouped popover ----
+  // A credential belongs to a *channel* (the auth file type/provider: antigravity,
+  // claude, codex, openai-compatible-<name> ...) and that channel serves a certain
+  // AI provider (Google, Anthropic, OpenAI compatible ...). Grouping uses the
+  // channel; the provider is shown separately so the two dimensions never blur.
+  function credChannelOf(name) {
+    const file = authFileFor(name);
+    const typeRaw = String((file && (file.type || file.provider)) || "").trim().toLowerCase();
+    const raw = String(name || "").trim().toLowerCase();
+
+    const compatible = /^openai-compatible-(.+)$/.exec(typeRaw);
+    if (compatible) {
+      return { key: "compat:" + compatible[1], label: compatible[1], provider: "OpenAI 兼容", dot: "openai" };
     }
-    if (n.includes("antigravity") || n.includes("gemini") || n.includes("vertex")) {
-      return { key: "gemini", label: "Gemini", dot: "gemini" };
+    if (typeRaw === "antigravity" || raw.startsWith("antigravity")) {
+      return { key: "antigravity", label: "Antigravity", provider: "Google", dot: "gemini" };
     }
-    if (n.includes("openai") || n.includes("codex") || n.includes("gpt") || n.includes("azure")) {
-      return { key: "codex", label: "Codex", dot: "openai" };
+    if (typeRaw.includes("claude") || raw.startsWith("claude")) {
+      return { key: "claude", label: "Claude", provider: "Anthropic", dot: "claude" };
     }
-    if (n.includes("deepseek")) {
-      return { key: "deepseek", label: "DeepSeek", dot: "deepseek" };
+    if (typeRaw.includes("gemini") || typeRaw.includes("vertex") || raw.startsWith("gemini")) {
+      return { key: "gemini", label: "Gemini", provider: "Google", dot: "gemini" };
     }
-    if (n.includes("qwen")) {
-      return { key: "qwen", label: "Qwen", dot: "other" };
+    if (typeRaw.includes("codex") || raw.startsWith("codex")) {
+      return { key: "codex", label: "Codex", provider: "OpenAI", dot: "openai" };
     }
-    return { key: "other", label: "其他", dot: "other" };
+    if (typeRaw.includes("qwen") || raw.includes("qwen")) {
+      return { key: "qwen", label: "Qwen", provider: "阿里云", dot: "other" };
+    }
+    if (typeRaw.includes("deepseek") || raw.includes("deepseek")) {
+      return { key: "deepseek", label: "DeepSeek", provider: "DeepSeek", dot: "deepseek" };
+    }
+    // Not registered in auth_files: derive the channel from the configured id.
+    if (raw.startsWith("openai-compatibility:")) {
+      const parts = String(name).split(":");
+      const label = (parts.length >= 2 ? parts[1] : "").trim() || "OpenAI 兼容";
+      return { key: "compat:" + label.toLowerCase(), label: label, provider: "OpenAI 兼容", dot: "openai" };
+    }
+    const prefix = String(name || "").split(/[-:]/)[0];
+    return { key: "other:" + raw, label: prefix || "其他", provider: "未知", dot: "other" };
   }
 
   function credProviderKey(name) {
-    return credFamilyOf(name).dot;
+    return credChannelOf(name).dot;
+  }
+
+  // The badge dimension is the AI provider, so several channels of the same vendor
+  // collapse into one badge (Antigravity + any gemini channel -> Google).
+  function credProviderOf(name) {
+    const label = credChannelOf(name).provider;
+    const table = {
+      "Google": { key: "google", label: "Google", dot: "gemini" },
+      "Anthropic": { key: "anthropic", label: "Anthropic", dot: "claude" },
+      "OpenAI": { key: "openai", label: "OpenAI", dot: "openai" },
+      "OpenAI 兼容": { key: "openai-compat", label: "OpenAI 兼容", dot: "openai" },
+      "阿里云": { key: "aliyun", label: "阿里云", dot: "other" },
+      "DeepSeek": { key: "deepseek", label: "DeepSeek", dot: "deepseek" }
+    };
+    if (table[label]) return table[label];
+    return { key: "other", label: label && label !== "未知" ? label : "其他", dot: "other" };
   }
 
   function splitCredentialName(name) {
@@ -2283,24 +2327,44 @@
   }
 
   function credPillHtml(name) {
-    const family = credFamilyOf(name);
+    const channel = credChannelOf(name);
     const split = splitCredentialName(name);
-    return `<span class="model-pill cred prov-${family.dot}" title="${escapeHtml(name)}">` +
-      `<span class="model-dot dot-${family.dot}"></span>` +
+    return `<span class="model-pill cred prov-${channel.dot}" title="${escapeHtml(name)}">` +
+      `<span class="model-dot dot-${channel.dot}"></span>` +
       `<span class="name mono"><span class="model-core">${escapeHtml(split.core)}</span>` +
       `<span class="model-tail">${escapeHtml(split.tail)}</span></span></span>`;
   }
 
-  // Groups credential ids by channel family, largest group first.
+  // Groups credential ids by channel, largest group first. The provider is carried
+  // along so the popover can label each channel with the AI provider it serves.
   function credentialGroups(creds) {
     const map = new Map();
     for (const id of creds) {
-      const family = credFamilyOf(id);
-      if (!map.has(family.key)) map.set(family.key, { key: family.key, label: family.label, dot: family.dot, items: [] });
-      map.get(family.key).items.push(id);
+      const channel = credChannelOf(id);
+      if (!map.has(channel.key)) {
+        map.set(channel.key, { key: channel.key, label: channel.label, provider: channel.provider, dot: channel.dot, items: [] });
+      }
+      map.get(channel.key).items.push(id);
     }
     const groups = Array.from(map.values());
     for (const group of groups) group.items.sort();
+    groups.sort((a, b) => b.items.length - a.items.length || a.label.localeCompare(b.label));
+    return groups;
+  }
+
+  // Badges aggregate by AI provider; the per-channel breakdown lives in the popover.
+  function credentialProviderGroups(creds) {
+    const map = new Map();
+    for (const id of creds) {
+      const provider = credProviderOf(id);
+      if (!map.has(provider.key)) {
+        map.set(provider.key, { key: provider.key, label: provider.label, dot: provider.dot, items: [], channels: new Set() });
+      }
+      const group = map.get(provider.key);
+      group.items.push(id);
+      group.channels.add(credChannelOf(id).key);
+    }
+    const groups = Array.from(map.values());
     groups.sort((a, b) => b.items.length - a.items.length || a.label.localeCompare(b.label));
     return groups;
   }
@@ -2318,10 +2382,10 @@
       return `<div class="model-cell">${strategy}<span class="single-cred">${credPillHtml(creds[0])}</span></div>`;
     }
 
-    // Two or more collapse into one badge per channel family.
-    const groups = credentialGroups(creds);
+    // Two or more collapse into one badge per AI provider.
+    const groups = credentialProviderGroups(creds);
     const shown = groups.slice(0, 3).map(group => {
-      const title = `${group.label}: ${group.items.length} 个凭证`;
+      const title = `${group.label}: ${group.items.length} 个凭证（${group.channels.size} 个渠道）`;
       return `<button type="button" class="cred-badge prov-${group.dot}" data-key="${escapeHtml(apiKey)}" data-kind="creds" ` +
         `onclick="openEntityPopover(event, this)" title="${escapeHtml(title)}">` +
         `<span class="model-dot dot-${group.dot}"></span>` +
@@ -2331,7 +2395,7 @@
     const hiddenFamilies = groups.length - 3;
     const moreBtn = hiddenFamilies > 0
       ? `<button type="button" class="model-more" data-key="${escapeHtml(apiKey)}" data-kind="creds" ` +
-        `onclick="openEntityPopover(event, this)" title="还有 ${hiddenFamilies} 个渠道，共 ${creds.length} 个凭证">+${hiddenFamilies}</button>`
+        `onclick="openEntityPopover(event, this)" title="还有 ${hiddenFamilies} 个提供商，共 ${creds.length} 个凭证">+${hiddenFamilies}</button>`
       : "";
     return `<div class="model-cell">${strategy}${shown}${moreBtn}</div>`;
   }
@@ -2412,6 +2476,7 @@
         }).join("");
         return `<div class="cred-group">` +
           `<div class="cred-group-title"><span class="model-dot dot-${group.dot}"></span>${escapeHtml(group.label)}` +
+          `<span class="cred-channel-provider">AI 提供商: ${escapeHtml(group.provider)}</span>` +
           `<span class="cred-group-count mono">${group.items.length}</span></div>` +
           rows + `</div>`;
       }).join("");
@@ -2509,8 +2574,7 @@
       let modelsHtml = modelWhitelistCellHtml(k, isAllModels, allowedList);
 
       const ub = kr.upstream_binding || {};
-      const creds = Array.from(new Set([].concat(ub.auth_ids || [], ub.credentials || [])));
-      const strategyLabelMap = {
+      const creds = Array.from(new Set([].concat(ub.auth_ids || [], ub.credentials || [])));      const strategyLabelMap = {
         "round-robin": "轮询",
         "fill-first": "优先级",
         "strict": "严格"
