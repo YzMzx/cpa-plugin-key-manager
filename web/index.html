@@ -2283,15 +2283,19 @@
         ensure(ms.model).children.push(ms);
         continue;
       }
+      // A bucket that was also requested by its own name belongs to that name: some
+      // clients really asked for gemini-4-argon-high, so it must not be swallowed by
+      // the group of another requested model.
       let parent = aliases[0];
-      if (aliases.length > 1) {
-        // Prefer a requested name that differs from the served name: that is the
-        // substitution source. Any other distinct request name is kept as a hint.
-        const differing = aliases.filter(a => !same(a, ms.model));
-        if (differing.length > 0) parent = differing[0];
-        const others = aliases.filter(a => !same(a, parent) && !same(a, ms.model));
-        if (others.length > 0) ms.extraRequested = others;
+      const ownRequested = aliases.find(a => same(a, ms.model));
+      if (ownRequested) {
+        parent = ownRequested;
+      } else if (aliases.length > 1) {
+        // Only substitutions here: use the first requested name as the group.
+        parent = aliases[0];
       }
+      const others = aliases.filter(a => !same(a, parent));
+      if (others.length > 0) ms.extraRequested = others;
       const group = ensure(parent);
       group.children.push(ms);
       group.knownRequested = true;
@@ -2404,8 +2408,11 @@
               const tag = group.flat
                 ? `<span class="tag plain" style="font-size:10px" title="该模型的历史请求没有记录到请求模型名（多为 0 token 的失败请求），产生新请求后会自动补上">未记录请求模型</span>`
                 : `<span class="tag plain" style="font-size:10px">请求模型</span>`;
+              const extra = (ms.extraRequested && ms.extraRequested.length)
+                ? ` <span class="tag plain" style="font-size:10px" title="这些请求的服务端模型相同，但客户端请求名另有: ${escapeHtml(ms.extraRequested.join(", "))}">另含 ${ms.extraRequested.length} 个请求名</span>`
+                : "";
               html += `<tr class="model-group-row">
-                <td class="cell-nowrap"><span class="mono" style="color:var(--text-primary);font-weight:600">${escapeHtml(ms.model)}</span> ${tag}</td>${modelCells(ms)}
+                <td class="cell-nowrap"><span class="mono" style="color:var(--text-primary);font-weight:600">${escapeHtml(ms.model)}</span> ${tag}${extra}</td>${modelCells(ms)}
                 <td colspan="2" style="font-size:11px;color:var(--text-tertiary)">最后调用: ${escapeHtml(ms.last_used_at || "-")}</td>
               </tr>`;
               continue;
@@ -2561,8 +2568,11 @@
             const tag = group.flat
               ? `<span class="tag plain" style="font-size:10px" title="该模型的历史请求没有记录到请求模型名（多为 0 token 的失败请求），产生新请求后会自动补上">未记录请求模型</span>`
               : `<span class="tag plain" style="font-size:10px">请求模型</span>`;
+            const singleExtra = (ms.extraRequested && ms.extraRequested.length)
+              ? ` <span class="tag plain" style="font-size:10px" title="这些请求的服务端模型相同，但客户端请求名另有: ${escapeHtml(ms.extraRequested.join(", "))}">另含 ${ms.extraRequested.length} 个请求名</span>`
+              : "";
             html += `<tr class="model-group-row">
-              <td class="cell-nowrap" colspan="2"><span class="mono" style="color:var(--text-primary);font-weight:600">${escapeHtml(ms.model)}</span> ${tag}</td>${acctCells(ms)}
+              <td class="cell-nowrap" colspan="2"><span class="mono" style="color:var(--text-primary);font-weight:600">${escapeHtml(ms.model)}</span> ${tag}${singleExtra}</td>${acctCells(ms)}
               <td class="cell-nowrap" style="font-size:11px;color:var(--text-tertiary)">最后调用: ${escapeHtml(ms.last_used_at || "-")}</td>
             </tr>`;
             continue;
