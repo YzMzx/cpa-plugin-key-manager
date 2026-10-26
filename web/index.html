@@ -2308,6 +2308,10 @@
       // A group whose name is not backed by a recorded requested model (legacy
       // data) collapses to a plain row for its single served model.
       group.flat = !group.knownRequested;
+      // No substitution happened: the request model and the served model are the
+      // same, so render one row instead of a header plus an identical child.
+      group.single = group.children.length === 1 &&
+        String(group.children[0].model || "").toLowerCase() === String(group.requested).toLowerCase();
     }
     // Real request groups first (by volume), then the rows whose requested model
     // was never recorded, so an unmatched served model can never appear above a
@@ -2383,10 +2387,14 @@
               <td class="cell-nowrap mono">${fmtInt(st.cache_read_tokens !== undefined ? st.cache_read_tokens : st.cacheRead)} / ${fmtInt(st.cache_write_tokens !== undefined ? st.cache_write_tokens : st.cacheWrite)}</td>
               <td class="cell-nowrap token-val">${fmtInt(st.total_tokens !== undefined ? st.total_tokens : st.totalTokens)}</td>`;
           for (const group of buildRequestedModelGroups(validModels)) {
-            if (group.flat) {
+            // No substitution: one row labelled with the requested model.
+            if (group.single) {
               const ms = group.children[0];
+              const tag = group.flat
+                ? `<span class="tag plain" style="font-size:10px" title="该模型的历史请求没有记录到请求模型名（多为 0 token 的失败请求），产生新请求后会自动补上">未记录请求模型</span>`
+                : `<span class="tag plain" style="font-size:10px">请求模型</span>`;
               html += `<tr class="sub-row">
-                <td class="cell-nowrap">↳ <span class="mono">${escapeHtml(ms.model)}</span></td>${modelCells(ms)}
+                <td class="cell-nowrap">↳ <span class="mono">${escapeHtml(ms.model)}</span> ${tag}</td>${modelCells(ms)}
                 <td colspan="2" style="font-size:11px;color:var(--text-tertiary)">最后调用: ${escapeHtml(ms.last_used_at || "-")}</td>
               </tr>`;
               continue;
@@ -2534,10 +2542,13 @@
             <td class="cell-nowrap mono">${fmtInt(st.cache_read_tokens !== undefined ? st.cache_read_tokens : st.cacheRead)} / ${fmtInt(st.cache_write_tokens !== undefined ? st.cache_write_tokens : st.cacheWrite)}</td>
             <td class="cell-nowrap token-val">${fmtInt(st.total_tokens !== undefined ? st.total_tokens : st.totalTokens)}</td>`;
         for (const group of buildRequestedModelGroups(modelList)) {
-          if (group.flat) {
+          if (group.single) {
             const ms = group.children[0];
+            const tag = group.flat
+              ? `<span class="tag plain" style="font-size:10px" title="该模型的历史请求没有记录到请求模型名（多为 0 token 的失败请求），产生新请求后会自动补上">未记录请求模型</span>`
+              : `<span class="tag plain" style="font-size:10px">请求模型</span>`;
             html += `<tr class="sub-row">
-              <td class="cell-nowrap" colspan="2">↳ <span class="mono">${escapeHtml(ms.model)}</span></td>${acctCells(ms)}
+              <td class="cell-nowrap" colspan="2">↳ <span class="mono">${escapeHtml(ms.model)}</span> ${tag}</td>${acctCells(ms)}
               <td class="cell-nowrap" style="font-size:11px;color:var(--text-tertiary)">最后调用: ${escapeHtml(ms.last_used_at || "-")}</td>
             </tr>`;
             continue;
