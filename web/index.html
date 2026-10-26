@@ -521,6 +521,81 @@
   }
   .model-dot { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 auto; }
   .model-pill.cred { max-width: 240px; }
+  /* A single bound credential is displayed directly and truncated. */
+  .single-cred .model-pill { max-width: 160px; }
+  /* Aggregated channel-family badges: Claude 3 · Gemini 5 · Codex 2 */
+  .cred-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 1px 8px;
+    border: 1px solid var(--border-primary);
+    border-radius: 999px;
+    background: var(--count-badge-bg);
+    font-size: 11px;
+    line-height: 1.7;
+    cursor: pointer;
+    flex: 0 0 auto;
+    transition: border-color 0.15s ease, background 0.15s ease;
+  }
+  .cred-badge:hover { background: var(--bg-hover); }
+  .cred-badge.prov-claude { border-color: rgba(245, 158, 11, 0.35); }
+  .cred-badge.prov-gemini { border-color: rgba(56, 189, 248, 0.35); }
+  .cred-badge.prov-openai { border-color: rgba(52, 211, 153, 0.32); }
+  .cred-badge.prov-deepseek { border-color: rgba(129, 140, 248, 0.35); }
+  .cred-badge-label { color: var(--text-secondary); }
+  .cred-badge-count { color: var(--text-primary); font-weight: 700; }
+  /* Grouped credential popover */
+  .cred-group { margin-bottom: 8px; }
+  .cred-group:last-child { margin-bottom: 0; }
+  .cred-group-title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 4px 4px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    position: sticky;
+    top: 0;
+    background: var(--bg-secondary);
+  }
+  .cred-group-count {
+    margin-left: auto;
+    font-size: 10.5px;
+    color: var(--text-tertiary);
+    border: 1px solid var(--border-primary);
+    border-radius: 999px;
+    padding: 0 6px;
+  }
+  .cred-row {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 3px 6px;
+    border-radius: 6px;
+    font-size: 11.5px;
+  }
+  .cred-row:hover { background: var(--bg-hover); }
+  .cred-row-name {
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .cred-status {
+    margin-left: auto;
+    flex: 0 0 auto;
+    font-size: 10px;
+    padding: 0 6px;
+    border-radius: 999px;
+    border: 1px solid var(--border-primary);
+    color: var(--text-tertiary);
+  }
+  .cred-status-active { color: #34d399; border-color: rgba(52, 211, 153, 0.35); }
+  .cred-status-limited { color: #f59e0b; border-color: rgba(245, 158, 11, 0.35); }
+  .cred-status-error { color: #f87171; border-color: rgba(248, 113, 113, 0.35); }
+  .cred-status-disabled { color: #9ca3af; border-color: rgba(156, 163, 175, 0.35); }
   .model-core { color: var(--text-primary); }
   .model-tail { color: var(--text-tertiary); }
   .model-pill.prov-claude { border-color: rgba(245, 158, 11, 0.35); }
@@ -2122,16 +2197,31 @@
     return `<div class="model-cell">${shown}${moreBtn}</div>`;
   }
 
-  // ---- Bound credentials: same single-line pill + popover treatment ----
-  // The credential id is split at ':' (openai-compatibility:<name>) or '-' (provider-<account>)
-  // so the provider prefix stays bright and the identity is dimmed.
-  function credProviderKey(name) {
+  // ---- Bound credentials: aggregated vendor badges + grouped popover ----
+  // Credential ids look like `antigravity-<email>.json` or
+  // `openai-compatibility:<name>:<hash>`; the prefix identifies the channel family.
+  function credFamilyOf(name) {
     const n = String(name || "").toLowerCase();
-    if (n.includes("claude")) return "claude";
-    if (n.includes("gemini") || n.includes("antigravity") || n.includes("vertex")) return "gemini";
-    if (n.includes("openai") || n.includes("gpt") || n.includes("codex") || n.includes("azure")) return "openai";
-    if (n.includes("deepseek")) return "deepseek";
-    return "other";
+    if (n.includes("claude") || n.includes("anthropic")) {
+      return { key: "claude", label: "Claude", dot: "claude" };
+    }
+    if (n.includes("antigravity") || n.includes("gemini") || n.includes("vertex")) {
+      return { key: "gemini", label: "Gemini", dot: "gemini" };
+    }
+    if (n.includes("openai") || n.includes("codex") || n.includes("gpt") || n.includes("azure")) {
+      return { key: "codex", label: "Codex", dot: "openai" };
+    }
+    if (n.includes("deepseek")) {
+      return { key: "deepseek", label: "DeepSeek", dot: "deepseek" };
+    }
+    if (n.includes("qwen")) {
+      return { key: "qwen", label: "Qwen", dot: "other" };
+    }
+    return { key: "other", label: "其他", dot: "other" };
+  }
+
+  function credProviderKey(name) {
+    return credFamilyOf(name).dot;
   }
 
   function splitCredentialName(name) {
@@ -2143,26 +2233,105 @@
     return { core: raw, tail: "" };
   }
 
+  // Masks the account identity while keeping the channel prefix readable:
+  //   antigravity-lyj109202@gmail.com.json -> antigravity-ly***02@gmail.com.json
+  //   openai-compatibility:777-1:5df0f0b3d3 -> openai-compatibility:777-…f0f0b3d3
+  function maskCredentialName(raw) {
+    let text = String(raw || "");
+    const colon = text.indexOf(":");
+    const dash = text.indexOf("-");
+    const cut = colon > 0 ? colon : (dash > 0 ? dash : -1);
+    let prefix = "";
+    if (cut > 0) {
+      prefix = text.slice(0, cut + 1);
+      text = text.slice(cut + 1);
+    }
+    const at = text.indexOf("@");
+    if (at > 2) {
+      const local = text.slice(0, at);
+      const rest = text.slice(at);
+      const head = local.slice(0, Math.min(2, local.length));
+      const tail = local.slice(-2);
+      return prefix + head + "***" + tail + rest;
+    }
+    if (text.length > 16) {
+      return prefix + text.slice(0, 4) + "…" + text.slice(-6);
+    }
+    return prefix + text;
+  }
+
+  // auth_files carries the live status of every credential the host knows about.
+  function authFileFor(credentialID) {
+    const files = ((overviewData && overviewData.auth_files) || []);
+    const target = String(credentialID || "").toLowerCase();
+    return files.find(f => {
+      const candidates = [f.id, f.name, f.label, f.email, f.account];
+      return candidates.some(c => String(c || "").toLowerCase() === target);
+    }) || null;
+  }
+
+  function credentialStatusOf(credentialID) {
+    const file = authFileFor(credentialID);
+    if (!file) return { key: "unknown", label: "未登记" };
+    if (file.unavailable || file.status === "error") {
+      const reason = String(file.status_message || "").toLowerCase();
+      if (reason.includes("quota") || reason.includes("rate")) return { key: "limited", label: "限流中" };
+      return { key: "error", label: "不可用" };
+    }
+    if (file.status === "disabled" || file.disabled) return { key: "disabled", label: "已禁用" };
+    return { key: "active", label: "正常" };
+  }
+
   function credPillHtml(name) {
-    const provider = credProviderKey(name);
+    const family = credFamilyOf(name);
     const split = splitCredentialName(name);
-    return `<span class="model-pill cred prov-${provider}" title="${escapeHtml(name)}">` +
-      `<span class="model-dot dot-${provider}"></span>` +
+    return `<span class="model-pill cred prov-${family.dot}" title="${escapeHtml(name)}">` +
+      `<span class="model-dot dot-${family.dot}"></span>` +
       `<span class="name mono"><span class="model-core">${escapeHtml(split.core)}</span>` +
       `<span class="model-tail">${escapeHtml(split.tail)}</span></span></span>`;
+  }
+
+  // Groups credential ids by channel family, largest group first.
+  function credentialGroups(creds) {
+    const map = new Map();
+    for (const id of creds) {
+      const family = credFamilyOf(id);
+      if (!map.has(family.key)) map.set(family.key, { key: family.key, label: family.label, dot: family.dot, items: [] });
+      map.get(family.key).items.push(id);
+    }
+    const groups = Array.from(map.values());
+    for (const group of groups) group.items.sort();
+    groups.sort((a, b) => b.items.length - a.items.length || a.label.localeCompare(b.label));
+    return groups;
   }
 
   function credentialCellHtml(apiKey, strategyLabel, creds) {
     if (!creds.length) {
       return `<span class="tag ok">全部可用凭证</span>`;
     }
-    const shown = creds.slice(0, 2).map(credPillHtml).join("");
-    const hidden = creds.length - 2;
-    const moreBtn = hidden > 0
-      ? `<button type="button" class="model-more" data-key="${escapeHtml(apiKey)}" data-kind="creds" onclick="openEntityPopover(event, this)" title="查看全部 ${creds.length} 个凭证">+${hidden}</button>`
-      : "";
     const strategy = strategyLabel
       ? `<span class="tag warn" style="font-size:11px;padding:1px 7px">${escapeHtml(strategyLabel)}</span>`
+      : "";
+
+    // A single credential is shown directly, truncated at 160px.
+    if (creds.length === 1) {
+      return `<div class="model-cell">${strategy}<span class="single-cred">${credPillHtml(creds[0])}</span></div>`;
+    }
+
+    // Two or more collapse into one badge per channel family.
+    const groups = credentialGroups(creds);
+    const shown = groups.slice(0, 3).map(group => {
+      const title = `${group.label}: ${group.items.length} 个凭证`;
+      return `<button type="button" class="cred-badge prov-${group.dot}" data-key="${escapeHtml(apiKey)}" data-kind="creds" ` +
+        `onclick="openEntityPopover(event, this)" title="${escapeHtml(title)}">` +
+        `<span class="model-dot dot-${group.dot}"></span>` +
+        `<span class="cred-badge-label">${escapeHtml(group.label)}</span>` +
+        `<span class="cred-badge-count mono">${group.items.length}</span></button>`;
+    }).join("");
+    const hiddenFamilies = groups.length - 3;
+    const moreBtn = hiddenFamilies > 0
+      ? `<button type="button" class="model-more" data-key="${escapeHtml(apiKey)}" data-kind="creds" ` +
+        `onclick="openEntityPopover(event, this)" title="还有 ${hiddenFamilies} 个渠道，共 ${creds.length} 个凭证">+${hiddenFamilies}</button>`
       : "";
     return `<div class="model-cell">${strategy}${shown}${moreBtn}</div>`;
   }
@@ -2223,26 +2392,53 @@
     const isCreds = popoverState.kind === "creds";
     const q = String(query || "").trim().toLowerCase();
     const all = popoverState.items;
-    const matched = q ? all.filter(m => m.toLowerCase().includes(q)) : all;
-    const items = matched.map(m => {
-      const provider = isCreds ? credProviderKey(m) : modelProviderKey(m);
-      return `<div class="model-popover-item"><span class="model-dot dot-${provider}"></span><span>${escapeHtml(m)}</span></div>`;
-    }).join("");
-    const headLabel = isCreds ? "共绑定" : "共允许";
-    const unit = isCreds ? "个凭证" : "个模型";
-    const placeholder = isCreds ? "搜索凭证..." : "搜索模型名...";
+
+    let listHtml = "";
+    let matchedCount = 0;
+    if (isCreds) {
+      // Grouped by channel family, each row showing the masked identity and status.
+      const groups = credentialGroups(all)
+        .map(group => ({ ...group, items: q ? group.items.filter(id => id.toLowerCase().includes(q)) : group.items }))
+        .filter(group => group.items.length > 0);
+      matchedCount = groups.reduce((sum, group) => sum + group.items.length, 0);
+      listHtml = groups.map(group => {
+        const rows = group.items.map(id => {
+          const status = credentialStatusOf(id);
+          return `<div class="cred-row">` +
+            `<span class="model-dot dot-${group.dot}"></span>` +
+            `<span class="cred-row-name mono" title="${escapeHtml(id)}">${escapeHtml(maskCredentialName(id))}</span>` +
+            `<span class="cred-status cred-status-${status.key}">${escapeHtml(status.label)}</span>` +
+            `</div>`;
+        }).join("");
+        return `<div class="cred-group">` +
+          `<div class="cred-group-title"><span class="model-dot dot-${group.dot}"></span>${escapeHtml(group.label)}` +
+          `<span class="cred-group-count mono">${group.items.length}</span></div>` +
+          rows + `</div>`;
+      }).join("");
+    } else {
+      const matched = q ? all.filter(m => m.toLowerCase().includes(q)) : all;
+      matchedCount = matched.length;
+      listHtml = matched.map(m => {
+        const provider = modelProviderKey(m);
+        return `<div class="model-popover-item"><span class="model-dot dot-${provider}"></span><span>${escapeHtml(m)}</span></div>`;
+      }).join("");
+    }
+
+    const headLabel = isCreds ? "已绑定" : "共允许";
+    const unit = isCreds ? "个账号凭证" : "个模型";
+    const placeholder = isCreds ? "搜索凭证名称/ID..." : "搜索模型名...";
     const emptyLabel = isCreds ? "没有匹配的凭证" : "没有匹配的模型";
 
     popover.innerHTML = `
       <div class="model-popover-head">
-        <span>${headLabel} <span class="mono" style="color:var(--text-primary)">${all.length}</span> ${unit}${q ? `（匹配 ${matched.length}）` : ""}</span>
+        <span>${headLabel} <span class="mono" style="color:var(--text-primary)">${all.length}</span> ${unit}${q ? `（匹配 ${matchedCount}）` : ""}</span>
         <button type="button" class="model-popover-close" onclick="closeModelPopover()" title="关闭">✕</button>
       </div>
       <input type="text" class="model-popover-search" id="modelPopoverSearch" placeholder="${placeholder}" value="${escapeHtml(query || "")}" oninput="renderEntityPopover(this.value, true)">
-      <div class="model-popover-list">${items || `<div class="model-popover-empty">${emptyLabel}</div>`}</div>
+      <div class="model-popover-list">${listHtml || `<div class="model-popover-empty">${emptyLabel}</div>`}</div>
       <div class="model-popover-foot">
         <button type="button" class="btn btn-sm" onclick="copyPopoverItems()">复制全部</button>
-        <button type="button" class="btn btn-sm" onclick="editFromPopover()">编辑规则</button>
+        <button type="button" class="btn btn-sm btn-primary" onclick="editFromPopover('${isCreds ? "creds" : "models"}')">${isCreds ? "管理绑定凭证 →" : "编辑规则"}</button>
       </div>`;
 
     // Re-rendering replaces the input, so restore focus and caret while typing.
@@ -2267,10 +2463,13 @@
     copyText(popoverState.items.join("\n"));
   }
 
-  function editFromPopover() {
+  function editFromPopover(kind) {
     const apiKey = popoverState.apiKey;
     closeModelPopover();
-    if (apiKey) openKeyModalByKey(apiKey);
+    if (!apiKey) return;
+    // Both footers open the same rule editor; the credential footer can preselect
+    // the credential section through the second argument.
+    openKeyModalByKey(apiKey, kind || "");
   }
 
   document.addEventListener("click", () => closeModelPopover());
@@ -2455,9 +2654,14 @@
     document.getElementById("kmApiKey").value = out;
   }
 
-  function openKeyModalByKey(apiKey) {
+  function openKeyModalByKey(apiKey, focusSection) {
     const found = ((overviewData && overviewData.keys) || []).find(x => x.api_key === apiKey);
     openKeyModal(found || null);
+    if (focusSection === "creds") {
+      // Scroll the credential picker into view so "管理绑定凭证" lands on the right block.
+      const panel = document.getElementById("kmCredPickerPanel");
+      if (panel && panel.scrollIntoView) panel.scrollIntoView({ block: "center" });
+    }
   }
 
   function openKeyModal(rule) {
