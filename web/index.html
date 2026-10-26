@@ -487,6 +487,135 @@
     flex-wrap: nowrap;
   }
 
+  /* ===== Model whitelist cell: single line, provider dots, +N popover ===== */
+  td.col-models, th.col-models { padding-left: 8px; padding-right: 8px; }
+  .model-cell {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: nowrap;
+    white-space: nowrap;
+    max-width: 360px;
+  }
+  .model-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 1px 8px;
+    border: 1px solid var(--border-primary);
+    border-radius: 999px;
+    background: var(--count-badge-bg);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.7;
+    max-width: 150px;
+    overflow: hidden;
+    flex: 0 0 auto;
+  }
+  .model-pill .name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .model-dot { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 auto; }
+  .model-core { color: var(--text-primary); }
+  .model-tail { color: var(--text-tertiary); }
+  .model-pill.prov-claude { border-color: rgba(245, 158, 11, 0.35); }
+  .model-pill.prov-gemini { border-color: rgba(56, 189, 248, 0.35); }
+  .model-pill.prov-openai { border-color: rgba(52, 211, 153, 0.32); }
+  .model-pill.prov-deepseek { border-color: rgba(129, 140, 248, 0.35); }
+  .model-pill.prov-other { border-color: var(--border-primary); }
+  .dot-claude { background: #f59e0b; }
+  .dot-gemini { background: #38bdf8; }
+  .dot-openai { background: #34d399; }
+  .dot-deepseek { background: #818cf8; }
+  .dot-other { background: #9ca3af; }
+  .model-more {
+    border: 1px dashed var(--border-primary);
+    background: var(--count-badge-bg);
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    padding: 1px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: color 0.15s ease, border-color 0.15s ease;
+    flex: 0 0 auto;
+  }
+  .model-more:hover { border-color: rgba(56, 189, 248, 0.6); color: #38bdf8; }
+  .model-popover {
+    position: fixed;
+    z-index: 1200;
+    width: 328px;
+    max-width: 92vw;
+    display: none;
+    padding: 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    background: var(--bg-secondary);
+    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.45);
+  }
+  .model-popover.open { display: block; }
+  .model-popover-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+  .model-popover-close {
+    border: none;
+    background: transparent;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+    padding: 2px 4px;
+  }
+  .model-popover-close:hover { color: var(--text-primary); }
+  .model-popover-search {
+    width: 100%;
+    margin: 8px 0;
+    padding: 5px 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-size: 12px;
+    outline: none;
+  }
+  .model-popover-search:focus { border-color: rgba(56, 189, 248, 0.55); }
+  .model-popover-list {
+    max-height: 240px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+  .model-popover-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 6px;
+    border-radius: 6px;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    color: var(--text-primary);
+    word-break: break-all;
+  }
+  .model-popover-item:hover { background: var(--bg-hover); }
+  .model-popover-empty { padding: 10px 6px; text-align: center; color: var(--text-tertiary); font-size: 12px; }
+  .model-popover-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border-color);
+  }
+
   /* API Key drag & drop ordering */
   tr.key-row {
     transition: background 0.12s ease, opacity 0.12s ease;
@@ -946,7 +1075,7 @@
               <th>并发限制</th>
               <th>请求数</th>
               <th>累计总 Tokens</th>
-              <th>模型白名单规则</th>
+              <th class="col-models">模型白名单规则</th>
               <th>绑定账号凭证</th>
               <th>操作</th>
             </tr>
@@ -1947,6 +2076,147 @@
   }
 
   // ==================== TAB 1: UNIFIED API KEYS CRUD ====================
+
+  // Provider detection for the coloured dot / subtle border of a model pill.
+  function modelProviderKey(name) {
+    const n = String(name || "").toLowerCase();
+    if (n.includes("claude")) return "claude";
+    if (n.includes("gemini")) return "gemini";
+    if (n.includes("gpt") || n.startsWith("o1") || n.startsWith("o3") || n.includes("openai")) return "openai";
+    if (n.includes("deepseek")) return "deepseek";
+    return "other";
+  }
+
+  // Splits a model id into a high-contrast core (first two segments) and a muted
+  // version/feature tail, e.g. claude-opus-4-6-thinking -> "claude-opus" + "-4-6-thinking".
+  function splitModelName(name) {
+    const raw = String(name || "");
+    const parts = raw.split("-").filter(p => p !== "");
+    if (parts.length <= 2) return { core: raw, tail: "" };
+    const core = parts.slice(0, 2).join("-");
+    return { core: core, tail: raw.slice(core.length) };
+  }
+
+  function modelPillHtml(name) {
+    const provider = modelProviderKey(name);
+    const split = splitModelName(name);
+    return `<span class="model-pill prov-${provider}" title="${escapeHtml(name)}">` +
+      `<span class="model-dot dot-${provider}"></span>` +
+      `<span class="name mono"><span class="model-core">${escapeHtml(split.core)}</span>` +
+      `<span class="model-tail">${escapeHtml(split.tail)}</span></span></span>`;
+  }
+
+  // Renders the whitelist cell: always one line, at most two pills plus a +N badge.
+  function modelWhitelistCellHtml(apiKey, isAllModels, models) {
+    if (isAllModels || models.length === 0) {
+      return `<span class="tag ok">全部已有模型</span>`;
+    }
+    const shown = models.slice(0, 2).map(modelPillHtml).join("");
+    const hidden = models.length - 2;
+    const moreBtn = hidden > 0
+      ? `<button type="button" class="model-more" data-key="${escapeHtml(apiKey)}" onclick="openModelPopover(event, this)" title="查看全部 ${models.length} 个模型">+${hidden}</button>`
+      : "";
+    return `<div class="model-cell">${shown}${moreBtn}</div>`;
+  }
+
+  // ---- Whitelist popover (rendered into <body> so table overflow never clips it) ----
+  let popoverState = { apiKey: "", models: [], anchor: null };
+
+  function allowedModelsFor(apiKey) {
+    const rule = ((overviewData && overviewData.keys) || []).find(r => r.api_key === apiKey);
+    const raw = (rule && rule.allowed_models && rule.allowed_models.length) ? rule.allowed_models : [];
+    return Array.from(new Set(raw.filter(m => m && m !== "*")));
+  }
+
+  function openModelPopover(ev, trigger) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const apiKey = trigger.getAttribute("data-key") || "";
+    const models = allowedModelsFor(apiKey);
+    const popover = document.getElementById("modelPopover");
+    if (!popover) return;
+
+    // Toggle off when the same trigger is clicked again.
+    if (popover.classList.contains("open") && popoverState.apiKey === apiKey && popoverState.anchor === trigger) {
+      closeModelPopover();
+      return;
+    }
+    popoverState = { apiKey: apiKey, models: models, anchor: trigger };
+    renderModelPopover("");
+    popover.classList.add("open");
+
+    const rect = trigger.getBoundingClientRect();
+    const width = popover.offsetWidth || 328;
+    const height = popover.offsetHeight || 260;
+    let left = rect.left + rect.width / 2 - width / 2;
+    left = Math.max(8, Math.min(left, window.innerWidth - width - 8));
+    let top = rect.bottom + 6;
+    if (top + height > window.innerHeight - 8) {
+      top = Math.max(8, rect.top - height - 6);
+    }
+    popover.style.left = left + "px";
+    popover.style.top = top + "px";
+
+    const input = document.getElementById("modelPopoverSearch");
+    if (input) input.focus();
+  }
+
+  function renderModelPopover(query, keepFocus) {
+    const popover = document.getElementById("modelPopover");
+    if (!popover) return;
+    const q = String(query || "").trim().toLowerCase();
+    const models = q ? popoverState.models.filter(m => m.toLowerCase().includes(q)) : popoverState.models;
+    const items = models.map(m => {
+      const provider = modelProviderKey(m);
+      return `<div class="model-popover-item"><span class="model-dot dot-${provider}"></span><span>${escapeHtml(m)}</span></div>`;
+    }).join("");
+
+    popover.innerHTML = `
+      <div class="model-popover-head">
+        <span>共允许 <span class="mono" style="color:var(--text-primary)">${popoverState.models.length}</span> 个模型${q ? `（匹配 ${models.length}）` : ""}</span>
+        <button type="button" class="model-popover-close" onclick="closeModelPopover()" title="关闭">✕</button>
+      </div>
+      <input type="text" class="model-popover-search" id="modelPopoverSearch" placeholder="搜索模型名..." value="${escapeHtml(query || "")}" oninput="renderModelPopover(this.value, true)">
+      <div class="model-popover-list">${items || `<div class="model-popover-empty">没有匹配的模型</div>`}</div>
+      <div class="model-popover-foot">
+        <button type="button" class="btn btn-sm" onclick="copyPopoverModels()">复制全部</button>
+        <button type="button" class="btn btn-sm" onclick="editFromModelPopover()">编辑规则</button>
+      </div>`;
+
+    // Re-rendering replaces the input, so restore focus and caret while typing.
+    if (keepFocus) {
+      const input = document.getElementById("modelPopoverSearch");
+      if (input) {
+        input.focus();
+        const end = input.value.length;
+        input.setSelectionRange(end, end);
+      }
+    }
+  }
+
+  function closeModelPopover() {
+    const popover = document.getElementById("modelPopover");
+    if (popover) popover.classList.remove("open");
+    popoverState = { apiKey: "", models: [], anchor: null };
+  }
+
+  function copyPopoverModels() {
+    if (!popoverState.models.length) return;
+    copyText(popoverState.models.join("\n"));
+  }
+
+  function editFromModelPopover() {
+    const apiKey = popoverState.apiKey;
+    closeModelPopover();
+    if (apiKey) openKeyModalByKey(apiKey);
+  }
+
+  document.addEventListener("click", () => closeModelPopover());
+  document.addEventListener("keydown", e => {
+    if (e.key === "Escape") closeModelPopover();
+  });
+  window.addEventListener("resize", () => closeModelPopover());
+
   function renderKeysCrudTable() {
     if (!overviewData) return;
     const keys = overviewData.keys || [];
@@ -1974,14 +2244,8 @@
       const existingModelIDs = new Set(getAvailableModels().map(m => m.id));
       const rawModels = (kr.allowed_models && kr.allowed_models.length) ? kr.allowed_models : ["*"];
       const isAllModels = rawModels.length === 0 || rawModels.includes("*");
-      const existingSelected = rawModels.filter(m => m !== "*");
-      let modelsHtml = `<span class="tag ok">全部已有模型</span>`;
-      if (!isAllModels) {
-        const shownModels = existingSelected.slice(0, 3).map(m => `<span class="tag plain mono">${escapeHtml(m)}</span>`).join("");
-        const moreCount = existingSelected.length - 3;
-        const moreTag = moreCount > 0 ? `<span class="tag plain" title="${escapeHtml(existingSelected.join(", "))}">+${moreCount}</span>` : "";
-        modelsHtml = `<div class="tag-group">${shownModels}${moreTag}</div>`;
-      }
+      const allowedList = Array.from(new Set(rawModels.filter(m => m && m !== "*")));
+      let modelsHtml = modelWhitelistCellHtml(k, isAllModels, allowedList);
 
       const ub = kr.upstream_binding || {};
       const creds = Array.from(new Set([].concat(ub.auth_ids || [], ub.credentials || [])));
@@ -2024,7 +2288,7 @@
           <span class="token-val">${fmtInt(ks.total_tokens)}</span>
           <span class="mono" style="font-size:12px;color:var(--text-secondary)"> (${fmtInt(ks.input_tokens)} / ${fmtInt(ks.output_tokens)})</span>
         </td>
-        <td>${modelsHtml}</td>
+        <td class="col-models">${modelsHtml}</td>
         <td>${bindHtml}</td>
         <td class="cell-nowrap">
           <div class="row-actions">
@@ -2035,6 +2299,9 @@
         </td>
       </tr>`;
     }).join("");
+
+    // A re-render invalidates the anchor of an open whitelist popover.
+    closeModelPopover();
   }
 
   function copyText(txt) {
@@ -2651,5 +2918,7 @@
 
   loadAdminOverview().catch(() => {});
 </script>
+<div class="model-popover" id="modelPopover" role="dialog" aria-label="模型白名单明细" onclick="event.stopPropagation()"></div>
+
 </body>
 </html>
