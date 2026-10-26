@@ -2267,25 +2267,34 @@
   // ==================== TAB 2: TOKEN USAGE LEADERBOARDS ====================
   // Groups served-model buckets under the client-requested model they came from,
   // so a substituted request renders as: requested model -> served variants.
-  // A bucket without any recorded requested name is never presented as a request.
+  // Each bucket is attached to exactly ONE group, otherwise the same counters
+  // would be listed (and summed) twice for a model requested under several names.
   function buildRequestedModelGroups(servedModels) {
     const groups = new Map();
     const ensure = (name) => {
       if (!groups.has(name)) groups.set(name, { requested: name, children: [], knownRequested: false });
       return groups.get(name);
     };
+    const same = (a, b) => String(a || "").toLowerCase() === String(b || "").toLowerCase();
     for (const ms of servedModels) {
       if (!ms || !ms.model) continue;
-      const aliases = (ms.requested_models || []).filter(Boolean);
+      const aliases = Array.from(new Set((ms.requested_models || []).filter(Boolean)));
       if (aliases.length === 0) {
         ensure(ms.model).children.push(ms);
         continue;
       }
-      for (const alias of aliases) {
-        const group = ensure(alias);
-        group.children.push(ms);
-        group.knownRequested = true;
+      let parent = aliases[0];
+      if (aliases.length > 1) {
+        // Prefer a requested name that differs from the served name: that is the
+        // substitution source. Any other distinct request name is kept as a hint.
+        const differing = aliases.filter(a => !same(a, ms.model));
+        if (differing.length > 0) parent = differing[0];
+        const others = aliases.filter(a => !same(a, parent) && !same(a, ms.model));
+        if (others.length > 0) ms.extraRequested = others;
       }
+      const group = ensure(parent);
+      group.children.push(ms);
+      group.knownRequested = true;
     }
     const list = Array.from(groups.values());
     for (const group of list) {
@@ -2405,8 +2414,11 @@
               <td colspan="2" style="font-size:11px;color:var(--text-tertiary)">${group.children.length} 个服务端模型</td>
             </tr>`;
             for (const ms of group.children) {
+              const extra = (ms.extraRequested && ms.extraRequested.length)
+                ? ` <span class="tag plain" style="font-size:10px" title="该服务端模型还服务过: ${escapeHtml(ms.extraRequested.join(", "))}">+${ms.extraRequested.length} 请求名</span>`
+                : "";
               html += `<tr class="sub-row">
-                <td class="cell-nowrap">↳ <span class="mono">${escapeHtml(ms.model)}</span></td>${modelCells(ms)}
+                <td class="cell-nowrap">↳ <span class="mono">${escapeHtml(ms.model)}</span>${extra}</td>${modelCells(ms)}
                 <td colspan="2" style="font-size:11px;color:var(--text-tertiary)">最后调用: ${escapeHtml(ms.last_used_at || "-")}</td>
               </tr>`;
             }
@@ -2559,8 +2571,11 @@
             <td class="cell-nowrap" style="font-size:11px;color:var(--text-tertiary)">${group.children.length} 个服务端模型</td>
           </tr>`;
           for (const ms of group.children) {
+            const extra = (ms.extraRequested && ms.extraRequested.length)
+              ? ` <span class="tag plain" style="font-size:10px" title="该服务端模型还服务过: ${escapeHtml(ms.extraRequested.join(", "))}">+${ms.extraRequested.length} 请求名</span>`
+              : "";
             html += `<tr class="sub-row">
-              <td class="cell-nowrap" colspan="2">　↳ <span class="mono">${escapeHtml(ms.model)}</span></td>${acctCells(ms)}
+              <td class="cell-nowrap" colspan="2">　↳ <span class="mono">${escapeHtml(ms.model)}</span>${extra}</td>${acctCells(ms)}
               <td class="cell-nowrap" style="font-size:11px;color:var(--text-tertiary)">最后调用: ${escapeHtml(ms.last_used_at || "-")}</td>
             </tr>`;
           }
