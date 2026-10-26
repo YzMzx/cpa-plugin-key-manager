@@ -31,7 +31,7 @@
    - **多协议非流式与流式增量合并**：原生支持 **OpenAI Chat Completions**、**OpenAI Responses API (`response.usage`)**、**Anthropic Claude (`message_start` + `message_delta`)**、**Google Gemini (`usageMetadata`)** 四大协议格式。在流式分片拦截中按字段执行**非零增量合并（Merge）**，确保 Input、Output、Reasoning、Cache Read、Cache Write 各项 Token 完整聚合。
    - **`stream_options` 协议守卫**：仅对 `SourceFormat == "openai"` 且未显式携带 `stream_options.include_usage` 的流式请求自动注入 `"stream_options": {"include_usage": true}`，严禁向 `claude`、`gemini`、`openai-response` 注入，防止上游返回 `400 Bad Request`。
    - **防重记账与 Windows 安全持久化**：协同 `request.complete` 与宿主 `usage.handle`，确保单次请求绝不重复统计；持久化采用临时文件 `fsync` + 带轻量级重试的原子 `os.Rename`，兼容 Windows 文件锁机制。
-   - **按上游实际响应模型统计**：模型用量行按**上游响应里回报的模型名**归集（例如请求 `gemini-3.8-flash-high` 而服务端实际返回 `gemini-3.8-flash-n`，则记录在后者名下），同时把客户端请求的模型名保留为「请求: ...」别名标签，替换行为可追溯；费用计算仍按请求模型的价格查表，避免上游变体名查不到价格导致费用归零。
+   - **按「请求模型 + 服务端模型」二元组统计**：每次请求只落入一个二元组（例如请求 `gemini-3.8-flash-high` 而服务端实际返回 `gemini-3.8-flash-n`，即计入「请求 = …-high / 落地 = …-n」这一组）。明细表据此精确地按请求模型分组、在组下列出它实际落到过的每个服务端模型，**同一份数据不会被拆到多行、也不再需要模糊标注**；「按模型全局排行」仍按**服务端模型**汇总。费用计算按请求模型的价格查表，避免上游变体名查不到价格导致费用归零。
 
 ---
 

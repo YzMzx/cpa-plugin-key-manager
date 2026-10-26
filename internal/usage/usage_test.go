@@ -3,6 +3,7 @@ package usage
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 	"time"
 
@@ -337,10 +338,9 @@ func TestLegacyUsageMirrorIsMigratedNotDeleted(t *testing.T) {
 	}
 }
 
-// TestServedModelBecomesTheUsageBucket verifies that per-model statistics are
-// attributed to the model the upstream actually reported, while the
-// client-requested name is kept as a traceable alias.
-func TestServedModelBecomesTheUsageBucket(t *testing.T) {
+// TestTupleBucketsSeparateRequestedFromServed verifies that one request is billed
+// into exactly one (requested, served) tuple and that the two names are stored.
+func TestTupleBucketsSeparateRequestedFromServed(t *testing.T) {
 	eng := pricing.NewEngine()
 	eng.SetCustomPrices(map[string]pricing.ModelPrice{
 		"gemini-3.8-flash-high": {Input: 1.0, Output: 2.0},
@@ -355,138 +355,237 @@ func TestServedModelBecomesTheUsageBucket(t *testing.T) {
 	const requested = "gemini-3.8-flash-high"
 	const served = "gemini-3.8-flash-n"
 
-	store.BeginRequest("req-served", "sk-served", "Served Key", requested, requested, "openai", false)
+	store.BeginRequest("req-tuple", "sk-tuple", "Tuple Key", requested, requested, "openai", false)
 	store.ObserveHostUsageRecord(pluginapi.UsageRecord{
-		RequestID:     "attempt-served",
+		RequestID:     "req-tuple",
 		Provider:      "antigravity",
 		Model:         requested,
 		ResponseModel: served,
-		APIKey:        "sk-served",
-		Detail: pluginapi.UsageDetail{
-			InputTokens:  1000,
-			OutputTokens: 500,
-			TotalTokens:  1500,
-		},
-	}, "Served Key")
+		APIKey:        "sk-tuple",
+		Detail:        pluginapi.UsageDetail{InputTokens: 1000, OutputTokens: 500, TotalTokens: 1500},
+	}, "Tuple Key")
 
-	snap := store.Snapshot("sk-served", "", nil, nil, nil, false)
-	ks := snap.Keys["sk-served"]
+	snap := store.Snapshot("sk-tuple", "", nil, nil, nil, false)
+	ks := snap.Keys["sk-tuple"]
 	if ks == nil {
-		t.Fatalf("expected key stats for sk-served")
+		t.Fatalf("missing key stats")
 	}
-	servedStats := ks.Models[served]
-	if servedStats == nil {
-		t.Fatalf("usage was not attributed to the served model %q; models=%v", served, modelKeys(ks.Models))
+	if len(ks.Models) != 1 {
+		t.Fatalf("expected exactly one tuple bucket, got %v", modelKeys(ks.Models))
 	}
-	if servedStats.Requests != 1 || servedStats.TotalTokens != 1500 {
-		t.Fatalf("unexpected served-model stats: %+v", servedStats)
+	stats := ks.Models[tupleKey(requested, served)]
+	if stats == nil {
+		t.Fatalf("tuple bucket missing, got %v", modelKeys(ks.Models))
 	}
-	if _, ok := ks.Models[requested]; ok {
-		t.Fatalf("requested model must not own a separate bucket; models=%v", modelKeys(ks.Models))
+	if stats.RequestedModel != requested || stats.ServedModel != served {
+		t.Fatalf("tuple names wrong: %+v", stats)
 	}
-	foundAlias := false
-	for _, alias := range servedStats.RequestedModels {
-		if alias == requested {
-			foundAlias = true
+	if stats.Requests != 1 || stats.TotalTokens != 1500 {
+		t.Fatalf("unexpected counters: %+v", stats)
+	}
+	if !stats.IsSubstituted() {
+		t.Fatalf("substitution not detected")
+	}
+	// Cost is priced from the requested model.
+	if stats.CostFormatted != "$0.002000" {
+		t.Fatalf("cost should be priced from the requested model, got %s", stats.CostFormatted)
+	}
+}
+
+// TestTupleKeepsBothRequestNamesForSameServedModel reproduces the real case where a
+// served model is reached from two different requested names: each pair has its own
+// counters, so the totals are never duplicated or guessed.
+func TestTupleKeepsBothRequestNamesForSameServedModel(t *testing.T) {
+	store := NewStore(pricing.NewEngine())
+	if err := store.ConfigurePersistence(filepath.Join(t.TempDir(), "usage.json"), time.Hour); err != nil {
+		t.Fatalf("configure store: %v", err)
+	}
+	defer store.Close()
+
+	feed := func(reqID, requested, served string, tokens int64) {
+		store.BeginRequest(reqID, "sk-split", "Split Key", requested, requested, "openai", false)
+		store.ObserveHostUsageRecord(pluginapi.UsageRecord{
+			RequestID:     reqID,
+			Provider:      "antigravity",
+			Model:         requested,
+			ResponseModel: served,
+			APIKey:        "sk-split",
+			Detail:        pluginapi.UsageDetail{InputTokens: tokens, TotalTokens: tokens},
+		}, "Split Key")
+	}
+	feed("req-1", "gemini-3.8-flash-high", "gemini-3.8-flash-n", 100)
+	feed("req-2", "gemini-3.8-flash-high", "gemini-3.8-flash-n", 200)
+	feed("req-3", "gemini-4-argon-high", "gemini-4-argon-high", 50)
+	feed("req-4", "gemini-3.8-flash-high", "gemini-4-argon-high", 30)
+
+	snap := store.Snapshot("sk-split", "", nil, nil, nil, false)
+	ks := snap.Keys["sk-split"]
+	if len(ks.Models) != 3 {
+		t.Fatalf("expected 3 tuples, got %v", modelKeys(ks.Models))
+	}
+	highToN := ks.Models[tupleKey("gemini-3.8-flash-high", "gemini-3.8-flash-n")]
+	if highToN == nil || highToN.Requests != 2 || highToN.TotalTokens != 300 {
+		t.Fatalf("high->n tuple wrong: %+v", highToN)
+	}
+	argonDirect := ks.Models[tupleKey("gemini-4-argon-high", "gemini-4-argon-high")]
+	if argonDirect == nil || argonDirect.Requests != 1 || argonDirect.TotalTokens != 50 {
+		t.Fatalf("argon direct tuple wrong: %+v", argonDirect)
+	}
+	highToArgon := ks.Models[tupleKey("gemini-3.8-flash-high", "gemini-4-argon-high")]
+	if highToArgon == nil || highToArgon.Requests != 1 || highToArgon.TotalTokens != 30 {
+		t.Fatalf("high->argon tuple wrong: %+v", highToArgon)
+	}
+	if !argonDirect.IsSubstituted() == false {
+		t.Fatalf("direct argon must not be marked as substituted")
+	}
+	// Key totals stay the exact sum of the tuples.
+	if ks.TotalRequests != 4 || ks.TotalTokens != 380 {
+		t.Fatalf("key totals must equal the tuple sum: %+v", ks)
+	}
+}
+
+// TestTupleMigrationWhenServedModelArrivesLate covers a streaming response that
+// only reveals the served model on a later chunk: the early slice moves to the
+// final tuple instead of creating a duplicate row.
+func TestTupleMigrationWhenServedModelArrivesLate(t *testing.T) {
+	store := NewStore(pricing.NewEngine())
+	if err := store.ConfigurePersistence(filepath.Join(t.TempDir(), "usage.json"), time.Hour); err != nil {
+		t.Fatalf("configure store: %v", err)
+	}
+	defer store.Close()
+
+	const requested = "gemini-3.8-flash-high"
+	store.BeginRequest("req-late", "sk-late", "Late Key", requested, requested, "openai", true)
+	store.ObserveStreamChunk("req-late", "gemini-3.8-flash-control", requested,
+		[]byte(`data: {"model":"gemini-3.8-flash-control","usage":{"prompt_tokens":100,"completion_tokens":10}}`))
+	store.CompleteRequest(pluginapi.RequestCompletion{
+		RequestID: "req-late", Model: requested, Stream: true,
+		Outcome: pluginapi.RequestCompletionSucceeded, StatusCode: 200,
+	}, "sk-late", "Late Key")
+	store.ObserveStreamChunk("req-late", "gemini-3.8-flash-n", requested,
+		[]byte(`data: {"model":"gemini-3.8-flash-n","usage":{"prompt_tokens":100,"completion_tokens":10}}`))
+
+	snap := store.Snapshot("sk-late", "", nil, nil, nil, false)
+	ks := snap.Keys["sk-late"]
+	if len(ks.Models) != 1 {
+		t.Fatalf("expected the slice to migrate to a single tuple, got %v", modelKeys(ks.Models))
+	}
+	stats := ks.Models[tupleKey(requested, "gemini-3.8-flash-n")]
+	if stats == nil {
+		t.Fatalf("final tuple missing, got %v", modelKeys(ks.Models))
+	}
+	if stats.Requests != 1 || stats.TotalTokens != 110 {
+		t.Fatalf("migrated counters wrong: %+v", stats)
+	}
+}
+
+// TestZeroTokenTupleStillRecorded keeps a counted request (even a failed one with no
+// tokens) attributed to its requested and served names.
+func TestZeroTokenTupleStillRecorded(t *testing.T) {
+	store := NewStore(pricing.NewEngine())
+	if err := store.ConfigurePersistence(filepath.Join(t.TempDir(), "usage.json"), time.Hour); err != nil {
+		t.Fatalf("configure store: %v", err)
+	}
+	defer store.Close()
+
+	const model = "kimi-k3"
+	store.BeginRequest("req-zero", "sk-zero", "Zero Key", model, model, "openai", false)
+	store.CompleteRequest(pluginapi.RequestCompletion{
+		RequestID: "req-zero", Model: model,
+		Outcome: pluginapi.RequestCompletionFailed, StatusCode: 502,
+	}, "sk-zero", "Zero Key")
+
+	snap := store.Snapshot("sk-zero", "", nil, nil, nil, false)
+	stats := snap.Keys["sk-zero"].Models[tupleKey(model, model)]
+	if stats == nil {
+		t.Fatalf("zero-token tuple missing")
+	}
+	if stats.Requests != 1 || stats.FailedRequests != 1 {
+		t.Fatalf("failed request not counted: %+v", stats)
+	}
+	if stats.RequestedModel != model || stats.ServedModel != model {
+		t.Fatalf("tuple names missing: %+v", stats)
+	}
+}
+
+// TestIdleReconcileCreatesNoEmptyTuple keeps the phantom-row fix for the tuple model.
+func TestIdleReconcileCreatesNoEmptyTuple(t *testing.T) {
+	store := NewStore(pricing.NewEngine())
+	if err := store.ConfigurePersistence(filepath.Join(t.TempDir(), "usage.json"), time.Hour); err != nil {
+		t.Fatalf("configure store: %v", err)
+	}
+	defer store.Close()
+
+	store.BeginRequest("req-idle", "sk-idle", "Idle Key", "gemini-3.8-flash-high", "gemini-3.8-flash-high", "openai", false)
+	store.ObserveHostUsageRecord(pluginapi.UsageRecord{
+		RequestID: "req-idle", Provider: "antigravity", AuthID: "antigravity-idle@gmail.com.json",
+		Model: "gemini-3.8-flash-high", ResponseModel: "gemini-3.8-flash-n", APIKey: "sk-idle",
+		Detail: pluginapi.UsageDetail{InputTokens: 100, TotalTokens: 100},
+	}, "Idle Key")
+	store.ObserveHostUsageRecord(pluginapi.UsageRecord{
+		RequestID: "req-idle", Provider: "antigravity", AuthID: "antigravity-idle@gmail.com.json",
+		Model: "gemini-3.8-flash-high", ResponseModel: "gemini-4-argon-high", APIKey: "sk-idle",
+		Detail: pluginapi.UsageDetail{},
+	}, "Idle Key")
+
+	snap := store.Snapshot("sk-idle", "", nil, nil, nil, false)
+	for name, ms := range snap.Keys["sk-idle"].Models {
+		if ms.Requests == 0 && ms.TotalTokens == 0 {
+			t.Fatalf("empty tuple %q must not be created: %+v", name, ms)
 		}
 	}
-	if !foundAlias {
-		t.Fatalf("requested model alias missing from the served bucket: %+v", servedStats.RequestedModels)
-	}
-	// Pricing still resolves through the requested model name.
-	if servedStats.CostFormatted != "$0.002000" {
-		t.Fatalf("cost should be priced from the requested model, got %s", servedStats.CostFormatted)
+	for _, acct := range snap.Accounts {
+		for name, ms := range acct.Models {
+			if ms.Requests == 0 && ms.TotalTokens == 0 {
+				t.Fatalf("empty account tuple %q must not be created: %+v", name, ms)
+			}
+		}
 	}
 }
 
-func modelKeys(models map[string]*ModelStats) []string {
-	out := make([]string, 0, len(models))
-	for k := range models {
-		out = append(out, k)
-	}
-	return out
-}
-
-// TestAccountStatsGroupByProviderAndCredential verifies the account/provider
-// dimension used by the dashboard's "by account & provider" list, including its
-// persistence roundtrip.
-func TestAccountStatsGroupByProviderAndCredential(t *testing.T) {
+// TestAccountTuplesGroupByProviderAndCredential covers the account dimension.
+func TestAccountTuplesGroupByProviderAndCredential(t *testing.T) {
 	eng := pricing.NewEngine()
-	eng.SetCustomPrices(map[string]pricing.ModelPrice{
-		"gemini-3.8-flash-high": {Input: 1.0, Output: 2.0},
-	}, nil)
-
 	usageFile := filepath.Join(t.TempDir(), "usage.json")
 	store := NewStore(eng)
 	if err := store.ConfigurePersistence(usageFile, time.Hour); err != nil {
 		t.Fatalf("configure store: %v", err)
 	}
 
-	feed := func(reqID, authID, authIndex string, input, output int64) {
-		// The plugin opens a tracker at intercept time; the host record arrives
-		// later carrying the same request id plus the credential that served it.
-		store.BeginRequest(reqID, "sk-acct", "Account Key", "gemini-3.8-flash-high", "gemini-3.8-flash-high", "openai", false)
+	feed := func(reqID, authID, requested, served string, tokens int64) {
+		store.BeginRequest(reqID, "sk-acct", "Account Key", requested, requested, "openai", false)
 		store.ObserveHostUsageRecord(pluginapi.UsageRecord{
-			RequestID:     reqID,
-			Provider:      "antigravity",
-			AuthID:        authID,
-			AuthIndex:     authIndex,
-			AuthType:      "oauth",
-			Model:         "gemini-3.8-flash-high",
-			ResponseModel: "gemini-3.8-flash-n",
-			APIKey:        "sk-acct",
-			Detail: pluginapi.UsageDetail{
-				InputTokens:  input,
-				OutputTokens: output,
-				TotalTokens:  input + output,
-			},
+			RequestID: reqID, Provider: "antigravity", AuthID: authID, AuthType: "oauth",
+			Model: requested, ResponseModel: served, APIKey: "sk-acct",
+			Detail: pluginapi.UsageDetail{InputTokens: tokens, TotalTokens: tokens},
 		}, "Account Key")
 	}
-	feed("req-a", "antigravity-sly538876@gmail.com.json", "idx-a", 1000, 500)
-	feed("req-b", "antigravity-sly538876@gmail.com.json", "idx-a", 200, 100)
-	feed("req-c", "antigravity-yzmzxa@gmail.com.json", "idx-b", 400, 400)
+	feed("req-a", "antigravity-sly538876@gmail.com.json", "gemini-3.8-flash-high", "gemini-3.8-flash-n", 1000)
+	feed("req-b", "antigravity-sly538876@gmail.com.json", "gemini-3.8-flash-high", "gemini-3.8-flash-control", 200)
+	feed("req-c", "antigravity-yzmzxa@gmail.com.json", "gemini-4-argon-high", "gemini-4-argon-high", 400)
 
 	snap := store.Snapshot("", "", nil, nil, nil, false)
 	if len(snap.Accounts) != 2 {
-		t.Fatalf("expected 2 account buckets, got %d: %v", len(snap.Accounts), snap.Accounts)
+		t.Fatalf("expected 2 accounts, got %d", len(snap.Accounts))
 	}
-
-	var first, second *AccountStats
+	var first *AccountStats
 	for _, acct := range snap.Accounts {
-		switch acct.AuthID {
-		case "antigravity-sly538876@gmail.com.json":
+		if acct.AuthID == "antigravity-sly538876@gmail.com.json" {
 			first = acct
-		case "antigravity-yzmzxa@gmail.com.json":
-			second = acct
 		}
 	}
-	if first == nil || second == nil {
-		t.Fatalf("account buckets missing credential ids: %+v", snap.Accounts)
+	if first == nil {
+		t.Fatalf("expected credential bucket for sly538876")
 	}
-	if first.Provider != "antigravity" || first.AuthType != "oauth" {
-		t.Fatalf("provider/type not captured: %+v", first)
+	if first.Requests != 2 || first.TotalTokens != 1200 {
+		t.Fatalf("account totals wrong: %+v", first)
 	}
-	if first.Requests != 2 || first.SuccessRequests != 2 {
-		t.Fatalf("expected 2 requests on first credential, got %+v", first)
+	if len(first.Models) != 2 {
+		t.Fatalf("expected 2 tuples on the account, got %v", modelKeys(first.Models))
 	}
-	if first.InputTokens != 1200 || first.OutputTokens != 600 || first.TotalTokens != 1800 {
-		t.Fatalf("token totals wrong for first credential: %+v", first)
-	}
-	if second.Requests != 1 || second.TotalTokens != 800 {
-		t.Fatalf("token totals wrong for second credential: %+v", second)
-	}
-	if first.LastModel != "gemini-3.8-flash-n" {
-		t.Fatalf("last served model not recorded: %q", first.LastModel)
-	}
-	// The account list expands into per-model rows, so each account must retain
-	// per-model statistics rather than a token-only tally.
-	servedDetail := first.Models["gemini-3.8-flash-n"]
-	if servedDetail == nil {
-		t.Fatalf("per-model detail missing from account: %+v", first.Models)
-	}
-	if servedDetail.Requests != 2 || servedDetail.TotalTokens != 1800 ||
-		servedDetail.InputTokens != 1200 || servedDetail.OutputTokens != 600 {
-		t.Fatalf("per-model detail for the account is wrong: %+v", servedDetail)
+	nTuple := first.Models[tupleKey("gemini-3.8-flash-high", "gemini-3.8-flash-n")]
+	if nTuple == nil || nTuple.ServedModel != "gemini-3.8-flash-n" {
+		t.Fatalf("account tuple missing: %+v", nTuple)
 	}
 	if errFlush := store.FlushNow(); errFlush != nil {
 		t.Fatalf("flush: %v", errFlush)
@@ -498,55 +597,40 @@ func TestAccountStatsGroupByProviderAndCredential(t *testing.T) {
 		t.Fatalf("reload: %v", err)
 	}
 	defer reloaded.Close()
-
 	reloadedSnap := reloaded.Snapshot("", "", nil, nil, nil, false)
 	if len(reloadedSnap.Accounts) != 2 {
-		t.Fatalf("account buckets did not survive persistence: %+v", reloadedSnap.Accounts)
+		t.Fatalf("accounts did not survive persistence")
 	}
-	var survived int64
+	var tokens int64
 	for _, acct := range reloadedSnap.Accounts {
-		survived += acct.TotalTokens
+		tokens += acct.TotalTokens
 	}
-	if survived != 2600 {
-		t.Fatalf("account token totals lost across reload: %d", survived)
+	if tokens != 1600 {
+		t.Fatalf("account totals lost across reload: %d", tokens)
 	}
 }
 
-// TestAccountRowsMergeHashedCredentials verifies that CLIProxyAPI's hashed
-// openai-compatibility credential ids collapse into a single account row.
-func TestAccountRowsMergeHashedCredentials(t *testing.T) {
-	eng := pricing.NewEngine()
-	store := NewStore(eng)
+// TestHashedCredentialsMergeIntoOneAccount keeps the identity normalization.
+func TestHashedCredentialsMergeIntoOneAccount(t *testing.T) {
+	store := NewStore(pricing.NewEngine())
 	if err := store.ConfigurePersistence(filepath.Join(t.TempDir(), "usage.json"), time.Hour); err != nil {
-		t.Fatalf("configure: %v", err)
+		t.Fatalf("configure store: %v", err)
 	}
 	defer store.Close()
 
 	feed := func(reqID, authID string, tokens int64) {
-		store.BeginRequest(reqID, "sk-openai", "OpenAI Key", "glm-5.3", "glm-5.3", "openai", false)
+		store.BeginRequest(reqID, "sk-hash", "Hash Key", "glm-5.3", "glm-5.3", "openai", false)
 		store.ObserveHostUsageRecord(pluginapi.UsageRecord{
-			RequestID: reqID,
-			Provider:  "openai",
-			AuthID:    authID,
-			Model:     "glm-5.3",
-			APIKey:    "sk-openai",
-			Detail: pluginapi.UsageDetail{
-				InputTokens: tokens,
-				TotalTokens: tokens,
-			},
-		}, "OpenAI Key")
+			RequestID: reqID, Provider: "openai", AuthID: authID, Model: "glm-5.3", APIKey: "sk-hash",
+			Detail: pluginapi.UsageDetail{InputTokens: tokens, TotalTokens: tokens},
+		}, "Hash Key")
 	}
 	feed("req-1", "openai-compatibility:上海人工智能实验室:5dfdf0f0b3d3", 100)
 	feed("req-2", "openai-compatibility:上海人工智能实验室:1989c9fb1cda", 200)
-	feed("req-3", "openai-compatibility:上海人工智能实验室:7425c11c84a1", 300)
 
 	snap := store.Snapshot("", "", nil, nil, nil, false)
 	if len(snap.Accounts) != 1 {
-		keys := make([]string, 0, len(snap.Accounts))
-		for k := range snap.Accounts {
-			keys = append(keys, k)
-		}
-		t.Fatalf("hashed credentials must share one row, got %d: %v", len(snap.Accounts), keys)
+		t.Fatalf("hashed credentials must share one account, got %d", len(snap.Accounts))
 	}
 	var acct *AccountStats
 	for _, a := range snap.Accounts {
@@ -555,275 +639,55 @@ func TestAccountRowsMergeHashedCredentials(t *testing.T) {
 	if acct.AuthID != "openai-compatibility:上海人工智能实验室" {
 		t.Fatalf("account identity not normalized: %q", acct.AuthID)
 	}
-	if acct.Requests != 3 || acct.TotalTokens != 600 {
+	if acct.Requests != 2 || acct.TotalTokens != 300 {
 		t.Fatalf("merged totals wrong: %+v", acct)
 	}
-	if len(acct.AuthIDs) != 3 {
-		t.Fatalf("raw credential ids not retained: %+v", acct.AuthIDs)
-	}
-	if acct.Provider != "openai" {
-		t.Fatalf("provider should stay stable for a single provider, got %q", acct.Provider)
-	}
 }
 
-// TestServedVariantNeverBecomesARequestedAlias reproduces the "请求: ... -control"
-// display bug: when two different served variants are reported for one request,
-// the earlier variant must not be listed as a client-requested model.
-func TestServedVariantNeverBecomesARequestedAlias(t *testing.T) {
-	eng := pricing.NewEngine()
-	store := NewStore(eng)
-	if err := store.ConfigurePersistence(filepath.Join(t.TempDir(), "usage.json"), time.Hour); err != nil {
-		t.Fatalf("configure: %v", err)
-	}
-	defer store.Close()
-
-	const requested = "gemini-3.8-flash-high"
-	store.BeginRequest("req-alias", "sk-alias", "Alias Key", requested, requested, "openai", true)
-	// A chunk reveals one served variant, and the request is accounted for.
-	store.ObserveStreamChunk("req-alias", "gemini-3.8-flash-control", requested,
-		[]byte(`data: {"model":"gemini-3.8-flash-control","usage":{"prompt_tokens":100,"completion_tokens":10}}`))
-	store.CompleteRequest(pluginapi.RequestCompletion{
-		RequestID:  "req-alias",
-		Model:      requested,
-		Stream:     true,
-		Outcome:    pluginapi.RequestCompletionSucceeded,
-		StatusCode: 200,
-	}, "sk-alias", "Alias Key")
-	// A later chunk reports a different served variant, triggering bucket migration.
-	store.ObserveStreamChunk("req-alias", "gemini-3.8-flash-n", requested,
-		[]byte(`data: {"model":"gemini-3.8-flash-n","usage":{"prompt_tokens":100,"completion_tokens":10}}`))
-
-	snap := store.Snapshot("sk-alias", "", nil, nil, nil, false)
-	ks := snap.Keys["sk-alias"]
-	if ks == nil {
-		t.Fatalf("missing key stats")
-	}
-	stats := ks.Models["gemini-3.8-flash-n"]
-	if stats == nil {
-		t.Fatalf("usage not attributed to the final served model: %v", modelKeys(ks.Models))
-	}
-	for _, alias := range stats.RequestedModels {
-		if alias == "gemini-3.8-flash-control" {
-			t.Fatalf("served variant leaked into the requested alias list: %+v", stats.RequestedModels)
-		}
-	}
-	found := false
-	for _, alias := range stats.RequestedModels {
-		if alias == requested {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("genuine requested model missing from alias list: %+v", stats.RequestedModels)
-	}
-}
-
-// TestIdleReconcileCreatesNoEmptyBucket reproduces the phantom row: a later event
-// for an already billed request names a different model but carries no new tokens,
-// which must not materialise an empty (0 requests / 0 tokens) model row.
-func TestIdleReconcileCreatesNoEmptyBucket(t *testing.T) {
-	store := NewStore(pricing.NewEngine())
-	if err := store.ConfigurePersistence(filepath.Join(t.TempDir(), "usage.json"), time.Hour); err != nil {
-		t.Fatalf("configure: %v", err)
-	}
-	defer store.Close()
-
-	store.BeginRequest("req-idle", "sk-idle", "Idle Key", "gemini-3.8-flash-high", "gemini-3.8-flash-high", "openai", false)
-	store.ObserveHostUsageRecord(pluginapi.UsageRecord{
-		RequestID:     "req-idle",
-		Provider:      "antigravity",
-		AuthID:        "antigravity-idle@gmail.com.json",
-		Model:         "gemini-3.8-flash-high",
-		ResponseModel: "gemini-3.8-flash-n",
-		APIKey:        "sk-idle",
-		Detail:        pluginapi.UsageDetail{InputTokens: 100, TotalTokens: 100},
-	}, "Idle Key")
-	// Same request, another model name, no additional tokens.
-	store.ObserveHostUsageRecord(pluginapi.UsageRecord{
-		RequestID:     "req-idle",
-		Provider:      "antigravity",
-		AuthID:        "antigravity-idle@gmail.com.json",
-		Model:         "gemini-3.8-flash-high",
-		ResponseModel: "gemini-4-argon-high",
-		APIKey:        "sk-idle",
-		Detail:        pluginapi.UsageDetail{},
-	}, "Idle Key")
-
-	snap := store.Snapshot("sk-idle", "", nil, nil, nil, false)
-	ks := snap.Keys["sk-idle"]
-	if ks == nil {
-		t.Fatalf("missing key stats")
-	}
-	for name, ms := range ks.Models {
-		if ms.Requests == 0 && ms.TotalTokens == 0 {
-			t.Fatalf("empty model bucket %q must not be created: %+v", name, ms)
-		}
-	}
-	for _, acct := range snap.Accounts {
-		for name, ms := range acct.Models {
-			if ms.Requests == 0 && ms.TotalTokens == 0 {
-				t.Fatalf("empty account model bucket %q must not be created: %+v", name, ms)
-			}
-		}
-	}
-}
-
-// TestZeroTokenRequestKeepsRequestedAlias verifies a counted request that yields no
-// tokens (failure/empty usage) still records which model the client requested.
-func TestZeroTokenRequestKeepsRequestedAlias(t *testing.T) {
-	store := NewStore(pricing.NewEngine())
-	if err := store.ConfigurePersistence(filepath.Join(t.TempDir(), "usage.json"), time.Hour); err != nil {
-		t.Fatalf("configure: %v", err)
-	}
-	defer store.Close()
-
-	const model = "gemini-4-argon-high"
-	store.BeginRequest("req-zero", "sk-zero", "Zero Key", model, model, "openai", false)
-	store.CompleteRequest(pluginapi.RequestCompletion{
-		RequestID:  "req-zero",
-		Model:      model,
-		Outcome:    pluginapi.RequestCompletionFailed,
-		StatusCode: 502,
-	}, "sk-zero", "Zero Key")
-
-	snap := store.Snapshot("sk-zero", "", nil, nil, nil, false)
-	stats := snap.Keys["sk-zero"].Models[model]
-	if stats == nil {
-		t.Fatalf("missing model bucket for a counted failed request")
-	}
-	if stats.Requests != 1 || stats.FailedRequests != 1 {
-		t.Fatalf("failed request not counted: %+v", stats)
-	}
-	if len(stats.RequestedModels) != 1 || stats.RequestedModels[0] != model {
-		t.Fatalf("requested alias missing on a zero-token request: %+v", stats.RequestedModels)
-	}
-}
-
-// TestLoadDropsEmptyModelBuckets cleans up phantom rows persisted by older builds.
-func TestLoadDropsEmptyModelBuckets(t *testing.T) {
+// TestLoadNormalizesTupleKeys drops malformed entries and re-keys by the stored names.
+func TestLoadNormalizesTupleKeys(t *testing.T) {
 	usageFile := filepath.Join(t.TempDir(), "usage.json")
-	legacy := `{
+	snapshot := `{
   "version": 1,
   "updated_at": "2026-10-26T12:00:00Z",
-  "alias_rev": 1,
   "keys": {
-    "sk-phantom": {
-      "api_key": "sk-phantom",
+    "sk-load": {
+      "api_key": "sk-load",
       "models": {
-        "gemini-4-argon-high": {"model": "gemini-4-argon-high", "requests": 0, "total_tokens": 0},
-        "gemini-3.8-flash-n": {"model": "gemini-3.8-flash-n", "requests": 2, "total_tokens": 200}
-      }
-    }
-  },
-  "accounts": {
-    "account::antigravity-x@gmail.com.json": {
-      "provider": "antigravity",
-      "auth_id": "antigravity-x@gmail.com.json",
-      "requests": 2,
-      "total_tokens": 200,
-      "models": {
-        "gemini-4-argon-high": {"model": "gemini-4-argon-high", "requests": 0, "total_tokens": 0},
-        "gemini-3.8-flash-n": {"model": "gemini-3.8-flash-n", "requests": 2, "total_tokens": 200}
+        "legacy-key": {"requested_model": "gemini-3.8-flash-high", "served_model": "gemini-3.8-flash-n", "requests": 3, "total_tokens": 300},
+        "empty": {"requested_model": "x", "served_model": "x", "requests": 0, "total_tokens": 0}
       }
     }
   }
 }`
-	if err := os.WriteFile(usageFile, []byte(legacy), 0o644); err != nil {
-		t.Fatalf("write legacy snapshot: %v", err)
+	if err := os.WriteFile(usageFile, []byte(snapshot), 0o644); err != nil {
+		t.Fatalf("write snapshot: %v", err)
 	}
-
 	store := NewStore(pricing.NewEngine())
 	if err := store.ConfigurePersistence(usageFile, time.Hour); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
 	defer store.Close()
 
-	snap := store.Snapshot("sk-phantom", "", nil, nil, nil, false)
-	if _, exists := snap.Keys["sk-phantom"].Models["gemini-4-argon-high"]; exists {
-		t.Fatalf("empty model bucket survived the load")
+	snap := store.Snapshot("sk-load", "", nil, nil, nil, false)
+	ks := snap.Keys["sk-load"]
+	if ks == nil {
+		t.Fatalf("key lost")
 	}
-	if _, exists := snap.Keys["sk-phantom"].Models["gemini-3.8-flash-n"]; !exists {
-		t.Fatalf("real model bucket was dropped")
+	if len(ks.Models) != 1 {
+		t.Fatalf("expected only the real tuple, got %v", modelKeys(ks.Models))
 	}
-	for _, acct := range snap.Accounts {
-		if _, exists := acct.Models["gemini-4-argon-high"]; exists {
-			t.Fatalf("empty account model bucket survived the load")
-		}
-	}
-}
-
-// TestRequestedAliasRecordedWhenModelUnchanged pins that a request whose served
-// model equals the requested model still records the requested name, so the
-// dashboard never has to guess what the client asked for.
-func TestRequestedAliasRecordedWhenModelUnchanged(t *testing.T) {
-	store := NewStore(pricing.NewEngine())
-	if err := store.ConfigurePersistence(filepath.Join(t.TempDir(), "usage.json"), time.Hour); err != nil {
-		t.Fatalf("configure: %v", err)
-	}
-	defer store.Close()
-
-	const model = "gemini-3.8-flash-high"
-	store.BeginRequest("req-same", "sk-same", "Same Key", model, model, "openai", false)
-	store.ObserveHostUsageRecord(pluginapi.UsageRecord{
-		RequestID:     "req-same",
-		Provider:      "antigravity",
-		Model:         model,
-		ResponseModel: model,
-		APIKey:        "sk-same",
-		Detail:        pluginapi.UsageDetail{InputTokens: 10, TotalTokens: 10},
-	}, "Same Key")
-
-	snap := store.Snapshot("sk-same", "", nil, nil, nil, false)
-	stats := snap.Keys["sk-same"].Models[model]
-	if stats == nil {
-		t.Fatalf("missing model bucket")
-	}
-	if len(stats.RequestedModels) != 1 || stats.RequestedModels[0] != model {
-		t.Fatalf("requested name must be recorded even without substitution, got %+v", stats.RequestedModels)
+	stats := ks.Models[tupleKey("gemini-3.8-flash-high", "gemini-3.8-flash-n")]
+	if stats == nil || stats.Requests != 3 {
+		t.Fatalf("tuple not re-keyed: %+v models=%v", stats, modelKeys(ks.Models))
 	}
 }
 
-// TestLegacyAliasListsArePurged covers the one-time repair of snapshots written
-// before served variants were excluded from the requested alias list.
-func TestLegacyAliasListsArePurged(t *testing.T) {
-	tmpDir := t.TempDir()
-	usageFile := filepath.Join(tmpDir, "usage.json")
-	legacy := `{
-  "version": 1,
-  "updated_at": "2026-10-25T02:00:00Z",
-  "keys": {
-    "sk-legacy": {
-      "api_key": "sk-legacy",
-      "models": {
-        "gemini-3.8-flash-n": {
-          "model": "gemini-3.8-flash-n",
-          "requests": 5,
-          "total_tokens": 500,
-          "requested_models": ["gemini-3.8-flash-high", "gemini-3.8-flash-control"]
-        }
-      }
-    }
-  }
-}`
-	if err := os.WriteFile(usageFile, []byte(legacy), 0o644); err != nil {
-		t.Fatalf("write legacy snapshot: %v", err)
+func modelKeys(models map[string]*ModelStats) []string {
+	out := make([]string, 0, len(models))
+	for k := range models {
+		out = append(out, k)
 	}
-
-	store := NewStore(pricing.NewEngine())
-	if err := store.ConfigurePersistence(usageFile, time.Hour); err != nil {
-		t.Fatalf("configure: %v", err)
-	}
-	defer store.Close()
-
-	snap := store.Snapshot("sk-legacy", "", nil, nil, nil, false)
-	stats := snap.Keys["sk-legacy"]
-	if stats == nil || stats.Models["gemini-3.8-flash-n"] == nil {
-		t.Fatalf("legacy stats lost: %+v", stats)
-	}
-	if aliases := stats.Models["gemini-3.8-flash-n"].RequestedModels; len(aliases) != 0 {
-		t.Fatalf("legacy alias list should have been purged, got %+v", aliases)
-	}
-	if stats.Models["gemini-3.8-flash-n"].Requests != 5 || stats.Models["gemini-3.8-flash-n"].TotalTokens != 500 {
-		t.Fatalf("legacy counters must be preserved: %+v", stats.Models["gemini-3.8-flash-n"])
-	}
+	sort.Strings(out)
+	return out
 }

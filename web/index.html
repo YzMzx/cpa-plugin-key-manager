@@ -2265,40 +2265,20 @@
   }
 
   // ==================== TAB 2: TOKEN USAGE LEADERBOARDS ====================
-  // Groups served-model buckets under the client-requested model they came from,
-  // so a substituted request renders as: requested model -> served variants.
-  // Each bucket is attached to exactly ONE group, otherwise the same counters
-  // would be listed (and summed) twice for a model requested under several names.
-  function buildRequestedModelGroups(servedModels) {
+  // Statistics are stored per (requested model, served model) tuple, so grouping is
+  // exact: every request lands in exactly one child row and totals never overlap.
+  function buildRequestedModelGroups(tuples) {
     const groups = new Map();
-    const ensure = (name) => {
-      if (!groups.has(name)) groups.set(name, { requested: name, children: [], knownRequested: false });
-      return groups.get(name);
-    };
     const same = (a, b) => String(a || "").toLowerCase() === String(b || "").toLowerCase();
-    for (const ms of servedModels) {
-      if (!ms || !ms.model) continue;
-      const aliases = Array.from(new Set((ms.requested_models || []).filter(Boolean)));
-      if (aliases.length === 0) {
-        ensure(ms.model).children.push(ms);
-        continue;
+    for (const ms of tuples) {
+      if (!ms) continue;
+      const served = String(ms.served_model || "").trim();
+      const requested = String(ms.requested_model || "").trim() || served;
+      if (!requested || !served) continue;
+      if (!groups.has(requested)) {
+        groups.set(requested, { requested: requested, children: [] });
       }
-      // A bucket that was also requested by its own name belongs to that name: some
-      // clients really asked for gemini-4-argon-high, so it must not be swallowed by
-      // the group of another requested model.
-      let parent = aliases[0];
-      const ownRequested = aliases.find(a => same(a, ms.model));
-      if (ownRequested) {
-        parent = ownRequested;
-      } else if (aliases.length > 1) {
-        // Only substitutions here: use the first requested name as the group.
-        parent = aliases[0];
-      }
-      const others = aliases.filter(a => !same(a, parent));
-      if (others.length > 0) ms.extraRequested = others;
-      const group = ensure(parent);
-      group.children.push(ms);
-      group.knownRequested = true;
+      groups.get(requested).children.push(ms);
     }
     const list = Array.from(groups.values());
     for (const group of list) {
@@ -2318,21 +2298,11 @@
         group.totals.cacheWrite += ms.cache_write_tokens || 0;
         group.totals.totalTokens += ms.total_tokens || 0;
       }
-      // A group whose name is not backed by a recorded requested model (legacy
-      // data) collapses to a plain row for its single served model.
-      group.flat = !group.knownRequested;
-      // No substitution happened: the request model and the served model are the
-      // same, so render one row instead of a header plus an identical child.
+      // Nothing was substituted: one row instead of a header plus an identical child.
       group.single = group.children.length === 1 &&
-        String(group.children[0].model || "").toLowerCase() === String(group.requested).toLowerCase();
+        same(group.children[0].served_model, group.requested);
     }
-    // Real request groups first (by volume), then the rows whose requested model
-    // was never recorded, so an unmatched served model can never appear above a
-    // group header and look like it belongs to the account row.
-    list.sort((a, b) => {
-      if (a.flat !== b.flat) return a.flat ? 1 : -1;
-      return (b.totals.totalTokens || 0) - (a.totals.totalTokens || 0);
-    });
+    list.sort((a, b) => (b.totals.totalTokens || 0) - (a.totals.totalTokens || 0));
     return list;
   }
 
@@ -2365,8 +2335,9 @@
         const rawKey = ks.api_key || ks.masked_key;
         const rule = rulesMap[rawKey] || {};
         const share = grandTotalTokens > 0 ? (((ks.total_tokens || 0) / grandTotalTokens) * 100).toFixed(1) : "0.0";
-        const validModels = ks.models ? Object.values(ks.models).filter(ms => ms && ms.model && ms.model.toLowerCase() !== "unknown") : [];
+        const validModels = ks.models ? Object.values(ks.models).filter(ms => ms && (ms.served_model || ms.requested_model)) : [];
         const modelCount = validModels.length;
+        const groupCount = buildRequestedModelGroups(validModels).length;
         const isExpanded = !!expandedDashKeys[rawKey];
         const keyNote = ks.key_name || rule.name || "";
 
@@ -2386,7 +2357,7 @@
           </td>
           <td class="cell-nowrap">
             <div class="row-actions">
-              <button type="button" class="btn btn-sm" onclick="toggleDashKeyExpand('${escapeHtml(rawKey)}')">${isExpanded ? "收起" : "展开明细 (" + modelCount + ")"}</button>
+              <button type="button" class="btn btn-sm" onclick="toggleDashKeyExpand('${escapeHtml(rawKey)}')">${isExpanded ? "收起" : "展开明细 (" + groupCount + ")"}</button>
               <button type="button" class="btn btn-sm btn-danger" onclick="resetUsageStats('${escapeHtml(rawKey)}')">清零</button>
             </div>
           </td>
@@ -2400,19 +2371,11 @@
               <td class="cell-nowrap mono">${fmtInt(st.cache_read_tokens !== undefined ? st.cache_read_tokens : st.cacheRead)} / ${fmtInt(st.cache_write_tokens !== undefined ? st.cache_write_tokens : st.cacheWrite)}</td>
               <td class="cell-nowrap token-val">${fmtInt(st.total_tokens !== undefined ? st.total_tokens : st.totalTokens)}</td>`;
           for (const group of buildRequestedModelGroups(validModels)) {
-            // No substitution: one top-level row labelled with the requested model.
-            // It uses the group-row style so it does not look like a member of the
-            // preceding group.
+            // Nothing substituted: one row carrying the requested model name.
             if (group.single) {
               const ms = group.children[0];
-              const tag = group.flat
-                ? `<span class="tag plain" style="font-size:10px" title="该模型的历史请求没有记录到请求模型名（多为 0 token 的失败请求），产生新请求后会自动补上">未记录请求模型</span>`
-                : `<span class="tag plain" style="font-size:10px">请求模型</span>`;
-              const extra = (ms.extraRequested && ms.extraRequested.length)
-                ? ` <span class="tag plain" style="font-size:10px" title="这些请求的服务端模型相同，但客户端请求名另有: ${escapeHtml(ms.extraRequested.join(", "))}">另含 ${ms.extraRequested.length} 个请求名</span>`
-                : "";
               html += `<tr class="model-group-row">
-                <td class="cell-nowrap"><span class="mono" style="color:var(--text-primary);font-weight:600">${escapeHtml(ms.model)}</span> ${tag}${extra}</td>${modelCells(ms)}
+                <td class="cell-nowrap"><span class="mono" style="color:var(--text-primary);font-weight:600">${escapeHtml(group.requested)}</span> <span class="tag plain" style="font-size:10px">请求模型</span></td>${modelCells(ms)}
                 <td colspan="2" style="font-size:11px;color:var(--text-tertiary)">最后调用: ${escapeHtml(ms.last_used_at || "-")}</td>
               </tr>`;
               continue;
@@ -2420,14 +2383,16 @@
             const t = group.totals;
             html += `<tr class="model-group-row">
               <td class="cell-nowrap"><span class="mono" style="color:var(--text-primary);font-weight:700">${escapeHtml(group.requested)}</span> <span class="tag plain" style="font-size:10px">请求模型</span></td>${modelCells(t)}
-              <td colspan="2" style="font-size:11px;color:var(--text-tertiary)">${group.children.length} 个服务端模型</td>
+              <td colspan="2" style="font-size:11px;color:var(--text-tertiary)">落到 ${group.children.length} 个服务端模型</td>
             </tr>`;
             for (const ms of group.children) {
-              const extra = (ms.extraRequested && ms.extraRequested.length)
-                ? ` <span class="tag plain" style="font-size:10px" title="该服务端模型还服务过: ${escapeHtml(ms.extraRequested.join(", "))}">+${ms.extraRequested.length} 请求名</span>`
+              const servedLabel = ms.served_model || group.requested;
+              const swapped = String(servedLabel).toLowerCase() !== String(group.requested).toLowerCase();
+              const hint = swapped
+                ? ` <span class="tag plain" style="font-size:10px">已被上游替换</span>`
                 : "";
               html += `<tr class="sub-row">
-                <td class="cell-nowrap">↳ <span class="mono">${escapeHtml(ms.model)}</span>${extra}</td>${modelCells(ms)}
+                <td class="cell-nowrap">↳ <span class="mono">${escapeHtml(servedLabel)}</span>${hint}</td>${modelCells(ms)}
                 <td colspan="2" style="font-size:11px;color:var(--text-tertiary)">最后调用: ${escapeHtml(ms.last_used_at || "-")}</td>
               </tr>`;
             }
@@ -2437,13 +2402,13 @@
       tbody.innerHTML = html;
     }
 
-    // Model Token Leaderboard
+    // Model Token Leaderboard (aggregated by the upstream-served model)
     const modelAgg = {};
     let totalModelTokens = 0;
     for (const ks of rows) {
       if (!ks.models) continue;
       for (const ms of Object.values(ks.models)) {
-        const m = (ms && ms.model || "").trim();
+        const m = String((ms && ms.served_model) || "").trim();
         if (!m || m.toLowerCase() === "unknown") continue;
         if (!modelAgg[m]) {
           modelAgg[m] = {
@@ -2527,9 +2492,10 @@
       const provider = a.provider || "unknown";
       const bucketKey = a.auth_id || a.auth_index || provider;
       const modelList = a.models
-        ? Object.values(a.models).filter(ms => ms && ms.model && ms.model.toLowerCase() !== "unknown")
+        ? Object.values(a.models).filter(ms => ms && (ms.served_model || ms.requested_model))
         : [];
       modelList.sort((x, y) => (y.total_tokens || 0) - (x.total_tokens || 0));
+      const groupCount = buildRequestedModelGroups(modelList).length;
       const isExpanded = !!expandedDashAccounts[bucketKey];
       const lastUsedHint = a.last_request_at
         ? `<div style="font-size:11px;color:var(--text-tertiary)">最后: ${escapeHtml(a.last_request_at)}</div>`
@@ -2549,7 +2515,7 @@
         <td class="cell-nowrap mono">${fmtInt(a.cache_read_tokens)} / ${fmtInt(a.cache_write_tokens)}</td>
         <td class="cell-nowrap token-val">${fmtInt(a.total_tokens)}</td>
         <td class="cell-nowrap">
-          <button type="button" class="btn btn-sm" onclick="toggleDashAccountExpand('${escapeHtml(bucketKey)}')">${isExpanded ? "收起" : "展开明细 (" + modelList.length + ")"}</button>
+          <button type="button" class="btn btn-sm" onclick="toggleDashAccountExpand('${escapeHtml(bucketKey)}')">${isExpanded ? "收起" : "展开明细 (" + groupCount + ")"}</button>
         </td>
       </tr>`;
 
@@ -2565,29 +2531,25 @@
         for (const group of buildRequestedModelGroups(modelList)) {
           if (group.single) {
             const ms = group.children[0];
-            const tag = group.flat
-              ? `<span class="tag plain" style="font-size:10px" title="该模型的历史请求没有记录到请求模型名（多为 0 token 的失败请求），产生新请求后会自动补上">未记录请求模型</span>`
-              : `<span class="tag plain" style="font-size:10px">请求模型</span>`;
-            const singleExtra = (ms.extraRequested && ms.extraRequested.length)
-              ? ` <span class="tag plain" style="font-size:10px" title="这些请求的服务端模型相同，但客户端请求名另有: ${escapeHtml(ms.extraRequested.join(", "))}">另含 ${ms.extraRequested.length} 个请求名</span>`
-              : "";
             html += `<tr class="model-group-row">
-              <td class="cell-nowrap" colspan="2"><span class="mono" style="color:var(--text-primary);font-weight:600">${escapeHtml(ms.model)}</span> ${tag}${singleExtra}</td>${acctCells(ms)}
+              <td class="cell-nowrap" colspan="2"><span class="mono" style="color:var(--text-primary);font-weight:600">${escapeHtml(group.requested)}</span> <span class="tag plain" style="font-size:10px">请求模型</span></td>${acctCells(ms)}
               <td class="cell-nowrap" style="font-size:11px;color:var(--text-tertiary)">最后调用: ${escapeHtml(ms.last_used_at || "-")}</td>
             </tr>`;
             continue;
           }
           const t = group.totals;
           html += `<tr class="model-group-row">
-            <td class="cell-nowrap" colspan="2">↳ 请求 <span class="mono" style="color:var(--text-primary);font-weight:700">${escapeHtml(group.requested)}</span> <span class="tag plain" style="font-size:10px">请求模型</span></td>${acctCells(t)}
-            <td class="cell-nowrap" style="font-size:11px;color:var(--text-tertiary)">${group.children.length} 个服务端模型</td>
+            <td class="cell-nowrap" colspan="2"><span class="mono" style="color:var(--text-primary);font-weight:700">${escapeHtml(group.requested)}</span> <span class="tag plain" style="font-size:10px">请求模型</span></td>${acctCells(t)}
+            <td class="cell-nowrap" style="font-size:11px;color:var(--text-tertiary)">落到 ${group.children.length} 个服务端模型</td>
           </tr>`;
           for (const ms of group.children) {
-            const extra = (ms.extraRequested && ms.extraRequested.length)
-              ? ` <span class="tag plain" style="font-size:10px" title="该服务端模型还服务过: ${escapeHtml(ms.extraRequested.join(", "))}">+${ms.extraRequested.length} 请求名</span>`
+            const servedLabel = ms.served_model || group.requested;
+            const swapped = String(servedLabel).toLowerCase() !== String(group.requested).toLowerCase();
+            const hint = swapped
+              ? ` <span class="tag plain" style="font-size:10px">已被上游替换</span>`
               : "";
             html += `<tr class="sub-row">
-              <td class="cell-nowrap" colspan="2">　↳ <span class="mono">${escapeHtml(ms.model)}</span>${extra}</td>${acctCells(ms)}
+              <td class="cell-nowrap" colspan="2">　↳ <span class="mono">${escapeHtml(servedLabel)}</span>${hint}</td>${acctCells(ms)}
               <td class="cell-nowrap" style="font-size:11px;color:var(--text-tertiary)">最后调用: ${escapeHtml(ms.last_used_at || "-")}</td>
             </tr>`;
           }

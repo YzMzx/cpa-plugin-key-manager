@@ -14,12 +14,16 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
-// ModelStats stores cumulative usage and USD billing statistics for a single model under an API Key.
+// tupleSeparator joins the requested and served model into one stable map key.
+// It is only an internal index: readers always use the struct fields.
+const tupleSeparator = " -> "
+
+// ModelStats stores cumulative usage for one (requested model, served model) pair.
+// Every request belongs to exactly one pair, so "client asked for A, upstream
+// served B" is measured precisely instead of being inferred from a shared bucket.
 type ModelStats struct {
-	Model string `json:"model"`
-	// RequestedModels lists the client-requested model names that resolved to this
-	// upstream-served model, so a substitution stays traceable in the dashboard.
-	RequestedModels  []string           `json:"requested_models,omitempty"`
+	RequestedModel   string             `json:"requested_model"`
+	ServedModel      string             `json:"served_model"`
 	Requests         int64              `json:"requests"`
 	SuccessRequests  int64              `json:"success_requests"`
 	FailedRequests   int64              `json:"failed_requests"`
@@ -36,30 +40,53 @@ type ModelStats struct {
 	LastUsedAt       string             `json:"last_used_at,omitempty"`
 }
 
-// KeyStats stores cumulative usage and USD billing statistics for a single API Key across all models.
+// IsSubstituted reports whether the upstream served a different model name.
+func (m *ModelStats) IsSubstituted() bool {
+	if m == nil {
+		return false
+	}
+	return !strings.EqualFold(strings.TrimSpace(m.RequestedModel), strings.TrimSpace(m.ServedModel))
+}
+
+// tupleKey builds the map key for one (requested, served) pair. When the upstream
+// served what was asked for, the key is just the model name.
+func tupleKey(requested, served string) string {
+	requested = strings.TrimSpace(requested)
+	served = strings.TrimSpace(served)
+	if served == "" {
+		served = requested
+	}
+	if requested == "" || strings.EqualFold(requested, served) {
+		return served
+	}
+	return requested + tupleSeparator + served
+}
+
+// KeyStats stores cumulative usage for a single API Key.
 type KeyStats struct {
-	APIKey             string                 `json:"api_key,omitempty"`
-	MaskedKey          string                 `json:"masked_key"`
-	KeyName            string                 `json:"key_name,omitempty"`
-	Enabled            *bool                  `json:"enabled,omitempty"`
-	ActiveConcurrency  int                    `json:"-"`
-	MaxConcurrency     int                    `json:"max_concurrency"`
-	QuotaLimitUSD      float64                `json:"quota_limit_usd,omitempty"`
-	AllowedModels      []string               `json:"allowed_models,omitempty"`
-	TotalRequests      int64                  `json:"total_requests"`
-	SuccessRequests    int64                  `json:"success_requests"`
-	FailedRequests     int64                  `json:"failed_requests"`
-	InputTokens        int64                  `json:"input_tokens"`
-	OutputTokens       int64                  `json:"output_tokens"`
-	ReasoningTokens    int64                  `json:"reasoning_tokens"`
-	CacheReadTokens    int64                  `json:"cache_read_tokens"`
-	CacheWriteTokens   int64                  `json:"cache_write_tokens"`
-	TotalTokens        int64                  `json:"total_tokens"`
-	TotalCostNanoUSD   int64                  `json:"total_cost_nano_usd"`
-	TotalCostUSD       float64                `json:"total_cost_usd"`
-	TotalCostFormatted string                 `json:"total_cost_formatted"`
-	LastRequestAt      string                 `json:"last_request_at,omitempty"`
-	Models             map[string]*ModelStats `json:"models"`
+	APIKey             string   `json:"api_key,omitempty"`
+	MaskedKey          string   `json:"masked_key"`
+	KeyName            string   `json:"key_name,omitempty"`
+	Enabled            *bool    `json:"enabled,omitempty"`
+	ActiveConcurrency  int      `json:"-"`
+	MaxConcurrency     int      `json:"max_concurrency"`
+	QuotaLimitUSD      float64  `json:"quota_limit_usd,omitempty"`
+	AllowedModels      []string `json:"allowed_models,omitempty"`
+	TotalRequests      int64    `json:"total_requests"`
+	SuccessRequests    int64    `json:"success_requests"`
+	FailedRequests     int64    `json:"failed_requests"`
+	InputTokens        int64    `json:"input_tokens"`
+	OutputTokens       int64    `json:"output_tokens"`
+	ReasoningTokens    int64    `json:"reasoning_tokens"`
+	CacheReadTokens    int64    `json:"cache_read_tokens"`
+	CacheWriteTokens   int64    `json:"cache_write_tokens"`
+	TotalTokens        int64    `json:"total_tokens"`
+	TotalCostNanoUSD   int64    `json:"total_cost_nano_usd"`
+	TotalCostUSD       float64  `json:"total_cost_usd"`
+	TotalCostFormatted string   `json:"total_cost_formatted"`
+	LastRequestAt      string   `json:"last_request_at,omitempty"`
+	// Models is keyed by tupleKey(requested, served); each value carries both names.
+	Models map[string]*ModelStats `json:"models"`
 }
 
 // AccountStats aggregates usage for one upstream account (provider + credential identity).
@@ -83,59 +110,17 @@ type AccountStats struct {
 	TotalTokens      int64    `json:"total_tokens"`
 	LastModel        string   `json:"last_model,omitempty"`
 	LastRequestAt    string   `json:"last_request_at,omitempty"`
-	// Models holds per-upstream-model statistics for this credential.
-	Models AccountModelStats `json:"models,omitempty"`
-}
-
-// AccountModelStats maps a served model name to its statistics for one account.
-// It accepts both the full object shape and the earlier numeric shape
-// (model -> total tokens) so an upgrade never fails to load a snapshot.
-type AccountModelStats map[string]*ModelStats
-
-// UnmarshalJSON decodes either `{"model": {...stats...}}` or `{"model": 12345}`.
-func (m *AccountModelStats) UnmarshalJSON(raw []byte) error {
-	if len(raw) == 0 || string(raw) == "null" {
-		return nil
-	}
-	var entries map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &entries); err != nil {
-		return err
-	}
-	out := make(AccountModelStats, len(entries))
-	for name, entry := range entries {
-		if len(entry) == 0 || string(entry) == "null" {
-			continue
-		}
-		var stats ModelStats
-		if errObj := json.Unmarshal(entry, &stats); errObj == nil {
-			if stats.Model == "" {
-				stats.Model = name
-			}
-			out[name] = &stats
-			continue
-		}
-		var tokens int64
-		if errNum := json.Unmarshal(entry, &tokens); errNum == nil {
-			out[name] = &ModelStats{Model: name, TotalTokens: tokens}
-		}
-	}
-	*m = out
-	return nil
+	// Models is keyed by tupleKey(requested, served) for this credential.
+	Models map[string]*ModelStats `json:"models,omitempty"`
 }
 
 // PersistedSnapshot is the root JSON structure persisted to disk.
 type PersistedSnapshot struct {
-	Version   int    `json:"version"`
-	UpdatedAt string `json:"updated_at"`
-	// AliasRevision tracks the format of per-model `requested_models` lists.
-	// Revision 1 dropped aliases that were really served-variant names.
-	AliasRevision int                      `json:"alias_rev,omitempty"`
-	Keys          map[string]*KeyStats     `json:"keys"`
-	Accounts      map[string]*AccountStats `json:"accounts,omitempty"`
+	Version   int                      `json:"version"`
+	UpdatedAt string                   `json:"updated_at"`
+	Keys      map[string]*KeyStats     `json:"keys"`
+	Accounts  map[string]*AccountStats `json:"accounts,omitempty"`
 }
-
-// aliasRevisionCurrent is the alias format this build writes.
-const aliasRevisionCurrent = 1
 
 // TrackedRequest holds in-flight and recently completed request state for deduplicating
 // and reconciling usage between response/stream interceptors (`request.complete`) and `usage.handle`.
@@ -153,7 +138,8 @@ type TrackedRequest struct {
 
 	ExtractedUsage NormalizedUsage
 	BilledUsage    NormalizedUsage
-	BilledModel    string
+	// BilledKey is the tuple bucket already billed for this request, if any.
+	BilledKey      string
 	CountedRequest bool
 	Failed         bool
 
@@ -579,7 +565,7 @@ func (s *Store) CompleteRequest(completion pluginapi.RequestCompletion, fallback
 			if existingTrace.CountedRequest {
 				tr.CountedRequest = true
 				tr.BilledUsage = existingTrace.BilledUsage
-				tr.BilledModel = existingTrace.BilledModel
+				tr.BilledKey = existingTrace.BilledKey
 				tr.Failed = existingTrace.Failed
 			}
 		}
@@ -743,35 +729,33 @@ func isInvalidModelID(m string) bool {
 	return v == "" || strings.EqualFold(v, "unknown")
 }
 
-// reconcileTrackerDeltaLocked applies the request count (at most once) and any newly discovered
-// token deltas for `tr` to the cumulative key/model statistics.
+// reconcileTrackerDeltaLocked applies the request count (at most once) and any newly
+// discovered token deltas to the (requested model, served model) tuple buckets of the
+// key and of the upstream account.
 func (s *Store) reconcileTrackerDeltaLocked(tr *TrackedRequest) {
 	apiKey := normalizeAPIKey(tr.APIKey)
 	if isInvalidKeyID(apiKey) {
 		return
 	}
-	model := s.canonicalBillingModel(tr)
-	if tr.BilledModel != "" && !isInvalidModelID(tr.BilledModel) {
-		model = tr.BilledModel
-	} else if !isInvalidModelID(model) {
-		tr.BilledModel = model
-	}
-	if isInvalidModelID(model) {
+	requested := requestedModelOf(tr)
+	if requested == "" {
 		return
 	}
+	served := servedModelOf(tr, requested)
+	key := tupleKey(requested, served)
 
 	ks := s.getOrCreateKeyStatsLocked(apiKey, tr.KeyName)
 	acct := s.getOrCreateAccountStatsLocked(tr)
 
-	// A streaming response can only reveal the served model mid-flight, after the
-	// first usage delta has already been attributed to the requested name. Move
-	// that early bucket onto the served model so the dashboard shows one row.
-	if served := strings.TrimSpace(tr.ExtractedUsage.ResponseModel); !isInvalidModelID(served) && !strings.EqualFold(served, model) {
-		s.migrateModelBucketLocked(ks, model, served)
-		migrateAccountModelBucketLocked(acct, model, served)
-		model = served
-		tr.BilledModel = served
+	// The served model can only be learned mid-flight for a streaming response, so
+	// move the slice already billed for the previous tuple onto the new one.
+	if prev := strings.TrimSpace(tr.BilledKey); prev != "" && prev != key {
+		migrateTupleBucket(ks.Models, prev, key, requested, served)
+		if acct != nil {
+			migrateTupleBucket(acct.Models, prev, key, requested, served)
+		}
 	}
+	tr.BilledKey = key
 
 	// 1. Compute token deltas between ExtractedUsage and already BilledUsage
 	target := MergeMaxUsage(tr.BilledUsage, tr.ExtractedUsage)
@@ -784,10 +768,10 @@ func (s *Store) reconcileTrackerDeltaLocked(tr *TrackedRequest) {
 
 	// Nothing left to record (request already counted and no new tokens): return
 	// before creating buckets, otherwise an idle reconcile would materialise an
-	// empty model/account row with 0 requests and 0 tokens.
+	// empty tuple row with 0 requests and 0 tokens.
 	if tr.CountedRequest && !hasDelta {
-		if existing, ok := ks.Models[model]; ok && existing != nil && existing.UnitPricePer1M.Source == "" {
-			if p, found := s.pricing.Lookup(tr.Model, tr.RequestedModel, tr.ExtractedUsage.ResponseModel, model); found {
+		if existing, ok := ks.Models[key]; ok && existing != nil && existing.UnitPricePer1M.Source == "" {
+			if p, found := s.pricing.Lookup(requested, served); found {
 				existing.UnitPricePer1M = p
 				s.dirty = true
 			}
@@ -795,8 +779,8 @@ func (s *Store) reconcileTrackerDeltaLocked(tr *TrackedRequest) {
 		return
 	}
 
-	ms := s.getOrCreateModelStatsLocked(ks, model)
-	ams := accountModelStats(acct, model)
+	ms := getOrCreateTupleStats(ks, key, requested, served)
+	ams := getOrCreateAccountTupleStats(acct, key, requested, served)
 	nowStr := time.Now().UTC().Format(time.RFC3339)
 
 	// 2. Apply request count once
@@ -826,7 +810,7 @@ func (s *Store) reconcileTrackerDeltaLocked(tr *TrackedRequest) {
 		if acct != nil {
 			acct.Requests++
 			acct.LastRequestAt = nowStr
-			acct.LastModel = model
+			acct.LastModel = served
 		}
 		if ams != nil {
 			ams.Requests++
@@ -834,10 +818,6 @@ func (s *Store) reconcileTrackerDeltaLocked(tr *TrackedRequest) {
 		}
 		ks.LastRequestAt = nowStr
 		ms.LastUsedAt = nowStr
-		// Record the requested name even when the request produced no tokens (for
-		// example a failure), otherwise the row cannot be attributed to a request.
-		recordRequestedAlias(ms, []string{tr.Model, tr.RequestedModel})
-		recordRequestedAlias(ams, []string{tr.Model, tr.RequestedModel})
 		s.dirty = true
 	}
 
@@ -862,12 +842,12 @@ func (s *Store) reconcileTrackerDeltaLocked(tr *TrackedRequest) {
 	}
 	dTotal := dIn + dOut + dRead + dWrite
 
-	costBreakdown := s.pricing.Calculate(dIn, dOut, dRead, dWrite, tr.Model, tr.RequestedModel, tr.ExtractedUsage.ResponseModel, model)
+	// Cost is priced from the client-requested model: upstream variant names rarely
+	// have a published price, while the requested name identifies the real product.
+	costBreakdown := s.pricing.Calculate(dIn, dOut, dRead, dWrite, requested, served)
 	tr.BilledUsage = target
-	recordRequestedAlias(ms, []string{tr.Model, tr.RequestedModel})
-	recordRequestedAlias(ams, []string{tr.Model, tr.RequestedModel})
 
-	// Update ModelStats
+	// Update the tuple statistics
 	ms.InputTokens += dIn
 	ms.OutputTokens += dOut
 	ms.ReasoningTokens += dReason
@@ -900,7 +880,7 @@ func (s *Store) reconcileTrackerDeltaLocked(tr *TrackedRequest) {
 		acct.CacheReadTokens += dRead
 		acct.CacheWriteTokens += dWrite
 		acct.TotalTokens += dTotal
-		acct.LastModel = model
+		acct.LastModel = served
 		acct.LastRequestAt = nowStr
 	}
 	if ams != nil {
@@ -919,46 +899,71 @@ func (s *Store) reconcileTrackerDeltaLocked(tr *TrackedRequest) {
 	s.dirty = true
 }
 
-// accountModelStats returns (creating when needed) the per-model bucket inside an
-// account, or nil when the account is unknown.
-func accountModelStats(acct *AccountStats, model string) *ModelStats {
-	if acct == nil || isInvalidModelID(model) {
-		return nil
+// requestedModelOf resolves the client-requested model of a tracked request.
+func requestedModelOf(tr *TrackedRequest) string {
+	for _, candidate := range []string{tr.RequestedModel, tr.Model} {
+		if value := strings.TrimSpace(candidate); !isInvalidModelID(value) {
+			return value
+		}
 	}
-	if acct.Models == nil {
-		acct.Models = make(AccountModelStats)
+	return ""
+}
+
+// servedModelOf resolves the model the upstream actually served, defaulting to the
+// requested model when the provider did not report one.
+func servedModelOf(tr *TrackedRequest, requested string) string {
+	if value := strings.TrimSpace(tr.ExtractedUsage.ResponseModel); !isInvalidModelID(value) {
+		return value
 	}
-	stats, ok := acct.Models[model]
+	return requested
+}
+
+// getOrCreateTupleStats returns the (requested, served) bucket of a key, creating it
+// when needed.
+func getOrCreateTupleStats(ks *KeyStats, key, requested, served string) *ModelStats {
+	if ks.Models == nil {
+		ks.Models = make(map[string]*ModelStats)
+	}
+	stats, ok := ks.Models[key]
 	if !ok || stats == nil {
-		stats = &ModelStats{Model: model}
-		acct.Models[model] = stats
+		stats = &ModelStats{RequestedModel: requested, ServedModel: served}
+		ks.Models[key] = stats
 	}
-	if stats.Model == "" {
-		stats.Model = model
+	if stats.RequestedModel == "" {
+		stats.RequestedModel = requested
+	}
+	if stats.ServedModel == "" {
+		stats.ServedModel = served
 	}
 	return stats
 }
 
-// migrateAccountModelBucketLocked moves an account's early per-model bucket onto
-// the model the upstream actually served.
-func migrateAccountModelBucketLocked(acct *AccountStats, from, to string) {
-	if acct == nil || len(acct.Models) == 0 {
-		return
+// getOrCreateAccountTupleStats is the account-level counterpart, nil-safe for
+// requests that did not report a credential.
+func getOrCreateAccountTupleStats(acct *AccountStats, key, requested, served string) *ModelStats {
+	if acct == nil {
+		return nil
 	}
-	from = strings.TrimSpace(from)
-	to = strings.TrimSpace(to)
-	if from == "" || to == "" || strings.EqualFold(from, to) {
-		return
+	if acct.Models == nil {
+		acct.Models = make(map[string]*ModelStats)
 	}
-	src, ok := acct.Models[from]
-	if !ok || src == nil {
-		return
+	stats, ok := acct.Models[key]
+	if !ok || stats == nil {
+		stats = &ModelStats{RequestedModel: requested, ServedModel: served}
+		acct.Models[key] = stats
 	}
-	dst, exists := acct.Models[to]
-	if !exists || dst == nil {
-		src.Model = to
-		acct.Models[to] = src
-		delete(acct.Models, from)
+	if stats.RequestedModel == "" {
+		stats.RequestedModel = requested
+	}
+	if stats.ServedModel == "" {
+		stats.ServedModel = served
+	}
+	return stats
+}
+
+// mergeTupleStats folds src into dst when two entries describe the same tuple.
+func mergeTupleStats(dst, src *ModelStats) {
+	if dst == nil || src == nil {
 		return
 	}
 	dst.Requests += src.Requests
@@ -973,20 +978,58 @@ func migrateAccountModelBucketLocked(acct *AccountStats, from, to string) {
 	dst.CostNanoUSD += src.CostNanoUSD
 	dst.CostUSD = pricing.NanoToUSD(dst.CostNanoUSD)
 	dst.CostFormatted = pricing.FormatUSD(dst.CostNanoUSD)
+	if dst.UnitPricePer1M.Source == "" {
+		dst.UnitPricePer1M = src.UnitPricePer1M
+	}
 	if src.LastUsedAt > dst.LastUsedAt {
 		dst.LastUsedAt = src.LastUsedAt
 	}
-	// `from` is a previously served model name, never a client-requested one, so it
-	// must not be recorded as a requested alias (that leaked `-control` into the
-	// "请求:" label of the `-n` row). Only carry genuine requested names over.
-	recordRequestedAlias(dst, src.RequestedModels)
-	delete(acct.Models, from)
+}
+
+// migrateTupleBucket moves an already billed tuple onto the tuple that just became
+// known (a streaming response reveals the served model mid-flight), merging when the
+// destination already exists.
+func migrateTupleBucket(models map[string]*ModelStats, from, to, requested, served string) {
+	if models == nil || from == "" || to == "" || from == to {
+		return
+	}
+	src, ok := models[from]
+	if !ok || src == nil {
+		return
+	}
+	dst, exists := models[to]
+	if !exists || dst == nil {
+		src.RequestedModel = requested
+		src.ServedModel = served
+		models[to] = src
+		delete(models, from)
+		return
+	}
+	dst.Requests += src.Requests
+	dst.SuccessRequests += src.SuccessRequests
+	dst.FailedRequests += src.FailedRequests
+	dst.InputTokens += src.InputTokens
+	dst.OutputTokens += src.OutputTokens
+	dst.ReasoningTokens += src.ReasoningTokens
+	dst.CacheReadTokens += src.CacheReadTokens
+	dst.CacheWriteTokens += src.CacheWriteTokens
+	dst.TotalTokens += src.TotalTokens
+	dst.CostNanoUSD += src.CostNanoUSD
+	dst.CostUSD = pricing.NanoToUSD(dst.CostNanoUSD)
+	dst.CostFormatted = pricing.FormatUSD(dst.CostNanoUSD)
+	if dst.UnitPricePer1M.Source == "" {
+		dst.UnitPricePer1M = src.UnitPricePer1M
+	}
+	if src.LastUsedAt > dst.LastUsedAt {
+		dst.LastUsedAt = src.LastUsedAt
+	}
+	delete(models, from)
 }
 
 // normalizeAccountIdentity collapses credential ids that differ only by a
 // trailing hash into a single account identity. CLIProxyAPI names inline
 // openai-compatibility credentials as `<provider>:<name>:<hash>`, so several
-// hashed keys of the same configured provider must share one row:
+// hashed keys of the same configured provider must share a single row:
 //
 //	openai-compatibility:上海人工智能实验室:5dfdf0f0b3d3 -> openai-compatibility:上海人工智能实验室
 //	antigravity-sly538876@gmail.com.json              -> unchanged
@@ -1068,7 +1111,7 @@ func (s *Store) getOrCreateAccountStatsLocked(tr *TrackedRequest) *AccountStats 
 			AuthID:    displayID,
 			AuthIndex: strings.TrimSpace(tr.AuthIndex),
 			AuthType:  strings.TrimSpace(tr.AuthType),
-			Models:    make(AccountModelStats),
+			Models:    make(map[string]*ModelStats),
 		}
 		s.accounts[key] = acct
 	} else if provider != "" {
@@ -1132,7 +1175,7 @@ func mergeAccountStats(dst, src *AccountStats) {
 	}
 	if len(src.Models) > 0 {
 		if dst.Models == nil {
-			dst.Models = make(AccountModelStats)
+			dst.Models = make(map[string]*ModelStats)
 		}
 		for model, stats := range src.Models {
 			if stats == nil {
@@ -1158,7 +1201,6 @@ func mergeAccountStats(dst, src *AccountStats) {
 			if stats.LastUsedAt > existing.LastUsedAt {
 				existing.LastUsedAt = stats.LastUsedAt
 			}
-			recordRequestedAlias(existing, stats.RequestedModels)
 		}
 	}
 }
@@ -1181,92 +1223,6 @@ func appendUniqueAccountID(ids []string, rawID string) []string {
 	return append(ids, rawID)
 }
 
-// canonicalBillingModel picks the model name used as the statistics bucket. The
-// upstream-served model wins when the provider reported one, so the dashboard
-// attributes usage to what the server actually ran (e.g. an A/B variant),
-// falling back to the client-requested name when no response model was seen.
-func (s *Store) canonicalBillingModel(tr *TrackedRequest) string {
-	for _, cand := range []string{tr.ExtractedUsage.ResponseModel, tr.Model, tr.RequestedModel} {
-		cand = strings.TrimSpace(cand)
-		if !isInvalidModelID(cand) {
-			return cand
-		}
-	}
-	return ""
-}
-
-// migrateModelBucketLocked moves all statistics accumulated under `from` onto the
-// `to` bucket, merging counters when the destination already exists.
-func (s *Store) migrateModelBucketLocked(ks *KeyStats, from, to string) {
-	from = strings.TrimSpace(from)
-	to = strings.TrimSpace(to)
-	if ks == nil || from == "" || to == "" || strings.EqualFold(from, to) {
-		return
-	}
-	src, ok := ks.Models[from]
-	if !ok || src == nil {
-		return
-	}
-	dst, exists := ks.Models[to]
-	if !exists || dst == nil {
-		src.Model = to
-		ks.Models[to] = src
-		delete(ks.Models, from)
-		return
-	}
-	dst.Requests += src.Requests
-	dst.SuccessRequests += src.SuccessRequests
-	dst.FailedRequests += src.FailedRequests
-	dst.InputTokens += src.InputTokens
-	dst.OutputTokens += src.OutputTokens
-	dst.ReasoningTokens += src.ReasoningTokens
-	dst.CacheReadTokens += src.CacheReadTokens
-	dst.CacheWriteTokens += src.CacheWriteTokens
-	dst.TotalTokens += src.TotalTokens
-	dst.CostNanoUSD += src.CostNanoUSD
-	dst.CostUSD = pricing.NanoToUSD(dst.CostNanoUSD)
-	dst.CostFormatted = pricing.FormatUSD(dst.CostNanoUSD)
-	if dst.UnitPricePer1M.Source == "" {
-		dst.UnitPricePer1M = src.UnitPricePer1M
-	}
-	if src.LastUsedAt > dst.LastUsedAt {
-		dst.LastUsedAt = src.LastUsedAt
-	}
-	// See migrateAccountModelBucketLocked: `from` is a served variant, not a request.
-	recordRequestedAlias(dst, src.RequestedModels)
-	delete(ks.Models, from)
-}
-
-// recordRequestedAlias keeps the client-requested model names attached to the
-// upstream-served bucket so a substitution remains traceable. The requested name
-// is recorded even when it equals the served name, so the dashboard can always
-// tell "this bucket really was requested as X" instead of guessing.
-func recordRequestedAlias(ms *ModelStats, requested []string) {
-	if ms == nil {
-		return
-	}
-	for _, raw := range requested {
-		name := strings.TrimSpace(raw)
-		if name == "" {
-			continue
-		}
-		exists := false
-		for _, known := range ms.RequestedModels {
-			if strings.EqualFold(known, name) {
-				exists = true
-				break
-			}
-		}
-		if exists {
-			continue
-		}
-		if len(ms.RequestedModels) >= 8 {
-			return
-		}
-		ms.RequestedModels = append(ms.RequestedModels, name)
-	}
-}
-
 func (s *Store) getOrCreateKeyStatsLocked(apiKey, keyName string) *KeyStats {
 	ks, ok := s.keys[apiKey]
 	if !ok {
@@ -1282,21 +1238,6 @@ func (s *Store) getOrCreateKeyStatsLocked(apiKey, keyName string) *KeyStats {
 		ks.KeyName = keyName
 	}
 	return ks
-}
-
-func (s *Store) getOrCreateModelStatsLocked(ks *KeyStats, model string) *ModelStats {
-	if ks.Models == nil {
-		ks.Models = make(map[string]*ModelStats)
-	}
-	ms, ok := ks.Models[model]
-	if !ok {
-		ms = &ModelStats{
-			Model:         model,
-			CostFormatted: "$0.000000",
-		}
-		ks.Models[model] = ms
-	}
-	return ms
 }
 
 // Snapshot returns a deep copy of current usage stats enriched with live active concurrency counts.
@@ -1361,17 +1302,21 @@ func (s *Store) Snapshot(filterAPIKey, filterModel string, activeByKey map[strin
 		cpModels := make(map[string]*ModelStats)
 		var sumReq, sumOk, sumFail, sumIn, sumOut, sumReason, sumRead, sumWrite, sumTotal, sumNano int64
 		if exists && src.Models != nil {
-			for mName, mStat := range src.Models {
-				if mStat == nil || isInvalidModelID(mName) || isInvalidModelID(mStat.Model) {
+			for tuple, mStat := range src.Models {
+				if mStat == nil {
 					continue
 				}
-				if filterMod != "" && !strings.Contains(strings.ToLower(mName), filterMod) {
+				// A filter matches either side of the tuple so searching the requested
+				// name and the served name both work.
+				if filterMod != "" &&
+					!strings.Contains(strings.ToLower(mStat.RequestedModel), filterMod) &&
+					!strings.Contains(strings.ToLower(mStat.ServedModel), filterMod) {
 					continue
 				}
 				mCopy := *mStat
 				mCopy.CostUSD = pricing.NanoToUSD(mCopy.CostNanoUSD)
 				mCopy.CostFormatted = pricing.FormatUSD(mCopy.CostNanoUSD)
-				cpModels[mName] = &mCopy
+				cpModels[tuple] = &mCopy
 
 				sumReq += mCopy.Requests
 				sumOk += mCopy.SuccessRequests
@@ -1428,7 +1373,7 @@ func (s *Store) snapshotAccountsLocked() map[string]*AccountStats {
 		}
 		cp := *v
 		if len(v.Models) > 0 {
-			cp.Models = make(AccountModelStats, len(v.Models))
+			cp.Models = make(map[string]*ModelStats, len(v.Models))
 			for mk, mv := range v.Models {
 				if mv == nil {
 					continue
@@ -1483,11 +1428,10 @@ func (s *Store) FlushNow() error {
 		return nil
 	}
 	snap := PersistedSnapshot{
-		Version:       1,
-		UpdatedAt:     time.Now().UTC().Format(time.RFC3339),
-		AliasRevision: aliasRevisionCurrent,
-		Keys:          make(map[string]*KeyStats, len(s.keys)),
-		Accounts:      make(map[string]*AccountStats, len(s.accounts)),
+		Version:   1,
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+		Keys:      make(map[string]*KeyStats, len(s.keys)),
+		Accounts:  make(map[string]*AccountStats, len(s.accounts)),
 	}
 	for k, v := range s.keys {
 		cp := *v
@@ -1508,7 +1452,7 @@ func (s *Store) FlushNow() error {
 		}
 		acp := *v
 		if len(v.Models) > 0 {
-			acp.Models = make(AccountModelStats, len(v.Models))
+			acp.Models = make(map[string]*ModelStats, len(v.Models))
 			for mk, mv := range v.Models {
 				if mv == nil {
 					continue
@@ -1559,32 +1503,6 @@ func (s *Store) loadFromDisk(filePath string) error {
 		s.keys = make(map[string]*KeyStats)
 	}
 	cleanedDisk := false
-	// One-time repair: snapshots written before alias revision 1 recorded served
-	// variant names (e.g. gemini-3.8-flash-control) as if a client had requested
-	// them. Drop those lists so the "请求:" label only shows real requests.
-	if snap.AliasRevision < aliasRevisionCurrent {
-		for _, ks := range snap.Keys {
-			if ks == nil {
-				continue
-			}
-			for _, ms := range ks.Models {
-				if ms != nil && len(ms.RequestedModels) > 0 {
-					ms.RequestedModels = nil
-				}
-			}
-		}
-		for _, acct := range snap.Accounts {
-			if acct == nil {
-				continue
-			}
-			for _, ms := range acct.Models {
-				if ms != nil && len(ms.RequestedModels) > 0 {
-					ms.RequestedModels = nil
-				}
-			}
-		}
-		cleanedDisk = true
-	}
 	for k, ks := range snap.Keys {
 		if ks == nil {
 			cleanedDisk = true
@@ -1600,21 +1518,30 @@ func (s *Store) loadFromDisk(filePath string) error {
 		ks.MaskedKey = MaskAPIKey(ks.APIKey)
 		validModels := make(map[string]*ModelStats)
 		var sumReq, sumOk, sumFail, sumIn, sumOut, sumReason, sumRead, sumWrite, sumTotal, sumNano int64
-		for mk, ms := range ks.Models {
+		for tuple, ms := range ks.Models {
 			if ms == nil {
 				cleanedDisk = true
 				continue
 			}
-			if ms.Model == "" {
-				ms.Model = mk
+			if ms.ServedModel == "" || isInvalidModelID(ms.ServedModel) {
+				// Entries written before the tuple rewrite carry only a served name;
+				// treat them as "requested == served" so the values stay usable.
+				if !isInvalidModelID(tuple) {
+					ms.ServedModel = tuple
+					if ms.RequestedModel == "" {
+						ms.RequestedModel = tuple
+					}
+					cleanedDisk = true
+				}
 			}
-			if isInvalidModelID(mk) || isInvalidModelID(ms.Model) {
+			if ms.RequestedModel == "" {
+				ms.RequestedModel = ms.ServedModel
+			}
+			if isInvalidModelID(ms.ServedModel) || isInvalidModelID(ms.RequestedModel) {
 				cleanedDisk = true
 				continue
 			}
-			// Drop buckets that never recorded anything: older builds materialised a
-			// row (0 requests, 0 tokens) for a model that was never billed, which the
-			// dashboard would otherwise list forever.
+			// Drop tuples that never recorded anything.
 			if ms.Requests == 0 && ms.TotalTokens == 0 && ms.CostNanoUSD == 0 {
 				cleanedDisk = true
 				continue
@@ -1624,7 +1551,15 @@ func (s *Store) loadFromDisk(filePath string) error {
 			}
 			ms.CostUSD = pricing.NanoToUSD(ms.CostNanoUSD)
 			ms.CostFormatted = pricing.FormatUSD(ms.CostNanoUSD)
-			validModels[ms.Model] = ms
+			normalizedKey := tupleKey(ms.RequestedModel, ms.ServedModel)
+			if normalizedKey != tuple {
+				cleanedDisk = true
+				if existing, ok := validModels[normalizedKey]; ok && existing != nil {
+					mergeTupleStats(existing, ms)
+					continue
+				}
+			}
+			validModels[normalizedKey] = ms
 
 			sumReq += ms.Requests
 			sumOk += ms.SuccessRequests
@@ -1682,24 +1617,48 @@ func (s *Store) loadFromDisk(filePath string) error {
 			acct.AuthID = normalizeAccountIdentity(acct.AuthIndex)
 		}
 		if acct.Models == nil {
-			acct.Models = make(AccountModelStats)
+			acct.Models = make(map[string]*ModelStats)
 		}
-		for mk, mv := range acct.Models {
+		for tuple, mv := range acct.Models {
 			if mv == nil {
-				delete(acct.Models, mk)
+				delete(acct.Models, tuple)
 				cleanedDisk = true
 				continue
 			}
-			if mv.Model == "" {
-				mv.Model = mk
+			if mv.ServedModel == "" || isInvalidModelID(mv.ServedModel) {
+				if !isInvalidModelID(tuple) {
+					mv.ServedModel = tuple
+					if mv.RequestedModel == "" {
+						mv.RequestedModel = tuple
+					}
+					cleanedDisk = true
+				}
+			}
+			if mv.RequestedModel == "" {
+				mv.RequestedModel = mv.ServedModel
+			}
+			if isInvalidModelID(mv.ServedModel) || isInvalidModelID(mv.RequestedModel) {
+				delete(acct.Models, tuple)
+				cleanedDisk = true
+				continue
 			}
 			if mv.Requests == 0 && mv.TotalTokens == 0 && mv.CostNanoUSD == 0 {
-				delete(acct.Models, mk)
+				delete(acct.Models, tuple)
 				cleanedDisk = true
 				continue
 			}
 			mv.CostUSD = pricing.NanoToUSD(mv.CostNanoUSD)
 			mv.CostFormatted = pricing.FormatUSD(mv.CostNanoUSD)
+			normalizedKey := tupleKey(mv.RequestedModel, mv.ServedModel)
+			if normalizedKey != tuple {
+				delete(acct.Models, tuple)
+				cleanedDisk = true
+				if existing, ok := acct.Models[normalizedKey]; ok && existing != nil {
+					mergeTupleStats(existing, mv)
+					continue
+				}
+				acct.Models[normalizedKey] = mv
+			}
 		}
 		// Drop account buckets that hold no data at all.
 		if acct.Requests == 0 && acct.TotalTokens == 0 && len(acct.Models) == 0 {

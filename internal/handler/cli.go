@@ -8,8 +8,8 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	"github.com/YzMzx/cpa-plugin-key-manager/internal/usage"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 const (
@@ -110,8 +110,12 @@ func RenderUsageTable(snap usage.PersistedSnapshot) string {
 			sort.Strings(modelNames)
 			for _, m := range modelNames {
 				ms := ks.Models[m]
+				label := ms.ServedModel
+				if ms.IsSubstituted() {
+					label = fmt.Sprintf("%s <- %s", ms.ServedModel, ms.RequestedModel)
+				}
 				fmt.Fprintf(tw, "  └─ %s\t\t\t%d (%d/%d)\t%d\t%d\t%d/%d\t%d\n",
-					ms.Model,
+					label,
 					ms.Requests,
 					ms.SuccessRequests,
 					ms.FailedRequests,
