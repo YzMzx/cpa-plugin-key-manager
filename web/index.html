@@ -2396,14 +2396,16 @@
               <td class="cell-nowrap mono">${fmtInt(st.cache_read_tokens !== undefined ? st.cache_read_tokens : st.cacheRead)} / ${fmtInt(st.cache_write_tokens !== undefined ? st.cache_write_tokens : st.cacheWrite)}</td>
               <td class="cell-nowrap token-val">${fmtInt(st.total_tokens !== undefined ? st.total_tokens : st.totalTokens)}</td>`;
           for (const group of buildRequestedModelGroups(validModels)) {
-            // No substitution: one row labelled with the requested model.
+            // No substitution: one top-level row labelled with the requested model.
+            // It uses the group-row style so it does not look like a member of the
+            // preceding group.
             if (group.single) {
               const ms = group.children[0];
               const tag = group.flat
                 ? `<span class="tag plain" style="font-size:10px" title="该模型的历史请求没有记录到请求模型名（多为 0 token 的失败请求），产生新请求后会自动补上">未记录请求模型</span>`
                 : `<span class="tag plain" style="font-size:10px">请求模型</span>`;
-              html += `<tr class="sub-row">
-                <td class="cell-nowrap">↳ <span class="mono">${escapeHtml(ms.model)}</span> ${tag}</td>${modelCells(ms)}
+              html += `<tr class="model-group-row">
+                <td class="cell-nowrap"><span class="mono" style="color:var(--text-primary);font-weight:600">${escapeHtml(ms.model)}</span> ${tag}</td>${modelCells(ms)}
                 <td colspan="2" style="font-size:11px;color:var(--text-tertiary)">最后调用: ${escapeHtml(ms.last_used_at || "-")}</td>
               </tr>`;
               continue;
@@ -2559,8 +2561,8 @@
             const tag = group.flat
               ? `<span class="tag plain" style="font-size:10px" title="该模型的历史请求没有记录到请求模型名（多为 0 token 的失败请求），产生新请求后会自动补上">未记录请求模型</span>`
               : `<span class="tag plain" style="font-size:10px">请求模型</span>`;
-            html += `<tr class="sub-row">
-              <td class="cell-nowrap" colspan="2">↳ <span class="mono">${escapeHtml(ms.model)}</span> ${tag}</td>${acctCells(ms)}
+            html += `<tr class="model-group-row">
+              <td class="cell-nowrap" colspan="2"><span class="mono" style="color:var(--text-primary);font-weight:600">${escapeHtml(ms.model)}</span> ${tag}</td>${acctCells(ms)}
               <td class="cell-nowrap" style="font-size:11px;color:var(--text-tertiary)">最后调用: ${escapeHtml(ms.last_used_at || "-")}</td>
             </tr>`;
             continue;
