@@ -618,6 +618,140 @@ func TestServedVariantNeverBecomesARequestedAlias(t *testing.T) {
 	}
 }
 
+// TestIdleReconcileCreatesNoEmptyBucket reproduces the phantom row: a later event
+// for an already billed request names a different model but carries no new tokens,
+// which must not materialise an empty (0 requests / 0 tokens) model row.
+func TestIdleReconcileCreatesNoEmptyBucket(t *testing.T) {
+	store := NewStore(pricing.NewEngine())
+	if err := store.ConfigurePersistence(filepath.Join(t.TempDir(), "usage.json"), time.Hour); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	defer store.Close()
+
+	store.BeginRequest("req-idle", "sk-idle", "Idle Key", "gemini-3.8-flash-high", "gemini-3.8-flash-high", "openai", false)
+	store.ObserveHostUsageRecord(pluginapi.UsageRecord{
+		RequestID:     "req-idle",
+		Provider:      "antigravity",
+		AuthID:        "antigravity-idle@gmail.com.json",
+		Model:         "gemini-3.8-flash-high",
+		ResponseModel: "gemini-3.8-flash-n",
+		APIKey:        "sk-idle",
+		Detail:        pluginapi.UsageDetail{InputTokens: 100, TotalTokens: 100},
+	}, "Idle Key")
+	// Same request, another model name, no additional tokens.
+	store.ObserveHostUsageRecord(pluginapi.UsageRecord{
+		RequestID:     "req-idle",
+		Provider:      "antigravity",
+		AuthID:        "antigravity-idle@gmail.com.json",
+		Model:         "gemini-3.8-flash-high",
+		ResponseModel: "gemini-4-argon-high",
+		APIKey:        "sk-idle",
+		Detail:        pluginapi.UsageDetail{},
+	}, "Idle Key")
+
+	snap := store.Snapshot("sk-idle", "", nil, nil, nil, false)
+	ks := snap.Keys["sk-idle"]
+	if ks == nil {
+		t.Fatalf("missing key stats")
+	}
+	for name, ms := range ks.Models {
+		if ms.Requests == 0 && ms.TotalTokens == 0 {
+			t.Fatalf("empty model bucket %q must not be created: %+v", name, ms)
+		}
+	}
+	for _, acct := range snap.Accounts {
+		for name, ms := range acct.Models {
+			if ms.Requests == 0 && ms.TotalTokens == 0 {
+				t.Fatalf("empty account model bucket %q must not be created: %+v", name, ms)
+			}
+		}
+	}
+}
+
+// TestZeroTokenRequestKeepsRequestedAlias verifies a counted request that yields no
+// tokens (failure/empty usage) still records which model the client requested.
+func TestZeroTokenRequestKeepsRequestedAlias(t *testing.T) {
+	store := NewStore(pricing.NewEngine())
+	if err := store.ConfigurePersistence(filepath.Join(t.TempDir(), "usage.json"), time.Hour); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	defer store.Close()
+
+	const model = "gemini-4-argon-high"
+	store.BeginRequest("req-zero", "sk-zero", "Zero Key", model, model, "openai", false)
+	store.CompleteRequest(pluginapi.RequestCompletion{
+		RequestID:  "req-zero",
+		Model:      model,
+		Outcome:    pluginapi.RequestCompletionFailed,
+		StatusCode: 502,
+	}, "sk-zero", "Zero Key")
+
+	snap := store.Snapshot("sk-zero", "", nil, nil, nil, false)
+	stats := snap.Keys["sk-zero"].Models[model]
+	if stats == nil {
+		t.Fatalf("missing model bucket for a counted failed request")
+	}
+	if stats.Requests != 1 || stats.FailedRequests != 1 {
+		t.Fatalf("failed request not counted: %+v", stats)
+	}
+	if len(stats.RequestedModels) != 1 || stats.RequestedModels[0] != model {
+		t.Fatalf("requested alias missing on a zero-token request: %+v", stats.RequestedModels)
+	}
+}
+
+// TestLoadDropsEmptyModelBuckets cleans up phantom rows persisted by older builds.
+func TestLoadDropsEmptyModelBuckets(t *testing.T) {
+	usageFile := filepath.Join(t.TempDir(), "usage.json")
+	legacy := `{
+  "version": 1,
+  "updated_at": "2026-10-26T12:00:00Z",
+  "alias_rev": 1,
+  "keys": {
+    "sk-phantom": {
+      "api_key": "sk-phantom",
+      "models": {
+        "gemini-4-argon-high": {"model": "gemini-4-argon-high", "requests": 0, "total_tokens": 0},
+        "gemini-3.8-flash-n": {"model": "gemini-3.8-flash-n", "requests": 2, "total_tokens": 200}
+      }
+    }
+  },
+  "accounts": {
+    "account::antigravity-x@gmail.com.json": {
+      "provider": "antigravity",
+      "auth_id": "antigravity-x@gmail.com.json",
+      "requests": 2,
+      "total_tokens": 200,
+      "models": {
+        "gemini-4-argon-high": {"model": "gemini-4-argon-high", "requests": 0, "total_tokens": 0},
+        "gemini-3.8-flash-n": {"model": "gemini-3.8-flash-n", "requests": 2, "total_tokens": 200}
+      }
+    }
+  }
+}`
+	if err := os.WriteFile(usageFile, []byte(legacy), 0o644); err != nil {
+		t.Fatalf("write legacy snapshot: %v", err)
+	}
+
+	store := NewStore(pricing.NewEngine())
+	if err := store.ConfigurePersistence(usageFile, time.Hour); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	defer store.Close()
+
+	snap := store.Snapshot("sk-phantom", "", nil, nil, nil, false)
+	if _, exists := snap.Keys["sk-phantom"].Models["gemini-4-argon-high"]; exists {
+		t.Fatalf("empty model bucket survived the load")
+	}
+	if _, exists := snap.Keys["sk-phantom"].Models["gemini-3.8-flash-n"]; !exists {
+		t.Fatalf("real model bucket was dropped")
+	}
+	for _, acct := range snap.Accounts {
+		if _, exists := acct.Models["gemini-4-argon-high"]; exists {
+			t.Fatalf("empty account model bucket survived the load")
+		}
+	}
+}
+
 // TestRequestedAliasRecordedWhenModelUnchanged pins that a request whose served
 // model equals the requested model still records the requested name, so the
 // dashboard never has to guess what the client asked for.

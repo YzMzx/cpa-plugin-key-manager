@@ -773,11 +773,33 @@ func (s *Store) reconcileTrackerDeltaLocked(tr *TrackedRequest) {
 		tr.BilledModel = served
 	}
 
+	// 1. Compute token deltas between ExtractedUsage and already BilledUsage
+	target := MergeMaxUsage(tr.BilledUsage, tr.ExtractedUsage)
+	dIn := target.UncachedInputTokens - tr.BilledUsage.UncachedInputTokens
+	dOut := target.OutputTokens - tr.BilledUsage.OutputTokens
+	dReason := target.ReasoningTokens - tr.BilledUsage.ReasoningTokens
+	dRead := target.CacheReadTokens - tr.BilledUsage.CacheReadTokens
+	dWrite := target.CacheWriteTokens - tr.BilledUsage.CacheWriteTokens
+	hasDelta := dIn > 0 || dOut > 0 || dReason > 0 || dRead > 0 || dWrite > 0
+
+	// Nothing left to record (request already counted and no new tokens): return
+	// before creating buckets, otherwise an idle reconcile would materialise an
+	// empty model/account row with 0 requests and 0 tokens.
+	if tr.CountedRequest && !hasDelta {
+		if existing, ok := ks.Models[model]; ok && existing != nil && existing.UnitPricePer1M.Source == "" {
+			if p, found := s.pricing.Lookup(tr.Model, tr.RequestedModel, tr.ExtractedUsage.ResponseModel, model); found {
+				existing.UnitPricePer1M = p
+				s.dirty = true
+			}
+		}
+		return
+	}
+
 	ms := s.getOrCreateModelStatsLocked(ks, model)
 	ams := accountModelStats(acct, model)
 	nowStr := time.Now().UTC().Format(time.RFC3339)
 
-	// 1. Apply request count once
+	// 2. Apply request count once
 	if !tr.CountedRequest {
 		tr.CountedRequest = true
 		ks.TotalRequests++
@@ -812,26 +834,14 @@ func (s *Store) reconcileTrackerDeltaLocked(tr *TrackedRequest) {
 		}
 		ks.LastRequestAt = nowStr
 		ms.LastUsedAt = nowStr
+		// Record the requested name even when the request produced no tokens (for
+		// example a failure), otherwise the row cannot be attributed to a request.
+		recordRequestedAlias(ms, []string{tr.Model, tr.RequestedModel})
+		recordRequestedAlias(ams, []string{tr.Model, tr.RequestedModel})
 		s.dirty = true
 	}
 
-	// 2. Compute token deltas between ExtractedUsage and already BilledUsage
-	target := MergeMaxUsage(tr.BilledUsage, tr.ExtractedUsage)
-	dIn := target.UncachedInputTokens - tr.BilledUsage.UncachedInputTokens
-	dOut := target.OutputTokens - tr.BilledUsage.OutputTokens
-	dReason := target.ReasoningTokens - tr.BilledUsage.ReasoningTokens
-	dRead := target.CacheReadTokens - tr.BilledUsage.CacheReadTokens
-	dWrite := target.CacheWriteTokens - tr.BilledUsage.CacheWriteTokens
-
-	if dIn <= 0 && dOut <= 0 && dReason <= 0 && dRead <= 0 && dWrite <= 0 {
-		// Refresh unit price display even if 0 tokens. The requested model is
-		// preferred for pricing because upstream variant names rarely have a
-		// published price.
-		if ms.UnitPricePer1M.Source == "" {
-			if p, ok := s.pricing.Lookup(tr.Model, tr.RequestedModel, tr.ExtractedUsage.ResponseModel, model); ok {
-				ms.UnitPricePer1M = p
-			}
-		}
+	if !hasDelta {
 		return
 	}
 
@@ -1602,6 +1612,13 @@ func (s *Store) loadFromDisk(filePath string) error {
 				cleanedDisk = true
 				continue
 			}
+			// Drop buckets that never recorded anything: older builds materialised a
+			// row (0 requests, 0 tokens) for a model that was never billed, which the
+			// dashboard would otherwise list forever.
+			if ms.Requests == 0 && ms.TotalTokens == 0 && ms.CostNanoUSD == 0 {
+				cleanedDisk = true
+				continue
+			}
 			if ms.CostNanoUSD == 0 && ms.CostUSD > 0 {
 				ms.CostNanoUSD = int64(ms.CostUSD * float64(pricing.NanoUSDPerUSD))
 			}
@@ -1676,8 +1693,18 @@ func (s *Store) loadFromDisk(filePath string) error {
 			if mv.Model == "" {
 				mv.Model = mk
 			}
+			if mv.Requests == 0 && mv.TotalTokens == 0 && mv.CostNanoUSD == 0 {
+				delete(acct.Models, mk)
+				cleanedDisk = true
+				continue
+			}
 			mv.CostUSD = pricing.NanoToUSD(mv.CostNanoUSD)
 			mv.CostFormatted = pricing.FormatUSD(mv.CostNanoUSD)
+		}
+		// Drop account buckets that hold no data at all.
+		if acct.Requests == 0 && acct.TotalTokens == 0 && len(acct.Models) == 0 {
+			cleanedDisk = true
+			continue
 		}
 		if existing, ok := s.accounts[key]; ok && existing != nil {
 			mergeAccountStats(existing, acct)
