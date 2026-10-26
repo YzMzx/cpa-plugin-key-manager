@@ -51,6 +51,9 @@ jobs:
     name: Build (${{ matrix.target }})
     needs: test
     runs-on: ${{ matrix.os }}
+    # macOS arm64 runners are frequently queued for a long time; without an
+    # explicit budget GitHub cancels the job while it is still waiting.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
