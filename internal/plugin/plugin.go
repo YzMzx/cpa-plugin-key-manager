@@ -22,7 +22,7 @@ import (
 
 const (
 	PluginID      = "cpa-plugin-key-manager"
-	PluginVersion = "0.6.5"
+	PluginVersion = "0.6.6"
 	PluginAuthor  = "YzMzx"
 	PluginRepo    = "https://github.com/YzMzx/cpa-plugin-key-manager"
 	PluginLogoSVG = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%238b8680'/><path d='M24 22a10 10 0 1 0 9.5 13H42v5h6v-5h4v-6H33.5A10 10 0 0 0 24 22zm0 6a4 4 0 1 1 0 8 4 4 0 0 1 0-8z' fill='%23fff'/></svg>"
@@ -481,7 +481,8 @@ func (m *Manager) handleResponseInterceptAfter(raw []byte) ([]byte, error) {
 
 	// If Model and RequestedModel are empty, this is a catalog/metadata response such as /v1/models.
 	// Filter the returned model catalog so that clients only see models permitted by their API Key whitelist.
-	if strings.TrimSpace(req.Model) == "" && strings.TrimSpace(req.RequestedModel) == "" && len(req.Body) > 0 {
+	if strings.TrimSpace(req.Model) == "" && strings.TrimSpace(req.RequestedModel) == "" && len(req.Body) > 0 &&
+		!isManagementPanelRequest(req.RequestHeaders) {
 		m.mu.RLock()
 		cfg := m.cfg
 		m.mu.RUnlock()
@@ -501,6 +502,22 @@ func (m *Manager) handleResponseInterceptAfter(raw []byte) ([]byte, error) {
 	}
 
 	return okEnvelope(pluginapi.ResponseInterceptResponse{})
+}
+
+// isManagementPanelRequest reports whether a catalog request came from the
+// browser-based management panel. That page lists the server's real catalog, so
+// filtering it by the API Key saved in the panel made models look missing.
+// API clients (SDKs, curl, the CLI) are still filtered per key.
+func isManagementPanelRequest(headers http.Header) bool {
+	if headers == nil {
+		return false
+	}
+	// Explicit opt-out for scripts that need the full catalog.
+	if strings.EqualFold(strings.TrimSpace(headers.Get("X-Key-Guard-Catalog")), "all") {
+		return true
+	}
+	referer := strings.ToLower(strings.TrimSpace(headers.Get("Referer")))
+	return strings.Contains(referer, "/management") || strings.Contains(referer, "management.html")
 }
 
 func (m *Manager) handleStreamChunkIntercept(raw []byte) ([]byte, error) {

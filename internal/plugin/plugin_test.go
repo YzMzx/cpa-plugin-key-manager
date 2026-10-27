@@ -739,6 +739,68 @@ storage:
 	if len(filteredCatalog.Data) != 1 || filteredCatalog.Data[0].ID != "gpt-4o" {
 		t.Fatalf("expected only gpt-4o in filtered catalog, got: %+v", filteredCatalog.Data)
 	}
+
+	// The management panel lists the server catalog, so its request bypasses the
+	// per-key filter even when the panel uses a restricted API key.
+	panelReq, _ := json.Marshal(pluginapi.ResponseInterceptRequest{
+		RequestID:    "models-req-panel",
+		SourceFormat: "openai",
+		RequestHeaders: http.Header{
+			"Authorization": []string{"Bearer sk-dynamic-user-1"},
+			"Referer":       []string{"https://cpa.example.com/management.html"},
+		},
+		Body:       modelCatalogRaw,
+		StatusCode: 200,
+	})
+	rawPanelResp, err := mgr.HandleRPC(pluginabi.MethodResponseInterceptAfter, panelReq)
+	if err != nil {
+		t.Fatalf("handle panel models intercept failed: %v", err)
+	}
+	panelResp := decodeEnvelope[pluginapi.ResponseInterceptResponse](t, rawPanelResp)
+	if len(panelResp.Body) != 0 {
+		t.Fatalf("management panel must see the unfiltered catalog, got body: %s", string(panelResp.Body))
+	}
+
+	// Scripts can ask for the full catalog explicitly.
+	scriptReq, _ := json.Marshal(pluginapi.ResponseInterceptRequest{
+		RequestID:    "models-req-script",
+		SourceFormat: "openai",
+		RequestHeaders: http.Header{
+			"Authorization":       []string{"Bearer sk-dynamic-user-1"},
+			"X-Key-Guard-Catalog": []string{"all"},
+		},
+		Body:       modelCatalogRaw,
+		StatusCode: 200,
+	})
+	rawScriptResp, err := mgr.HandleRPC(pluginabi.MethodResponseInterceptAfter, scriptReq)
+	if err != nil {
+		t.Fatalf("handle script models intercept failed: %v", err)
+	}
+	scriptResp := decodeEnvelope[pluginapi.ResponseInterceptResponse](t, rawScriptResp)
+	if len(scriptResp.Body) != 0 {
+		t.Fatalf("X-Key-Guard-Catalog: all must bypass filtering, got body: %s", string(scriptResp.Body))
+	}
+}
+
+func TestIsManagementPanelRequest(t *testing.T) {
+	cases := []struct {
+		name    string
+		headers http.Header
+		want    bool
+	}{
+		{"nil", nil, false},
+		{"sdk", http.Header{"Authorization": {"Bearer sk-x"}}, false},
+		{"panel html", http.Header{"Referer": {"https://cpa.example.com/management.html"}}, true},
+		{"panel hash route", http.Header{"Referer": {"https://cpa.example.com/management.html#/system"}}, true},
+		{"panel path", http.Header{"Referer": {"https://cpa.example.com/management/"}}, true},
+		{"unrelated referer", http.Header{"Referer": {"https://app.example.com/chat"}}, false},
+		{"explicit opt-out", http.Header{"X-Key-Guard-Catalog": {"all"}}, true},
+	}
+	for _, tc := range cases {
+		if got := isManagementPanelRequest(tc.headers); got != tc.want {
+			t.Fatalf("%s: isManagementPanelRequest=%v want %v", tc.name, got, tc.want)
+		}
+	}
 }
 
 func TestResolveStoragePathAndHostConfigFile(t *testing.T) {
