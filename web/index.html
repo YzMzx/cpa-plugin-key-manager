@@ -543,6 +543,10 @@
   .cred-badge.prov-gemini { border-color: rgba(56, 189, 248, 0.35); }
   .cred-badge.prov-openai { border-color: rgba(52, 211, 153, 0.32); }
   .cred-badge.prov-deepseek { border-color: rgba(129, 140, 248, 0.35); }
+  .cred-badge.prov-kimi { border-color: rgba(167, 139, 250, 0.35); }
+  .cred-badge.prov-xai { border-color: rgba(148, 163, 184, 0.35); }
+  .cred-badge.prov-devin { border-color: rgba(251, 113, 133, 0.35); }
+  .cred-badge.prov-compat { border-color: rgba(45, 212, 191, 0.35); }
   .cred-badge-label { color: var(--text-secondary); }
   .cred-badge-count { color: var(--text-primary); font-weight: 700; }
   /* Grouped credential popover */
@@ -592,6 +596,15 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  .cred-subchannel {
+    flex: 0 0 auto;
+    font-size: 10px;
+    padding: 0 6px;
+    border-radius: 999px;
+    border: 1px solid var(--border-primary);
+    color: var(--text-secondary);
+    background: var(--count-badge-bg);
+  }
   .cred-status {
     margin-left: auto;
     flex: 0 0 auto;
@@ -611,11 +624,21 @@
   .model-pill.prov-gemini { border-color: rgba(56, 189, 248, 0.35); }
   .model-pill.prov-openai { border-color: rgba(52, 211, 153, 0.32); }
   .model-pill.prov-deepseek { border-color: rgba(129, 140, 248, 0.35); }
+  .model-pill.prov-kimi { border-color: rgba(167, 139, 250, 0.35); }
+  .model-pill.prov-meta { border-color: rgba(129, 140, 248, 0.35); }
+  .model-pill.prov-xai { border-color: rgba(148, 163, 184, 0.35); }
+  .model-pill.prov-devin { border-color: rgba(251, 113, 133, 0.35); }
+  .model-pill.prov-compat { border-color: rgba(45, 212, 191, 0.35); }
   .model-pill.prov-other { border-color: var(--border-primary); }
   .dot-claude { background: #f59e0b; }
   .dot-gemini { background: #38bdf8; }
   .dot-openai { background: #34d399; }
   .dot-deepseek { background: #818cf8; }
+  .dot-kimi { background: #a78bfa; }
+  .dot-meta { background: #818cf8; }
+  .dot-xai { background: #94a3b8; }
+  .dot-devin { background: #fb7185; }
+  .dot-compat { background: #2dd4bf; }
   .dot-other { background: #9ca3af; }
   .model-more {
     border: 1px dashed var(--border-primary);
@@ -2207,65 +2230,49 @@
   }
 
   // ---- Bound credentials: aggregated channel badges + grouped popover ----
-  // A credential belongs to a *channel* (the auth file type/provider: antigravity,
-  // claude, codex, openai-compatible-<name> ...) and that channel serves a certain
-  // AI provider (Google, Anthropic, OpenAI compatible ...). Grouping uses the
-  // channel; the provider is shown separately so the two dimensions never blur.
+  // Channels are exactly the ones CPA can log into (Antigravity, Claude, Codex,
+  // Kimi, Muse, xAI, Devin, Vertex AI) plus the configurable OpenAI-compatible
+  // provider. A badge counts credentials per channel; the AI vendor is a separate
+  // attribute shown inside the popover.
+  const CRED_CHANNELS = [
+    { test: /antigravity/, key: "antigravity", label: "Antigravity", vendor: "Gemini", dot: "gemini" },
+    { test: /vertex/, key: "vertex", label: "Vertex AI", vendor: "Gemini", dot: "gemini" },
+    { test: /claude/, key: "claude", label: "Claude", vendor: "Anthropic", dot: "claude" },
+    { test: /codex/, key: "codex", label: "Codex", vendor: "OpenAI", dot: "openai" },
+    { test: /kimi|moonshot/, key: "kimi", label: "Kimi", vendor: "Moonshot", dot: "kimi" },
+    { test: /muse/, key: "muse", label: "Muse", vendor: "Meta", dot: "meta" },
+    { test: /xai|grok/, key: "xai", label: "xAI", vendor: "xAI", dot: "xai" },
+    { test: /devin/, key: "devin", label: "Devin", vendor: "Cognition", dot: "devin" }
+  ];
+
+  function compatChannel(subName) {
+    // Every openai-compatible-* provider shares one badge; the configured name is
+    // kept as a sub-channel so the popover can still separate them.
+    return { key: "openai-compat", label: "OpenAI 兼容", vendor: "自定义", dot: "compat", sub: subName || "" };
+  }
+
   function credChannelOf(name) {
     const file = authFileFor(name);
-    const typeRaw = String((file && (file.type || file.provider)) || "").trim().toLowerCase();
-    const raw = String(name || "").trim().toLowerCase();
+    const typeRaw = String((file && (file.type || file.provider)) || "").trim();
+    const raw = String(name || "").trim();
 
-    const compatible = /^openai-compatible-(.+)$/.exec(typeRaw);
-    if (compatible) {
-      return { key: "compat:" + compatible[1], label: compatible[1], provider: "OpenAI 兼容", dot: "openai" };
+    const compatFromType = /^openai-compatible-(.+)$/i.exec(typeRaw);
+    if (compatFromType) return compatChannel(compatFromType[1].trim());
+    if (/^openai-compatibility:/i.test(raw)) {
+      const parts = raw.split(":");
+      return compatChannel((parts[1] || "").trim());
     }
-    if (typeRaw === "antigravity" || raw.startsWith("antigravity")) {
-      return { key: "antigravity", label: "Antigravity", provider: "Google", dot: "gemini" };
-    }
-    if (typeRaw.includes("claude") || raw.startsWith("claude")) {
-      return { key: "claude", label: "Claude", provider: "Anthropic", dot: "claude" };
-    }
-    if (typeRaw.includes("gemini") || typeRaw.includes("vertex") || raw.startsWith("gemini")) {
-      return { key: "gemini", label: "Gemini", provider: "Google", dot: "gemini" };
-    }
-    if (typeRaw.includes("codex") || raw.startsWith("codex")) {
-      return { key: "codex", label: "Codex", provider: "OpenAI", dot: "openai" };
-    }
-    if (typeRaw.includes("qwen") || raw.includes("qwen")) {
-      return { key: "qwen", label: "Qwen", provider: "阿里云", dot: "other" };
-    }
-    if (typeRaw.includes("deepseek") || raw.includes("deepseek")) {
-      return { key: "deepseek", label: "DeepSeek", provider: "DeepSeek", dot: "deepseek" };
-    }
-    // Not registered in auth_files: derive the channel from the configured id.
-    if (raw.startsWith("openai-compatibility:")) {
-      const parts = String(name).split(":");
-      const label = (parts.length >= 2 ? parts[1] : "").trim() || "OpenAI 兼容";
-      return { key: "compat:" + label.toLowerCase(), label: label, provider: "OpenAI 兼容", dot: "openai" };
-    }
-    const prefix = String(name || "").split(/[-:]/)[0];
-    return { key: "other:" + raw, label: prefix || "其他", provider: "未知", dot: "other" };
+
+    const probe = (typeRaw || raw).toLowerCase();
+    const def = CRED_CHANNELS.find(channel => channel.test.test(probe));
+    if (def) return { key: def.key, label: def.label, vendor: def.vendor, dot: def.dot, sub: "" };
+
+    const prefix = raw.split(/[-:]/)[0];
+    return { key: "other:" + prefix.toLowerCase(), label: prefix || "其他", vendor: "未知", dot: "other", sub: "" };
   }
 
   function credProviderKey(name) {
     return credChannelOf(name).dot;
-  }
-
-  // The badge dimension is the AI provider, so several channels of the same vendor
-  // collapse into one badge (Antigravity + any gemini channel -> Google).
-  function credProviderOf(name) {
-    const label = credChannelOf(name).provider;
-    const table = {
-      "Google": { key: "google", label: "Google", dot: "gemini" },
-      "Anthropic": { key: "anthropic", label: "Anthropic", dot: "claude" },
-      "OpenAI": { key: "openai", label: "OpenAI", dot: "openai" },
-      "OpenAI 兼容": { key: "openai-compat", label: "OpenAI 兼容", dot: "openai" },
-      "阿里云": { key: "aliyun", label: "阿里云", dot: "other" },
-      "DeepSeek": { key: "deepseek", label: "DeepSeek", dot: "deepseek" }
-    };
-    if (table[label]) return table[label];
-    return { key: "other", label: label && label !== "未知" ? label : "其他", dot: "other" };
   }
 
   function splitCredentialName(name) {
@@ -2335,36 +2342,19 @@
       `<span class="model-tail">${escapeHtml(split.tail)}</span></span></span>`;
   }
 
-  // Groups credential ids by channel, largest group first. The provider is carried
-  // along so the popover can label each channel with the AI provider it serves.
+  // Groups credential ids by channel, largest group first. Rows keep their
+  // sub-channel (the configured name behind an OpenAI-compatible provider).
   function credentialGroups(creds) {
     const map = new Map();
     for (const id of creds) {
       const channel = credChannelOf(id);
       if (!map.has(channel.key)) {
-        map.set(channel.key, { key: channel.key, label: channel.label, provider: channel.provider, dot: channel.dot, items: [] });
+        map.set(channel.key, { key: channel.key, label: channel.label, vendor: channel.vendor, dot: channel.dot, items: [] });
       }
-      map.get(channel.key).items.push(id);
+      map.get(channel.key).items.push({ id: id, sub: channel.sub });
     }
     const groups = Array.from(map.values());
-    for (const group of groups) group.items.sort();
-    groups.sort((a, b) => b.items.length - a.items.length || a.label.localeCompare(b.label));
-    return groups;
-  }
-
-  // Badges aggregate by AI provider; the per-channel breakdown lives in the popover.
-  function credentialProviderGroups(creds) {
-    const map = new Map();
-    for (const id of creds) {
-      const provider = credProviderOf(id);
-      if (!map.has(provider.key)) {
-        map.set(provider.key, { key: provider.key, label: provider.label, dot: provider.dot, items: [], channels: new Set() });
-      }
-      const group = map.get(provider.key);
-      group.items.push(id);
-      group.channels.add(credChannelOf(id).key);
-    }
-    const groups = Array.from(map.values());
+    for (const group of groups) group.items.sort((a, b) => a.id.localeCompare(b.id));
     groups.sort((a, b) => b.items.length - a.items.length || a.label.localeCompare(b.label));
     return groups;
   }
@@ -2382,10 +2372,10 @@
       return `<div class="model-cell">${strategy}<span class="single-cred">${credPillHtml(creds[0])}</span></div>`;
     }
 
-    // Two or more collapse into one badge per AI provider.
-    const groups = credentialProviderGroups(creds);
+    // Two or more collapse into one badge per channel.
+    const groups = credentialGroups(creds);
     const shown = groups.slice(0, 3).map(group => {
-      const title = `${group.label}: ${group.items.length} 个凭证（${group.channels.size} 个渠道）`;
+      const title = `${group.label}: ${group.items.length} 个凭证 · 厂商 ${group.vendor}`;
       return `<button type="button" class="cred-badge prov-${group.dot}" data-key="${escapeHtml(apiKey)}" data-kind="creds" ` +
         `onclick="openEntityPopover(event, this)" title="${escapeHtml(title)}">` +
         `<span class="model-dot dot-${group.dot}"></span>` +
@@ -2395,7 +2385,7 @@
     const hiddenFamilies = groups.length - 3;
     const moreBtn = hiddenFamilies > 0
       ? `<button type="button" class="model-more" data-key="${escapeHtml(apiKey)}" data-kind="creds" ` +
-        `onclick="openEntityPopover(event, this)" title="还有 ${hiddenFamilies} 个提供商，共 ${creds.length} 个凭证">+${hiddenFamilies}</button>`
+        `onclick="openEntityPopover(event, this)" title="还有 ${hiddenFamilies} 个渠道，共 ${creds.length} 个凭证">+${hiddenFamilies}</button>`
       : "";
     return `<div class="model-cell">${strategy}${shown}${moreBtn}</div>`;
   }
@@ -2460,23 +2450,30 @@
     let listHtml = "";
     let matchedCount = 0;
     if (isCreds) {
-      // Grouped by channel family, each row showing the masked identity and status.
+      // Grouped by channel; each row shows the sub-channel, masked identity and status.
       const groups = credentialGroups(all)
-        .map(group => ({ ...group, items: q ? group.items.filter(id => id.toLowerCase().includes(q)) : group.items }))
+        .map(group => ({
+          ...group,
+          items: q ? group.items.filter(item => item.id.toLowerCase().includes(q)) : group.items
+        }))
         .filter(group => group.items.length > 0);
       matchedCount = groups.reduce((sum, group) => sum + group.items.length, 0);
       listHtml = groups.map(group => {
-        const rows = group.items.map(id => {
-          const status = credentialStatusOf(id);
+        const rows = group.items.map(item => {
+          const status = credentialStatusOf(item.id);
+          const subTag = item.sub
+            ? `<span class="cred-subchannel">${escapeHtml(item.sub)}</span>`
+            : "";
           return `<div class="cred-row">` +
             `<span class="model-dot dot-${group.dot}"></span>` +
-            `<span class="cred-row-name mono" title="${escapeHtml(id)}">${escapeHtml(maskCredentialName(id))}</span>` +
+            subTag +
+            `<span class="cred-row-name mono" title="${escapeHtml(item.id)}">${escapeHtml(maskCredentialName(item.id))}</span>` +
             `<span class="cred-status cred-status-${status.key}">${escapeHtml(status.label)}</span>` +
             `</div>`;
         }).join("");
         return `<div class="cred-group">` +
           `<div class="cred-group-title"><span class="model-dot dot-${group.dot}"></span>${escapeHtml(group.label)}` +
-          `<span class="cred-channel-provider">AI 提供商: ${escapeHtml(group.provider)}</span>` +
+          `<span class="cred-channel-provider">厂商: ${escapeHtml(group.vendor)}</span>` +
           `<span class="cred-group-count mono">${group.items.length}</span></div>` +
           rows + `</div>`;
       }).join("");
@@ -2574,7 +2571,8 @@
       let modelsHtml = modelWhitelistCellHtml(k, isAllModels, allowedList);
 
       const ub = kr.upstream_binding || {};
-      const creds = Array.from(new Set([].concat(ub.auth_ids || [], ub.credentials || [])));      const strategyLabelMap = {
+      const creds = Array.from(new Set([].concat(ub.auth_ids || [], ub.credentials || [])));
+      const strategyLabelMap = {
         "round-robin": "轮询",
         "fill-first": "优先级",
         "strict": "严格"
