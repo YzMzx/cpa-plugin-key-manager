@@ -1139,6 +1139,7 @@
       <button type="button" class="tab-btn active" data-tab="tab-keys" onclick="switchAdminTab('tab-keys')">API Key 与规则管控</button>
       <button type="button" class="tab-btn" data-tab="tab-dashboard" onclick="switchAdminTab('tab-dashboard')">Token 用量统计看板</button>
       <button type="button" class="tab-btn" data-tab="tab-routing" onclick="switchAdminTab('tab-routing')">全局默认策略与凭证池</button>
+      <button type="button" class="tab-btn" data-tab="tab-pricing" onclick="switchAdminTab('tab-pricing')">模型与价格</button>
     </div>
   </div>
 
@@ -1400,8 +1401,167 @@
       </div>
     </div>
   </section>
+
+  <!-- TAB 4: MODELS & PRICING (models.dev sync + custom overrides) -->
+  <section id="tab-pricing" class="admin-tab hidden">
+    <!-- Card 1: models.dev Sync Status & Default Fallback -->
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <h2 class="card-title">价格基准同步（models.dev）</h2>
+          <div style="font-size:12px;color:var(--text-tertiary);margin-top:4px">
+            价格默认从 <a href="https://models.dev/" target="_blank" rel="noopener noreferrer" style="color:var(--text-primary);text-decoration:underline">https://models.dev/</a> 自动拉取并缓存；支持对任意模型或通配符规则手动覆盖修改（单位：USD / 1M Tokens）。
+          </div>
+        </div>
+        <div class="input-row">
+          <button type="button" class="btn" id="btnSyncPricing" onclick="triggerModelsDevSync()">🔄 立即从 models.dev 同步</button>
+          <button type="button" class="btn btn-primary" onclick="openPriceModal('')">➕ 新增自定义价格</button>
+        </div>
+      </div>
+
+      <div class="kpi-grid" style="margin-bottom:0">
+        <div class="kpi-card">
+          <div class="kpi-label">models.dev 已同步模型条目</div>
+          <div class="kpi-value" id="pricingSyncedCount">0</div>
+          <div class="kpi-sub" id="pricingSyncSource">来源: 未同步</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">最近同步时间 / 状态</div>
+          <div class="kpi-value" style="font-size:16px" id="pricingLastSyncAt">-</div>
+          <div class="kpi-sub" id="pricingLastSyncErr">状态正常</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">手动修改 / 兜底默认价</div>
+          <div class="kpi-value" id="pricingCustomCount">0</div>
+          <div class="kpi-sub" id="pricingDefaultSub">未设置兜底默认价 · <a href="javascript:void(0)" onclick="openPriceModal('__default__')" style="color:var(--text-primary);text-decoration:underline">设置兜底价</a></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Card 2: Active Models & Custom Overrides Table -->
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <h2 class="card-title">当前可用模型与自定义价格配置</h2>
+          <div style="font-size:12px;color:var(--text-tertiary);margin-top:4px">
+            汇总当前宿主已注册的可用模型、已产生流量的模型以及所有手动修改的价格规则；点击「修改价格」可覆盖 models.dev 默认价格。
+          </div>
+        </div>
+        <div class="input-row">
+          <select id="pricingSourceFilter" style="width:150px" onchange="renderPricingTab()">
+            <option value="all">全部来源</option>
+            <option value="custom">仅手动修改</option>
+            <option value="models.dev">仅 models.dev</option>
+            <option value="unmatched">未匹配价格</option>
+          </select>
+          <input type="text" class="input" style="width:220px" id="pricingTableSearch" placeholder="搜索模型名称或 Provider..." oninput="renderPricingTab()">
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>模型名称 / 匹配规则</th>
+              <th>价格来源</th>
+              <th>Input ($ / 1M)</th>
+              <th>Output ($ / 1M)</th>
+              <th>Cache Read ($ / 1M)</th>
+              <th>Cache Write ($ / 1M)</th>
+              <th>models.dev 基准参考</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="pricingModelsTableBody">
+            <tr><td colspan="8" style="text-align:center;color:var(--text-tertiary)">加载中...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Card 3: models.dev Reference Catalog Search -->
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <h2 class="card-title">models.dev 官方价格库检索</h2>
+          <div style="font-size:12px;color:var(--text-tertiary);margin-top:4px">
+            在已同步的 models.dev 价格库中检索任意模型，可一键载入并修改为自定义覆盖价格。
+          </div>
+        </div>
+        <div class="input-row">
+          <input type="text" class="input" style="width:260px" id="modelsDevSearchInput" placeholder="输入关键字检索 (如 claude, gemini, gpt, deepseek)..." oninput="debouncedSearchModelsDev()">
+          <button type="button" class="btn btn-sm" onclick="searchModelsDevCatalog()">🔍 检索</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>models.dev 模型标识</th>
+              <th>Input ($ / 1M)</th>
+              <th>Output ($ / 1M)</th>
+              <th>Cache Read ($ / 1M)</th>
+              <th>Cache Write ($ / 1M)</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="modelsDevSearchTableBody">
+            <tr><td colspan="6" style="text-align:center;color:var(--text-tertiary)">输入模型关键字检索 models.dev 价格库</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
   </div><!-- /#adminWorkspace -->
 </div><!-- /.wrap -->
+
+<!-- ==================== MODAL: EDIT / OVERRIDE MODEL PRICE ==================== -->
+<div class="modal-backdrop" id="priceModalBackdrop">
+  <div class="modal" style="max-width:540px">
+    <div class="modal-header">
+      <h3 class="card-title" id="priceModalTitle">修改模型价格</h3>
+      <button type="button" class="btn btn-sm" onclick="closePriceModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label">
+          <span>模型名称 / 通配符规则 *</span>
+          <span style="font-size:11px;color:var(--text-tertiary)">支持精确模型名或 * 通配符（如 gemini-3.8-*）；填 __default__ 表示全局兜底默认价</span>
+        </label>
+        <div class="input-row">
+          <input type="text" class="input mono" style="flex:1" id="pmModelInput" placeholder="例如: gemini-3.8-flash-high 或 claude-sonnet-4-*">
+          <button type="button" class="btn btn-sm" onclick="fillPriceModalFromModelsDev()">📥 从 models.dev 填入基准价</button>
+        </div>
+        <div id="pmRefHint" style="font-size:11.5px;color:var(--text-tertiary);margin-top:4px"></div>
+      </div>
+
+      <div class="form-grid">
+        <div class="form-group">
+          <label class="form-label">Input 价格 ($ / 1M Tokens)</label>
+          <input type="number" step="0.0001" min="0" class="input mono" id="pmInputPrice" value="0">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Output 价格 ($ / 1M Tokens)</label>
+          <input type="number" step="0.0001" min="0" class="input mono" id="pmOutputPrice" value="0">
+        </div>
+      </div>
+
+      <div class="form-grid" style="margin-bottom:0">
+        <div class="form-group" style="margin-bottom:0">
+          <label class="form-label">Cache Read 价格 ($ / 1M Tokens)</label>
+          <input type="number" step="0.0001" min="0" class="input mono" id="pmCacheReadPrice" value="0">
+        </div>
+        <div class="form-group" style="margin-bottom:0">
+          <label class="form-label">Cache Write 价格 ($ / 1M Tokens)</label>
+          <input type="number" step="0.0001" min="0" class="input mono" id="pmCacheWritePrice" value="0">
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn" onclick="closePriceModal()">取消</button>
+      <button type="button" class="btn btn-primary" onclick="submitPriceModal()">💾 保存价格配置</button>
+    </div>
+  </div>
+</div>
 
 <!-- ==================== MODAL: CREATE / EDIT UNIFIED API KEY ==================== -->
 <div class="modal-backdrop" id="keyModalBackdrop">
@@ -1514,6 +1674,9 @@
   const API_KEYS_CRUD      = "/v0/management/key-guard/keys";
   const API_DEFAULT_POLICY = "/v0/management/key-guard/default-policy";
   const API_USAGE_RESET    = "/v0/management/key-guard/usage/reset";
+  const API_PRICING        = "/v0/management/key-guard/pricing";
+  const API_PRICING_SYNC   = "/v0/management/key-guard/pricing/sync";
+  const API_PRICING_CUSTOM = "/v0/management/key-guard/pricing/custom";
   const API_CPA_KEYS       = "/v0/management/api-keys";
   const SESSION_KEY_NAME   = "cpa_plugin_key_manager_mgmt_session";
   const LEGACY_SESSION_KEY_NAME = "cpa_plugin_key_mgmt_session";
@@ -1908,6 +2071,7 @@
       renderDashboardTables();
       initDefaultPolicySelectors();
       renderHostAuthTable();
+      renderPricingTab();
     } catch (err) {
       if (activeManagementKey) {
         showToast(err.message, true);
@@ -3234,6 +3398,371 @@
         <td>${boundKeys.length ? boundKeys.map(k => `<span class="tag plain">${escapeHtml(k.name || maskKeyStr(k.api_key))}</span>`).join(" ") : `<span style="color:var(--text-tertiary)">公共池共享</span>`}</td>
       </tr>`;
     }).join("");
+  }
+
+  // ==================== TAB 4: MODELS & PRICING (models.dev + custom overrides) ====================
+  let modelsDevSearchTimer = null;
+
+  function fmtPriceNum(val) {
+    const n = Number(val || 0);
+    if (!Number.isFinite(n) || n === 0) return "$0";
+    if (n >= 1) return "$" + n.toFixed(2).replace(/\.?0+$/, "");
+    return "$" + n.toFixed(4).replace(/\.?0+$/, "");
+  }
+
+  function priceSourceTagHtml(source) {
+    const src = String(source || "").toLowerCase();
+    if (src === "custom_override") {
+      return `<span class="tag warn">手动修改</span>`;
+    }
+    if (src.startsWith("models.dev")) {
+      return `<span class="tag ok">models.dev</span>`;
+    }
+    if (src === "default_fallback") {
+      return `<span class="tag plain">兜底默认价</span>`;
+    }
+    return `<span class="tag plain" style="color:var(--text-tertiary)">未匹配</span>`;
+  }
+
+  function renderPricingTab() {
+    if (!overviewData) return;
+    const ps = overviewData.pricing_status || {};
+    const customMap = ps.custom_prices || {};
+    const defPrice = ps.default_price || null;
+
+    document.getElementById("pricingSyncedCount").textContent = fmtInt(ps.synced_model_keys || 0);
+    document.getElementById("pricingSyncSource").textContent = "来源: " + (ps.sync_source || "未同步 (自动拉取 https://models.dev/api.json)");
+    document.getElementById("pricingLastSyncAt").textContent = ps.last_sync_at || "尚未完成首次同步";
+
+    const errEl = document.getElementById("pricingLastSyncErr");
+    if (ps.last_sync_error) {
+      errEl.textContent = "同步告警: " + ps.last_sync_error;
+      errEl.style.color = "var(--error-color)";
+    } else {
+      errEl.textContent = "自动同步周期: 24 小时 · 状态正常";
+      errEl.style.color = "var(--text-tertiary)";
+    }
+
+    const customKeys = Object.keys(customMap);
+    document.getElementById("pricingCustomCount").textContent = fmtInt(customKeys.length);
+    const defSubEl = document.getElementById("pricingDefaultSub");
+    if (defPrice) {
+      defSubEl.innerHTML =
+        `兜底价: In <span class="mono">${fmtPriceNum(defPrice.input)}</span> / Out <span class="mono">${fmtPriceNum(defPrice.output)}</span> · ` +
+        `<a href="javascript:void(0)" onclick="openPriceModal('__default__')" style="color:var(--text-primary);text-decoration:underline">修改</a> · ` +
+        `<a href="javascript:void(0)" onclick="deleteCustomModelPrice('__default__')" style="color:var(--error-color);text-decoration:underline">清除</a>`;
+    } else {
+      defSubEl.innerHTML =
+        `未设置兜底默认价 · <a href="javascript:void(0)" onclick="openPriceModal('__default__')" style="color:var(--text-primary);text-decoration:underline">设置兜底价</a>`;
+    }
+
+    // Build unified model pricing list from:
+    // 1. Custom price overrides (exact & wildcard patterns)
+    // 2. Host available models (from overviewData.available_models)
+    // 3. Any additional models observed in usage stats
+    const rowsByModel = new Map();
+
+    // 1. Available models on host
+    for (const am of (overviewData.available_models || [])) {
+      if (!am || !am.id) continue;
+      const key = String(am.id).toLowerCase();
+      rowsByModel.set(key, {
+        model: am.id,
+        provider: am.provider || modelProviderKey(am.id),
+        price: am.price || { source: "unmatched" },
+        refPrice: am.reference_price || null,
+        isCustom: !!(customMap[key] || (am.price && am.price.source === "custom_override")),
+        isExactCustom: !!customMap[key],
+        isHostModel: true
+      });
+    }
+
+    // 2. Models observed in usage stats that aren't in available_models
+    const snapKeys = (overviewData.usage && overviewData.usage.keys) || {};
+    for (const ks of Object.values(snapKeys)) {
+      if (!ks || !ks.models) continue;
+      for (const ms of Object.values(ks.models)) {
+        if (!ms) continue;
+        for (const cand of [ms.requested_model, ms.served_model]) {
+          const m = String(cand || "").trim();
+          if (!m || m.toLowerCase() === "unknown") continue;
+          const key = m.toLowerCase();
+          if (!rowsByModel.has(key)) {
+            const p = customMap[key] || ms.unit_price_per_1m || { source: "unmatched" };
+            rowsByModel.set(key, {
+              model: m,
+              provider: modelProviderKey(m),
+              price: p,
+              refPrice: null,
+              isCustom: !!(customMap[key] || (p && p.source === "custom_override")),
+              isExactCustom: !!customMap[key],
+              isHostModel: false
+            });
+          }
+        }
+      }
+    }
+
+    // 3. Explicit custom overrides (including wildcard rules like gemini-3.8-* that aren't literal host model IDs)
+    for (const [pat, cp] of Object.entries(customMap)) {
+      const key = String(pat).toLowerCase();
+      if (rowsByModel.has(key)) {
+        const existing = rowsByModel.get(key);
+        existing.price = Object.assign({}, cp, { source: "custom_override" });
+        existing.isCustom = true;
+        existing.isExactCustom = true;
+      } else {
+        rowsByModel.set(key, {
+          model: pat,
+          provider: modelProviderKey(pat),
+          price: Object.assign({}, cp, { source: "custom_override" }),
+          refPrice: null,
+          isCustom: true,
+          isExactCustom: true,
+          isHostModel: false
+        });
+      }
+    }
+
+    const sourceFilter = (document.getElementById("pricingSourceFilter").value || "all").toLowerCase();
+    const q = (document.getElementById("pricingTableSearch").value || "").trim().toLowerCase();
+
+    const list = Array.from(rowsByModel.values()).filter(item => {
+      const src = String((item.price && item.price.source) || "unmatched").toLowerCase();
+      if (sourceFilter === "custom" && src !== "custom_override") return false;
+      if (sourceFilter === "models.dev" && !src.startsWith("models.dev")) return false;
+      if (sourceFilter === "unmatched" && src !== "unmatched") return false;
+      if (q) {
+        return item.model.toLowerCase().includes(q) || String(item.provider || "").toLowerCase().includes(q);
+      }
+      return true;
+    });
+
+    // Sort: custom overrides first, then host available models, then alphabetical
+    list.sort((a, b) => {
+      if (a.isExactCustom !== b.isExactCustom) return a.isExactCustom ? -1 : 1;
+      if (a.isCustom !== b.isCustom) return a.isCustom ? -1 : 1;
+      if (a.isHostModel !== b.isHostModel) return a.isHostModel ? -1 : 1;
+      return a.model.localeCompare(b.model);
+    });
+
+    const tbody = document.getElementById("pricingModelsTableBody");
+    if (list.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--text-tertiary)">暂无匹配的模型价格记录</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = list.map(item => {
+      const p = item.price || {};
+      const ref = item.refPrice;
+      const prov = modelProviderKey(item.model);
+      const refText = ref
+        ? `In ${fmtPriceNum(ref.input)} / Out ${fmtPriceNum(ref.output)}`
+        : (String(p.source || "").startsWith("models.dev")
+            ? `In ${fmtPriceNum(p.input)} / Out ${fmtPriceNum(p.output)}`
+            : `-`);
+      const resetBtn = item.isExactCustom
+        ? `<button type="button" class="btn btn-sm btn-danger" onclick="deleteCustomModelPrice('${escapeHtml(item.model)}')">恢复默认</button>`
+        : "";
+      return `<tr>
+        <td class="cell-nowrap">
+          <div style="display:inline-flex;align-items:center;gap:7px">
+            <span class="model-dot dot-${prov}"></span>
+            <span class="mono" style="font-weight:600;color:var(--text-primary)">${escapeHtml(item.model)}</span>
+            ${item.model.includes("*") ? `<span class="tag plain" style="font-size:10px">通配符</span>` : ""}
+          </div>
+        </td>
+        <td class="cell-nowrap">${priceSourceTagHtml(p.source)}</td>
+        <td class="cell-nowrap mono">${fmtPriceNum(p.input)}</td>
+        <td class="cell-nowrap mono">${fmtPriceNum(p.output)}</td>
+        <td class="cell-nowrap mono">${fmtPriceNum(p.cache_read)}</td>
+        <td class="cell-nowrap mono">${fmtPriceNum(p.cache_write)}</td>
+        <td class="cell-nowrap mono" style="font-size:12px;color:var(--text-tertiary)">${escapeHtml(refText)}</td>
+        <td class="cell-nowrap">
+          <div class="row-actions">
+            <button type="button" class="btn btn-sm" onclick="openPriceModal('${escapeHtml(item.model)}')">修改价格</button>
+            ${resetBtn}
+          </div>
+        </td>
+      </tr>`;
+    }).join("");
+  }
+
+  async function triggerModelsDevSync() {
+    const btn = document.getElementById("btnSyncPricing");
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = "⏳ 正在从 models.dev 拉取...";
+    }
+    try {
+      const res = await callManagementAPI(API_PRICING_SYNC, { method: "POST" });
+      showToast(`同步成功：已从 models.dev 更新 ${fmtInt(res.synced_models || 0)} 条模型价格`);
+      await loadAdminOverview();
+    } catch (err) {
+      showToast("同步失败: " + err.message, true);
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = "🔄 立即从 models.dev 同步";
+      }
+    }
+  }
+
+  function debouncedSearchModelsDev() {
+    if (modelsDevSearchTimer) clearTimeout(modelsDevSearchTimer);
+    modelsDevSearchTimer = setTimeout(() => searchModelsDevCatalog(), 240);
+  }
+
+  async function searchModelsDevCatalog() {
+    const input = document.getElementById("modelsDevSearchInput");
+    const q = (input ? input.value : "").trim();
+    const tbody = document.getElementById("modelsDevSearchTableBody");
+    try {
+      const url = API_PRICING + "?search=" + encodeURIComponent(q) + "&limit=60";
+      const res = await callManagementAPI(url, { method: "GET" });
+      const list = res.reference_models || [];
+      if (list.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;color:var(--text-tertiary)">未在 models.dev 库中找到匹配的模型</td></tr>`;
+        return;
+      }
+      tbody.innerHTML = list.map(entry => {
+        const m = entry.model || "";
+        const p = entry.price || {};
+        const prov = modelProviderKey(m);
+        return `<tr>
+          <td class="cell-nowrap">
+            <div style="display:inline-flex;align-items:center;gap:7px">
+              <span class="model-dot dot-${prov}"></span>
+              <span class="mono" style="font-weight:600">${escapeHtml(m)}</span>
+            </div>
+          </td>
+          <td class="cell-nowrap mono">${fmtPriceNum(p.input)}</td>
+          <td class="cell-nowrap mono">${fmtPriceNum(p.output)}</td>
+          <td class="cell-nowrap mono">${fmtPriceNum(p.cache_read)}</td>
+          <td class="cell-nowrap mono">${fmtPriceNum(p.cache_write)}</td>
+          <td class="cell-nowrap">
+            <button type="button" class="btn btn-sm" onclick="openPriceModalWithValues('${escapeHtml(m)}', ${Number(p.input || 0)}, ${Number(p.output || 0)}, ${Number(p.cache_read || 0)}, ${Number(p.cache_write || 0)})">载入并修改</button>
+          </td>
+        </tr>`;
+      }).join("");
+    } catch (err) {
+      tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;color:var(--error-color)">检索失败: ${escapeHtml(err.message)}</td></tr>`;
+    }
+  }
+
+  async function openPriceModal(modelName) {
+    const norm = String(modelName || "").trim();
+    const titleEl = document.getElementById("priceModalTitle");
+    const modelInput = document.getElementById("pmModelInput");
+    const refHint = document.getElementById("pmRefHint");
+    modelInput.value = norm;
+    refHint.textContent = "";
+
+    let p = { input: 0, output: 0, cache_read: 0, cache_write: 0 };
+    const ps = (overviewData && overviewData.pricing_status) || {};
+    const customMap = ps.custom_prices || {};
+
+    if (norm === "__default__") {
+      titleEl.textContent = "设置全局兜底默认价格 (__default__)";
+      if (ps.default_price) p = ps.default_price;
+      refHint.textContent = "当模型既未命中手动修改规则、也未在 models.dev 中找到时使用此兜底价格。";
+    } else if (norm) {
+      titleEl.textContent = "修改模型价格: " + norm;
+      const low = norm.toLowerCase();
+      if (customMap[low]) {
+        p = customMap[low];
+      } else {
+        const am = ((overviewData && overviewData.available_models) || []).find(x => String(x.id).toLowerCase() === low);
+        if (am && am.price) p = am.price;
+      }
+    } else {
+      titleEl.textContent = "新增自定义模型价格";
+    }
+
+    document.getElementById("pmInputPrice").value = Number(p.input || 0);
+    document.getElementById("pmOutputPrice").value = Number(p.output || 0);
+    document.getElementById("pmCacheReadPrice").value = Number(p.cache_read || 0);
+    document.getElementById("pmCacheWritePrice").value = Number(p.cache_write || 0);
+    document.getElementById("priceModalBackdrop").classList.add("open");
+  }
+
+  function openPriceModalWithValues(modelName, input, output, cacheRead, cacheWrite) {
+    document.getElementById("priceModalTitle").textContent = "修改模型价格: " + modelName;
+    document.getElementById("pmModelInput").value = modelName;
+    document.getElementById("pmInputPrice").value = Number(input || 0);
+    document.getElementById("pmOutputPrice").value = Number(output || 0);
+    document.getElementById("pmCacheReadPrice").value = Number(cacheRead || 0);
+    document.getElementById("pmCacheWritePrice").value = Number(cacheWrite || 0);
+    document.getElementById("pmRefHint").textContent = "已载入 models.dev 基准价格，修改后保存即可作为自定义覆盖规则生效。";
+    document.getElementById("priceModalBackdrop").classList.add("open");
+  }
+
+  function closePriceModal() {
+    document.getElementById("priceModalBackdrop").classList.remove("open");
+  }
+
+  async function fillPriceModalFromModelsDev() {
+    const model = (document.getElementById("pmModelInput").value || "").trim();
+    const refHint = document.getElementById("pmRefHint");
+    if (!model || model === "__default__") {
+      showToast("请先输入具体的模型名称", true);
+      return;
+    }
+    try {
+      const res = await callManagementAPI(API_PRICING + "?model=" + encodeURIComponent(model), { method: "GET" });
+      const q = res.query || {};
+      const p = q.price || {};
+      if (!q.found) {
+        refHint.textContent = `未在 models.dev 中找到 "${model}" 的基准价格，请手动填写。`;
+        return;
+      }
+      document.getElementById("pmInputPrice").value = Number(p.input || 0);
+      document.getElementById("pmOutputPrice").value = Number(p.output || 0);
+      document.getElementById("pmCacheReadPrice").value = Number(p.cache_read || 0);
+      document.getElementById("pmCacheWritePrice").value = Number(p.cache_write || 0);
+      refHint.textContent = `已填入基准价格（来源: ${p.source || "models.dev"}）`;
+    } catch (err) {
+      showToast("查询基准价格失败: " + err.message, true);
+    }
+  }
+
+  async function submitPriceModal() {
+    const model = (document.getElementById("pmModelInput").value || "").trim();
+    if (!model) {
+      showToast("模型名称或匹配规则不能为空", true);
+      return;
+    }
+    const price = {
+      input: Math.max(0, Number(document.getElementById("pmInputPrice").value || 0)),
+      output: Math.max(0, Number(document.getElementById("pmOutputPrice").value || 0)),
+      cache_read: Math.max(0, Number(document.getElementById("pmCacheReadPrice").value || 0)),
+      cache_write: Math.max(0, Number(document.getElementById("pmCacheWritePrice").value || 0))
+    };
+    try {
+      await callManagementAPI(API_PRICING_CUSTOM, {
+        method: "POST",
+        body: JSON.stringify({ model, price })
+      });
+      closePriceModal();
+      showToast(`已保存模型 "${model}" 的价格配置`);
+      await loadAdminOverview();
+    } catch (err) {
+      showToast("保存价格失败: " + err.message, true);
+    }
+  }
+
+  async function deleteCustomModelPrice(model) {
+    const norm = String(model || "").trim();
+    if (!norm) return;
+    try {
+      await callManagementAPI(API_PRICING_CUSTOM + "?model=" + encodeURIComponent(norm), {
+        method: "DELETE"
+      });
+      showToast(norm === "__default__" ? "已清除全局兜底默认价格" : `已恢复模型 "${norm}" 为 models.dev 默认价格`);
+      await loadAdminOverview();
+    } catch (err) {
+      showToast("恢复默认价格失败: " + err.message, true);
+    }
   }
 
   loadAdminOverview().catch(() => {});

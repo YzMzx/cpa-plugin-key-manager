@@ -1173,3 +1173,121 @@ storage:
 		t.Fatalf("rule state must not be stored inside config.yaml:\n%s", string(text))
 	}
 }
+
+func TestModelsDevSyncAndCustomPriceOverride(t *testing.T) {
+	isolateStateDirs(t)
+	tmpDir := t.TempDir()
+	usageFile := filepath.Join(tmpDir, "usage.json")
+	rulesFile := filepath.Join(tmpDir, "rules.json")
+	cacheFile := filepath.Join(tmpDir, "models_dev.json")
+
+	sampleModelsDev := `{
+		"google": {
+			"id": "google",
+			"name": "Google",
+			"models": {
+				"gemini-2.5-pro": {
+					"id": "gemini-2.5-pro",
+					"name": "Gemini 2.5 Pro",
+					"cost": {"input": 1.25, "output": 10.0, "cache_read": 0.31, "cache_write": 0}
+				}
+			}
+		}
+	}`
+
+	hostInvoker := func(method string, payload []byte) ([]byte, error) {
+		switch method {
+		case pluginabi.MethodHostHTTPDo:
+			resp := pluginapi.ExecutorHTTPResponse{
+				StatusCode: 200,
+				Body:       []byte(sampleModelsDev),
+			}
+			return okEnvelope(resp)
+		case pluginabi.MethodHostAuthModels:
+			resp := pluginapi.HostAuthModelsResponse{
+				Credentials: []pluginapi.HostAuthModels{
+					{ID: "antigravity-test.json", Provider: "antigravity", Models: []string{"gemini-2.5-pro"}},
+				},
+			}
+			return okEnvelope(resp)
+		default:
+			return okEnvelope(struct{}{})
+		}
+	}
+
+	mgr := NewManager(hostInvoker)
+	defer mgr.Shutdown()
+
+	cfgYAML := `enabled: true
+storage:
+  usage_file: "` + filepath.ToSlash(usageFile) + `"
+  rules_file: "` + filepath.ToSlash(rulesFile) + `"
+  pricing_cache_file: "` + filepath.ToSlash(cacheFile) + `"
+pricing:
+  sync_url: "https://models.dev/api.json"
+`
+	regReq, _ := json.Marshal(lifecycleRequest{
+		ConfigYAML:    []byte(cfgYAML),
+		SchemaVersion: pluginabi.SchemaVersion,
+	})
+	if _, err := mgr.HandleRPC(pluginabi.MethodPluginRegister, regReq); err != nil {
+		t.Fatalf("register failed: %v", err)
+	}
+	mgr.pricingSyncer.WaitInitialSync(2e9)
+
+	// 1. Default price comes from models.dev
+	p, ok := mgr.LookupModelPrice("gemini-2.5-pro")
+	if !ok || p.Input != 1.25 || p.Output != 10.0 || !strings.HasPrefix(p.Source, "models.dev") {
+		t.Fatalf("expected models.dev price for gemini-2.5-pro, got ok=%v price=%+v", ok, p)
+	}
+
+	// 2. Manual override via Management API (POST /v0/management/key-guard/pricing/custom)
+	customBody := []byte(`{"model":"gemini-2.5-pro","price":{"input":2.5,"output":15.0,"cache_read":0.5,"cache_write":1.0}}`)
+	mgmtReq, _ := json.Marshal(pluginapi.ManagementRequest{
+		Method:  http.MethodPost,
+		Path:    "/v0/management" + handler.RouteManagementPriceCustom,
+		Headers: http.Header{"Authorization": {"Bearer admin"}},
+		Body:    customBody,
+	})
+	rawResp, err := mgr.HandleRPC(pluginabi.MethodManagementHandle, mgmtReq)
+	if err != nil {
+		t.Fatalf("upsert custom price failed: %v", err)
+	}
+	mgmtResp := decodeEnvelope[pluginapi.ManagementResponse](t, rawResp)
+	if mgmtResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", mgmtResp.StatusCode, string(mgmtResp.Body))
+	}
+
+	pCustom, ok := mgr.LookupModelPrice("gemini-2.5-pro")
+	if !ok || pCustom.Input != 2.5 || pCustom.Output != 15.0 || pCustom.Source != "custom_override" {
+		t.Fatalf("expected custom_override price, got ok=%v price=%+v", ok, pCustom)
+	}
+
+	// Available models in overview carry both the effective custom price and the models.dev reference price
+	ov := mgr.BuildAdminOverview("")
+	avail, _ := ov["available_models"].([]AvailableModelOption)
+	if len(avail) != 1 || avail[0].Price.Input != 2.5 || avail[0].ReferencePrice == nil || avail[0].ReferencePrice.Input != 1.25 {
+		t.Fatalf("expected available_models to include custom Price(2.5) and ReferencePrice(1.25), got %+v", avail)
+	}
+
+	// 3. Delete custom override -> reverts to models.dev price
+	delReq, _ := json.Marshal(pluginapi.ManagementRequest{
+		Method:  http.MethodDelete,
+		Path:    "/v0/management" + handler.RouteManagementPriceCustom,
+		Query:   url.Values{"model": {"gemini-2.5-pro"}},
+		Headers: http.Header{"Authorization": {"Bearer admin"}},
+	})
+	rawDel, err := mgr.HandleRPC(pluginabi.MethodManagementHandle, delReq)
+	if err != nil {
+		t.Fatalf("delete custom price failed: %v", err)
+	}
+	delResp := decodeEnvelope[pluginapi.ManagementResponse](t, rawDel)
+	if delResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK on delete, got %d", delResp.StatusCode)
+	}
+
+	pReverted, ok := mgr.LookupModelPrice("gemini-2.5-pro")
+	if !ok || pReverted.Input != 1.25 || !strings.HasPrefix(pReverted.Source, "models.dev") {
+		t.Fatalf("expected reverted models.dev price (1.25), got ok=%v price=%+v", ok, pReverted)
+	}
+}

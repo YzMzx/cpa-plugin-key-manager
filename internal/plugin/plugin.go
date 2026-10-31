@@ -22,7 +22,7 @@ import (
 
 const (
 	PluginID      = "cpa-plugin-key-manager"
-	PluginVersion = "0.6.7"
+	PluginVersion = "0.6.8"
 	PluginAuthor  = "YzMzx"
 	PluginRepo    = "https://github.com/YzMzx/cpa-plugin-key-manager"
 	PluginLogoSVG = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%238b8680'/><path d='M24 22a10 10 0 1 0 9.5 13H42v5h6v-5h4v-6H33.5A10 10 0 0 0 24 22zm0 6a4 4 0 1 1 0 8 4 4 0 0 1 0-8z' fill='%23fff'/></svg>"
@@ -263,12 +263,22 @@ func (m *Manager) Configure(raw []byte) error {
 	)
 
 	m.mu.Lock()
+	prevSyncKey := m.lastSyncKey
 	m.seedCfg = seedCfg
 	m.dynamicState = dynState
 	m.hostAPIKeys = hostKeys
 	m.cfg = cfg
 	m.lastSyncKey = syncKey
 	m.mu.Unlock()
+
+	if prevSyncKey != syncKey {
+		m.pricingSyncer.ConfigureAndStart(pricing.SyncConfig{
+			SyncURL:      cfg.Pricing.SyncURL,
+			CacheFile:    cfg.Storage.PricingCacheFile,
+			SyncInterval: time.Duration(cfg.Pricing.SyncIntervalHours) * time.Hour,
+			HTTPTimeout:  time.Duration(cfg.Pricing.HTTPTimeoutSeconds) * time.Second,
+		})
+	}
 
 	return nil
 }
@@ -790,9 +800,11 @@ func (m *Manager) ListHostAuthFiles(hostCallbackID string) ([]pluginapi.HostAuth
 
 // AvailableModelOption represents a selectable model item in the Web UI checkbox list.
 type AvailableModelOption struct {
-	ID       string   `json:"id"`
-	Provider string   `json:"provider"`
-	Sources  []string `json:"sources,omitempty"`
+	ID             string              `json:"id"`
+	Provider       string              `json:"provider"`
+	Sources        []string            `json:"sources,omitempty"`
+	Price          pricing.ModelPrice  `json:"price"`
+	ReferencePrice *pricing.ModelPrice `json:"reference_price,omitempty"`
 }
 
 func inferModelProvider(modelID string) string {
@@ -883,6 +895,12 @@ func (m *Manager) ListAvailableModels(hostCallbackID string, snap usage.Persiste
 
 	out := make([]AvailableModelOption, 0, len(byModel))
 	for _, item := range byModel {
+		p, _ := m.pricingEngine.Lookup(item.ID)
+		item.Price = p
+		if refP, okRef := m.pricingEngine.LookupReference(item.ID); okRef {
+			cp := refP
+			item.ReferencePrice = &cp
+		}
 		out = append(out, *item)
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -1405,18 +1423,22 @@ func (m *Manager) DeleteCustomPrice(model string) error {
 	if m.dynamicState == nil {
 		m.dynamicState = &DynamicRulesState{Version: 1, CustomPrices: make(map[string]pricing.ModelPrice)}
 	}
-	if m.dynamicState.CustomPrices != nil {
-		delete(m.dynamicState.CustomPrices, norm)
-	}
-	alreadyDeleted := false
-	for _, dp := range m.dynamicState.DeletedPrices {
-		if strings.ToLower(strings.TrimSpace(dp)) == norm {
-			alreadyDeleted = true
-			break
+	if norm == "__default__" {
+		m.dynamicState.DefaultPrice = nil
+	} else {
+		if m.dynamicState.CustomPrices != nil {
+			delete(m.dynamicState.CustomPrices, norm)
 		}
-	}
-	if !alreadyDeleted {
-		m.dynamicState.DeletedPrices = append(m.dynamicState.DeletedPrices, norm)
+		alreadyDeleted := false
+		for _, dp := range m.dynamicState.DeletedPrices {
+			if strings.ToLower(strings.TrimSpace(dp)) == norm {
+				alreadyDeleted = true
+				break
+			}
+		}
+		if !alreadyDeleted {
+			m.dynamicState.DeletedPrices = append(m.dynamicState.DeletedPrices, norm)
+		}
 	}
 
 	m.cfg = MergeDynamicState(m.seedCfg, m.dynamicState, m.hostAPIKeys...)

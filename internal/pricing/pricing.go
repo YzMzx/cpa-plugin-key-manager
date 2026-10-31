@@ -203,6 +203,30 @@ func (e *Engine) Lookup(modelCandidates ...string) (ModelPrice, bool) {
 	return ModelPrice{Source: "unmatched"}, false
 }
 
+// LookupReference resolves the models.dev reference price for the given model, ignoring custom overrides and default fallback.
+func (e *Engine) LookupReference(modelCandidates ...string) (ModelPrice, bool) {
+	variants := make([]string, 0, len(modelCandidates)*3)
+	seen := make(map[string]struct{}, len(modelCandidates)*3)
+	for _, cand := range modelCandidates {
+		for _, v := range authz.NormalizeModelVariants(cand) {
+			if _, ok := seen[v]; !ok {
+				seen[v] = struct{}{}
+				variants = append(variants, v)
+			}
+		}
+	}
+
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	for _, v := range variants {
+		if p, ok := e.modelsDevMap[v]; ok {
+			return p, true
+		}
+	}
+	return ModelPrice{Source: "unmatched"}, false
+}
+
 // Calculate computes the CostBreakdown for the given model and orthogonal token counts.
 func (e *Engine) Calculate(uncachedInput, output, cacheRead, cacheWrite int64, modelCandidates ...string) CostBreakdown {
 	price, found := e.Lookup(modelCandidates...)
