@@ -61,6 +61,58 @@
 
 ---
 
+## SQLite 持久化（实验分支 `feat/sqlite-persistence`）
+
+> 参考 [yuluo688/credit-manager](https://github.com/yuluo688/credit-manager) 的存储设计：**SQLite 是唯一后端**，不再写 JSON 快照、不再写 JSON 镜像。主分支保持不变。
+
+### 选型
+
+| 项 | 方案 |
+|---|---|
+| 驱动 | `modernc.org/sqlite`（纯 Go，无 CGO，五平台可交叉编译） |
+| 连接 | `MaxOpenConns(1)`，WAL 模式 |
+| DSN pragma | `journal_mode(WAL)`、`busy_timeout(5000)`、`foreign_keys(ON)`、`synchronous(NORMAL)` |
+| 迁移 | `schema_migrations` 表 + 逐版本事务执行，重复启动幂等 |
+| 跨进程写锁 | `<db>.lock` + `flock`(Unix) / `LockFileEx`(Windows)，进程退出自动释放，第二个写入者直接报错 |
+
+### 表
+
+| 表 | 内容 |
+|---|---|
+| `rules_state` | 整份动态规则（Key 规则、排序、默认策略、价格覆盖）一个 JSON 行，写入是单条 UPSERT，天然原子 |
+| `key_usage` | 每个 API Key 的累计请求 / Token / 费用 |
+| `key_model_usage` | Key 维度的「请求模型 + 服务端模型」二元组明细与单价快照 |
+| `account_usage` / `account_model_usage` | 上游账号维度的聚合与明细 |
+| `usage_ledger` | 概览账本 `hour × key × account × model × source`，附 `hour` / `model` 索引 |
+
+### 增量写入
+
+每次 flush 只写「自上次 flush 以来变动的行」：
+
+- 变更时标记脏 Key / 脏账号 / 脏账本行；
+- 脏 Key：UPSERT `key_usage`，再原子替换该 Key 的二元组集合（每个 Key 的模型数很少）；
+- 脏账本行：按主键 UPSERT；
+- 删除（清零、失败回滚）：显式 DELETE 对应行；
+- 账本保留期裁剪：`DELETE FROM usage_ledger WHERE hour < cutoff`。
+
+### 配置
+
+```yaml
+plugins:
+  configs:
+    cpa-plugin-key-manager:
+      storage:
+        usage_db_file: "./data/key_usage.db"   # 默认 <CPA 根目录>/data/key_usage.db
+```
+
+### 行为
+
+- **唯一后端**：不再生成 `key_usage_stats.json` 与任何 `.state` 镜像；`usage_file` 仅用于推导默认数据库路径。
+- **升级迁移**：数据库为空时，会把旧的 `key_guard_rules.json` 读入 `rules_state`（一次性）。
+- **单写者**：同一数据库文件同时只允许一个插件实例写入，锁被占用时启动日志给出明确告警。
+- **诊断**：`overview.diagnostics` 暴露 `usage_db_file / usage_db_exists / usage_db_size`。
+- **清理旧 JSON**：`scripts/cleanup-legacy-json.sh` 可列出并清理 v0.8.*／sqlite.1-3 留下的 JSON 与 `.state` 文件（默认 dry-run，`--apply` 移入备份目录，`--apply --delete` 直接删除；找不到 `key_usage.db` 时拒绝执行）。
+
 ## 升级与数据迁移指南（从 cpa-plugin-key 升级至 cpa-plugin-key-manager）
 
 从旧版 `cpa-plugin-key` 升级到 `cpa-plugin-key-manager` 时，**历史数据完全无损、无缝继承**：

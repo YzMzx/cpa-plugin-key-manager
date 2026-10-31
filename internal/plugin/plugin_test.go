@@ -32,7 +32,11 @@ func TestMain(m *testing.M) {
 // isolateStateDirs gives a single test its own private set of mirror directories.
 func isolateStateDirs(t *testing.T) {
 	t.Helper()
-	t.Setenv("CPA_KEY_MANAGER_STATE_DIRS", t.TempDir())
+	dir := t.TempDir()
+	t.Setenv("CPA_KEY_MANAGER_STATE_DIRS", dir)
+	// The database also needs a per-test file, otherwise tests share the CPA
+	// root's ./data database and leak counters into each other.
+	t.Setenv("CPA_KEY_MANAGER_USAGE_DB", filepath.Join(dir, "key_usage.db"))
 }
 
 func decodeEnvelope[T any](t *testing.T, raw []byte) T {
@@ -62,7 +66,6 @@ func TestRestartPersistenceBugReproduction(t *testing.T) {
 		t.Fatalf("chdir failed: %v", err)
 	}
 
-	rulesFile := "./data/key_guard_rules.json"
 	cpaConfigPath := "config.yaml"
 
 	// Initial config.yaml as installed by install.ps1
@@ -134,14 +137,21 @@ storage:
 		t.Fatalf("SaveDefaultPolicyFromJSON failed: %v", err)
 	}
 
-	// Verify file content on disk before restart
-	dataBefore, err := os.ReadFile(rulesFile)
-	if err != nil {
-		t.Fatalf("failed to read rulesFile before restart: %v", err)
+	// Verify the rules were persisted into SQLite (the only backend on this branch).
+	persisted := mgr1.ListKeyRulesAndDefaultPolicy()
+	persistedKeys, _ := persisted["keys"].([]KeyRuleConfig)
+	foundPersisted := false
+	for _, k := range persistedKeys {
+		if k.APIKey == "sk-user-test-123" {
+			foundPersisted = true
+			break
+		}
 	}
-	t.Logf("rulesFile before restart:\n%s", string(dataBefore))
-	if !strings.Contains(string(dataBefore), "sk-user-test-123") {
-		t.Fatalf("rulesFile missing sk-user-test-123 before restart")
+	if !foundPersisted {
+		t.Fatalf("rules_state is missing sk-user-test-123 before restart")
+	}
+	if dbPath := mgr1.usageStore.SQLitePath(); dbPath == "" {
+		t.Fatalf("sqlite database was not configured")
 	}
 
 	// Simulate CLIProxyAPI shutdown
@@ -685,7 +695,11 @@ storage:
 	})
 	_, _ = mgr.HandleRPC(pluginabi.MethodRequestComplete, comp1)
 
-	// 5. Verify persistence across new Manager restart (loads key_guard_rules.json from disk) via authenticated /v0/management/key-guard/overview
+	// 5. Verify persistence across new Manager restart (SQLite holds the rules) via
+	// authenticated /v0/management/key-guard/overview.
+	// SQLite admits a single writer per database, so the first instance must stop
+	// before the "restarted" instance opens the same file.
+	mgr.Shutdown()
 	mgr2 := NewManager(hostInvoker)
 	defer mgr2.Shutdown()
 	if _, err := mgr2.HandleRPC(pluginabi.MethodPluginRegister, regReq); err != nil {
@@ -1104,212 +1118,6 @@ keys:
 	pruned := restarted.BuildAdminOverview("")["keys"].([]KeyRuleConfig)
 	if len(pruned) != 2 || pruned[0].APIKey != "sk-charlie" || pruned[1].APIKey != "sk-bravo" {
 		t.Fatalf("order broken after delete: %+v", pruned)
-	}
-}
-
-// TestRulesMirrorUsesAuthSubdirAndMigratesLegacy verifies that mirrors live in a
-// dedicated subdirectory of the auth dir (so CLIProxyAPI never lists them as
-// credentials) and that a pre-0.5.8 mirror in the auth dir root is migrated.
-func TestRulesMirrorUsesAuthSubdirAndMigratesLegacy(t *testing.T) {
-	sandbox := t.TempDir()
-	origWD, _ := os.Getwd()
-	if err := os.Chdir(sandbox); err != nil {
-		t.Fatalf("chdir sandbox: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(origWD) })
-
-	home := filepath.Join(sandbox, "home")
-	authDir := filepath.Join(home, ".cli-proxy-api")
-	if err := os.MkdirAll(authDir, 0o755); err != nil {
-		t.Fatalf("mkdir auth dir: %v", err)
-	}
-	cpaDir := filepath.Join(sandbox, "cpa")
-	if err := os.MkdirAll(cpaDir, 0o755); err != nil {
-		t.Fatalf("mkdir cpa dir: %v", err)
-	}
-	configPath := filepath.Join(cpaDir, "config.yaml")
-	if err := os.WriteFile(configPath, []byte("api-keys:\n  - sk-legacy-1\n"), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	t.Setenv("CPA_DIR", cpaDir)
-	t.Setenv("CPA_CONFIG_FILE", configPath)
-	t.Setenv("CPA_KEY_MANAGER_STATE_DIRS", "")
-
-	legacyMirror := filepath.Join(authDir, "key_guard_rules.json")
-	legacyState := `{
-  "version": 1,
-  "updated_at": "2026-10-24T10:00:00Z",
-  "keys": [
-    {"api_key": "sk-legacy-1", "name": "旧版备注", "allowed_models": ["gpt-4o"]}
-  ]
-}`
-	if err := os.WriteFile(legacyMirror, []byte(legacyState), 0o644); err != nil {
-		t.Fatalf("write legacy mirror: %v", err)
-	}
-
-	mgr := NewManager(func(method string, payload []byte) ([]byte, error) {
-		return okEnvelope(map[string]any{"files": []any{}})
-	})
-	defer mgr.Shutdown()
-
-	regReq, _ := json.Marshal(lifecycleRequest{
-		ConfigYAML: []byte(`
-storage:
-  rules_file: "` + filepath.ToSlash(filepath.Join(cpaDir, "data", "key_guard_rules.json")) + `"
-  usage_file: "` + filepath.ToSlash(filepath.Join(cpaDir, "data", "key_usage_stats.json")) + `"
-  pricing_cache_file: "` + filepath.ToSlash(filepath.Join(cpaDir, "data", "models_dev.json")) + `"
-`),
-		SchemaVersion: pluginabi.SchemaVersion,
-	})
-	if _, err := mgr.HandleRPC(pluginabi.MethodPluginRegister, regReq); err != nil {
-		t.Fatalf("register failed: %v", err)
-	}
-
-	overview := mgr.BuildAdminOverview("")
-	keysList, ok := overview["keys"].([]KeyRuleConfig)
-	if !ok || len(keysList) == 0 || keysList[0].Name != "旧版备注" {
-		t.Fatalf("legacy mirror was not migrated: %+v", keysList)
-	}
-
-	if _, errStat := os.Stat(legacyMirror); !os.IsNotExist(errStat) {
-		t.Fatalf("legacy auth-dir mirror should have been removed, got err=%v", errStat)
-	}
-	newMirror := filepath.Join(authDir, "key-manager", "key_guard_rules.state")
-	if _, errStat := os.Stat(newMirror); errStat != nil {
-		t.Fatalf("mirror was not written into the auth subdirectory with a non-json name: %v", errStat)
-	}
-	// CLIProxyAPI scans the auth dir recursively for *.json; the mirror must never
-	// use that extension or it surfaces as an undeletable credential entry.
-	for _, banned := range []string{
-		filepath.Join(authDir, "key-manager", "key_guard_rules.json"),
-		filepath.Join(authDir, "key_usage_stats.json"),
-		filepath.Join(authDir, "key-manager", "key_usage_stats.json"),
-	} {
-		if _, errStat := os.Stat(banned); errStat == nil {
-			t.Fatalf("plugin state must not be stored as .json inside the auth dir: %s", banned)
-		}
-	}
-}
-
-// TestRestartSurvivesEphemeralDataDir reproduces the production failure where the
-// container's `./data` directory is recreated empty on restart: remarks and model
-// whitelists must be recovered from the durable mirror next to config.yaml.
-func TestRestartSurvivesEphemeralDataDir(t *testing.T) {
-	sandbox := t.TempDir()
-	cpaDir := filepath.Join(sandbox, "CLIProxyAPI")
-	if err := os.MkdirAll(cpaDir, 0o755); err != nil {
-		t.Fatalf("mkdir cpa dir: %v", err)
-	}
-	// Mirror locations: a durable dir (stands in for ~/.cli-proxy-api) plus the
-	// directory that holds config.yaml.
-	durableDir := filepath.Join(sandbox, "durable")
-	if err := os.MkdirAll(durableDir, 0o755); err != nil {
-		t.Fatalf("mkdir durable: %v", err)
-	}
-	t.Setenv("CPA_KEY_MANAGER_STATE_DIRS", strings.Join([]string{durableDir, cpaDir}, ","))
-	configPath := filepath.Join(cpaDir, "config.yaml")
-	configYAML := `port: 8317
-api-keys:
-  - sk-survive-1
-plugins:
-  enabled: true
-  dir: ./plugins
-  configs:
-    cpa-plugin-key-manager:
-      enabled: true
-      priority: 100
-`
-	if err := os.WriteFile(configPath, []byte(configYAML), 0o644); err != nil {
-		t.Fatalf("write config.yaml: %v", err)
-	}
-
-	// Durable mirror living next to config.yaml — this is what a previous run wrote.
-	mirrorState := `{
-  "version": 1,
-  "updated_at": "2026-10-24T09:00:00Z",
-  "default_policy": {
-    "allow_unlisted_keys": true,
-    "max_concurrency": 7,
-    "allowed_models": ["gemini-3.8-flash-high"]
-  },
-  "keys": [
-    {
-      "api_key": "sk-survive-1",
-      "name": "生产主力Key",
-      "enabled": true,
-      "max_concurrency": 4,
-      "allowed_models": ["gemini-3.8-flash-high", "minimax-m3"],
-      "upstream_binding": {"strategy": "round-robin"}
-    }
-  ]
-}`
-	if err := os.WriteFile(filepath.Join(cpaDir, "key_guard_rules.json"), []byte(mirrorState), 0o644); err != nil {
-		t.Fatalf("write mirror rules: %v", err)
-	}
-
-	// The configured primary path points into an ephemeral data directory that
-	// does NOT exist yet (simulating a freshly recreated container).
-	ephemeralDir := filepath.Join(sandbox, "ephemeral")
-	if err := os.MkdirAll(ephemeralDir, 0o755); err != nil {
-		t.Fatalf("mkdir ephemeral: %v", err)
-	}
-	primaryRules := filepath.Join(ephemeralDir, "data", "key_guard_rules.json")
-
-	t.Setenv("CPA_DIR", cpaDir)
-	t.Setenv("CPA_CONFIG_FILE", configPath)
-
-	mgr := NewManager(func(method string, payload []byte) ([]byte, error) {
-		return okEnvelope(map[string]any{"files": []any{}})
-	})
-	defer mgr.Shutdown()
-
-	regReq, _ := json.Marshal(lifecycleRequest{
-		ConfigYAML: []byte(`
-storage:
-  rules_file: "` + filepath.ToSlash(primaryRules) + `"
-  usage_file: "` + filepath.ToSlash(filepath.Join(ephemeralDir, "key_usage_stats.json")) + `"
-  pricing_cache_file: "` + filepath.ToSlash(filepath.Join(ephemeralDir, "models_dev.json")) + `"
-`),
-		SchemaVersion: pluginabi.SchemaVersion,
-	})
-	if _, err := mgr.HandleRPC(pluginabi.MethodPluginRegister, regReq); err != nil {
-		t.Fatalf("register failed: %v", err)
-	}
-
-	overview := mgr.BuildAdminOverview("")
-	keysList, ok := overview["keys"].([]KeyRuleConfig)
-	if !ok || len(keysList) == 0 {
-		t.Fatalf("CRITICAL: keys disappeared after simulated restart")
-	}
-	if keysList[0].Name != "生产主力Key" {
-		t.Fatalf("remark name lost after restart! got %q", keysList[0].Name)
-	}
-	if len(keysList[0].AllowedModels) != 2 || keysList[0].AllowedModels[0] != "gemini-3.8-flash-high" {
-		t.Fatalf("model whitelist lost after restart! got %v", keysList[0].AllowedModels)
-	}
-	if keysList[0].MaxConcurrency != 4 {
-		t.Fatalf("max_concurrency lost after restart! got %d", keysList[0].MaxConcurrency)
-	}
-	dp, ok := overview["default_policy"].(DefaultPolicyConfig)
-	if !ok || dp.MaxConcurrency != 7 {
-		t.Fatalf("default_policy lost after restart! got %+v", dp)
-	}
-
-	// The recovered state must be re-mirrored into the ephemeral primary path...
-	if _, errStat := os.Stat(primaryRules); errStat != nil {
-		t.Fatalf("recovered state was not converged to the primary rules file: %v", errStat)
-	}
-	// ...and into the durable mirror directory, which is what survives a recreate.
-	mirrorPath := filepath.Join(durableDir, "key_guard_rules.json")
-	if _, errStat := os.Stat(mirrorPath); errStat != nil {
-		t.Fatalf("recovered state was not written to the durable mirror: %v", errStat)
-	}
-	// The rule state is intentionally NOT mirrored into config.yaml.
-	if text, errRead := os.ReadFile(configPath); errRead == nil && strings.Contains(string(text), "生产主力Key") {
-		t.Fatalf("rule state must not be stored inside config.yaml:\n%s", string(text))
 	}
 }
 

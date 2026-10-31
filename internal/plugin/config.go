@@ -41,6 +41,11 @@ type StorageConfig struct {
 	FlushIntervalSeconds int    `yaml:"flush_interval_seconds" json:"flush_interval_seconds"`
 	PricingCacheFile     string `yaml:"pricing_cache_file" json:"pricing_cache_file"`
 	RulesFile            string `yaml:"rules_file" json:"rules_file"`
+	// UsageDBFile is the SQLite database used as the authoritative usage store.
+	UsageDBFile string `yaml:"usage_db_file" json:"usage_db_file"`
+	// LegacyUsageDBFile is the database location earlier builds derived from
+	// `usage_file`. It is imported once when the durable database does not exist yet.
+	LegacyUsageDBFile string `yaml:"-" json:"legacy_usage_db_file,omitempty"`
 	// LedgerRetentionDays controls how long the overview ledger keeps hourly slices.
 	LedgerRetentionDays int `yaml:"ledger_retention_days" json:"ledger_retention_days"`
 }
@@ -157,6 +162,7 @@ func DefaultConfig() Config {
 		Priority: 100,
 		Storage: StorageConfig{
 			UsageFile:            "./data/key_usage_stats.json",
+			UsageDBFile:          "./data/key_usage.db",
 			FlushIntervalSeconds: 10,
 			PricingCacheFile:     "./data/models_dev.json",
 		},
@@ -254,6 +260,19 @@ func FindCPARootDir() string {
 // to a robust absolute path. It anchors uncreated paths to the canonical CPA root directory,
 // while also discovering existing files across potential CWD, exeDir, and container locations
 // so that differences in CWD across CLIProxyAPI restarts never cause data loss.
+// legacyUsageDBPath mirrors the database location earlier experimental builds
+// derived from `usage_file`, so an upgrade can import the existing rows once.
+func legacyUsageDBPath(usageFile string) string {
+	clean := strings.TrimSpace(usageFile)
+	if clean == "" {
+		return ""
+	}
+	clean = filepath.Clean(clean)
+	if strings.HasSuffix(strings.ToLower(clean), ".db") {
+		return clean
+	}
+	return strings.TrimSuffix(clean, filepath.Ext(clean)) + ".db"
+}
 func ResolveStoragePath(rawPath string) string {
 	cleaned := strings.TrimSpace(rawPath)
 	if cleaned == "" {
@@ -405,6 +424,20 @@ func (c *Config) Normalize() {
 	}
 	c.Storage.UsageFile = ResolveStoragePath(c.Storage.UsageFile)
 
+	// SQLite only: the database is the single source of truth and lives in the CPA
+	// root's `data` directory by default (explicit configuration always wins).
+	// CPA_KEY_MANAGER_USAGE_DB pins it explicitly, which tests and multi-instance
+	// deployments use to keep databases apart.
+	if override := strings.TrimSpace(os.Getenv("CPA_KEY_MANAGER_USAGE_DB")); override != "" {
+		c.Storage.UsageDBFile = ResolveStoragePath(override)
+	}
+	if strings.TrimSpace(c.Storage.UsageDBFile) == "" {
+		c.Storage.UsageDBFile = filepath.Join(FindCPARootDir(), "data", "key_usage.db")
+	}
+	// Database files written by earlier experimental builds were derived from
+	// `usage_file`; that location is adopted once when the default is missing.
+	c.Storage.LegacyUsageDBFile = legacyUsageDBPath(c.Storage.UsageFile)
+
 	if c.Storage.FlushIntervalSeconds <= 0 {
 		c.Storage.FlushIntervalSeconds = 10
 	}
@@ -425,6 +458,9 @@ func (c *Config) Normalize() {
 		}
 	}
 	c.Storage.RulesFile = ResolveStoragePath(c.Storage.RulesFile)
+	if strings.TrimSpace(c.Storage.UsageDBFile) != "" {
+		c.Storage.UsageDBFile = ResolveStoragePath(c.Storage.UsageDBFile)
+	}
 	if strings.TrimSpace(c.Pricing.SyncURL) == "" {
 		c.Pricing.SyncURL = "https://models.dev/api.json"
 	}
@@ -810,9 +846,9 @@ func LoadDynamicRulesFile(filePath string) (*DynamicRulesState, error) {
 		return &DynamicRulesState{Version: 1, CustomPrices: make(map[string]pricing.ModelPrice)}, nil
 	}
 
-	// Converge all candidate locations onto the winning state so that every
-	// persistent location holds the same authoritative snapshot.
-	_ = SaveDynamicRulesFile(cleanPath, best.state)
+	// Read-only on purpose: this is only used to import legacy JSON rules into
+	// SQLite once. Rewriting the mirrors here would resurrect files the SQLite
+	// backend is supposed to have retired.
 	return best.state, nil
 }
 

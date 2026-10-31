@@ -22,7 +22,7 @@ import (
 
 const (
 	PluginID      = "cpa-plugin-key-manager"
-	PluginVersion = "0.8.4"
+	PluginVersion = "0.9.0-sqlite.4"
 	PluginAuthor  = "YzMzx"
 	PluginRepo    = "https://github.com/YzMzx/cpa-plugin-key-manager"
 	PluginLogoSVG = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%238b8680'/><path d='M24 22a10 10 0 1 0 9.5 13H42v5h6v-5h4v-6H33.5A10 10 0 0 0 24 22zm0 6a4 4 0 1 1 0 8 4 4 0 0 1 0-8z' fill='%23fff'/></svg>"
@@ -75,6 +75,7 @@ type Manager struct {
 	pricingEngine *pricing.Engine
 	pricingSyncer *pricing.Syncer
 	usageStore    *usage.Store
+	rulesRepo     *rulesRepository
 }
 
 // NewManager creates a new plugin Manager instance.
@@ -188,13 +189,68 @@ func (m *Manager) Configure(raw []byte) error {
 		return fmt.Errorf("parse plugin config YAML: %w", err)
 	}
 
-	dynState, errDyn := LoadDynamicRulesFile(seedCfg.Storage.RulesFile)
-	if errDyn != nil {
-		m.host.Log("warn", "failed to load dynamic rules file, using config.yaml seed", map[string]any{
-			"file":  seedCfg.Storage.RulesFile,
-			"error": errDyn.Error(),
-		})
-		dynState = &DynamicRulesState{Version: 1, CustomPrices: make(map[string]pricing.ModelPrice)}
+	// SQLite is the only persistence backend on this branch: open it before loading
+	// the rules, because the rules repository lives in the very same database.
+	seedFlush := time.Duration(seedCfg.Storage.FlushIntervalSeconds) * time.Second
+	if dbPath := strings.TrimSpace(seedCfg.Storage.UsageDBFile); dbPath != "" {
+		// An earlier build may have written the database next to `usage_file`
+		// (typically an ephemeral container directory). Adopt it once, otherwise the
+		// durable database starts empty and the history looks lost.
+		if moved, errImport := importLegacyUsageDB(seedCfg.Storage.LegacyUsageDBFile, dbPath); errImport != nil {
+			m.host.Log("warn", "failed to import the legacy sqlite database", map[string]any{
+				"from":  seedCfg.Storage.LegacyUsageDBFile,
+				"to":    dbPath,
+				"error": errImport.Error(),
+			})
+		} else if moved {
+			m.host.Log("info", "imported legacy sqlite database into the durable location", map[string]any{
+				"from": seedCfg.Storage.LegacyUsageDBFile,
+				"to":   dbPath,
+			})
+		}
+		// Upgrading from v0.8.x (JSON snapshots): when the database does not exist
+		// yet, adopt the newest JSON snapshot so billing history survives the switch.
+		if info, errStat := os.Stat(dbPath); errStat != nil || info.IsDir() || info.Size() == 0 {
+			candidates := UsageFileCandidates(seedCfg.Storage.UsageFile)
+			if errImport := m.usageStore.ImportLegacySnapshotCandidates(candidates); errImport != nil {
+				m.host.Log("warn", "failed to import the legacy usage snapshot", map[string]any{
+					"error": errImport.Error(),
+				})
+			}
+		}
+		if errDB := m.usageStore.ConfigureSQLite(dbPath, seedFlush); errDB != nil {
+			m.host.Log("warn", "failed to open the plugin sqlite database", map[string]any{
+				"file":  dbPath,
+				"error": errDB.Error(),
+			})
+		}
+	}
+	m.mu.Lock()
+	m.rulesRepo = newRulesRepository(m.usageStore.DB())
+	repo := m.rulesRepo
+	m.mu.Unlock()
+
+	var dynState *DynamicRulesState
+	if repo != nil {
+		loaded, errRules := m.loadRulesState(repo, seedCfg.Storage.RulesFile)
+		if errRules != nil {
+			m.host.Log("warn", "failed to load rules from sqlite, falling back to config.yaml seed", map[string]any{
+				"error": errRules.Error(),
+			})
+			dynState = &DynamicRulesState{Version: 1, CustomPrices: make(map[string]pricing.ModelPrice)}
+		} else {
+			dynState = loaded
+		}
+	} else {
+		loaded, errDyn := LoadDynamicRulesFile(seedCfg.Storage.RulesFile)
+		if errDyn != nil {
+			m.host.Log("warn", "failed to load dynamic rules file, using config.yaml seed", map[string]any{
+				"file":  seedCfg.Storage.RulesFile,
+				"error": errDyn.Error(),
+			})
+			loaded = &DynamicRulesState{Version: 1, CustomPrices: make(map[string]pricing.ModelPrice)}
+		}
+		dynState = loaded
 	}
 
 	// Seed synchronization: if the disk rules are empty, restore them from the
@@ -206,7 +262,13 @@ func (m *Manager) Configure(raw []byte) error {
 		}
 	}
 	if len(dynState.Keys) > 0 || dynState.DefaultPolicy != nil {
-		_ = SaveDynamicRulesFile(seedCfg.Storage.RulesFile, dynState)
+		if repo != nil {
+			if raw, errMarshal := json.Marshal(dynState); errMarshal == nil {
+				_ = repo.Save(raw)
+			}
+		} else {
+			_ = SaveDynamicRulesFile(seedCfg.Storage.RulesFile, dynState)
+		}
 	}
 	// Remove plugin state files that older releases left in the auth directory as
 	// `*.json`; CLIProxyAPI lists them as credentials that cannot be deleted.
@@ -245,15 +307,16 @@ func (m *Manager) Configure(raw []byte) error {
 
 	flushDur := time.Duration(cfg.Storage.FlushIntervalSeconds) * time.Second
 	m.usageStore.SetLedgerRetention(cfg.Storage.LedgerRetentionDays)
-	// Durable usage mirrors keep billing history alive when the configured file
-	// lives in an ephemeral directory such as a container's ./data.
-	m.usageStore.SetMirrorFiles(UsageMirrorFiles(cfg.Storage.UsageFile))
-	m.usageStore.SetLegacyMirrorFiles(LegacyUsageMirrorFiles(cfg.Storage.UsageFile))
-	if errPersist := m.usageStore.ConfigurePersistence(cfg.Storage.UsageFile, flushDur); errPersist != nil {
-		m.host.Log("warn", "failed to load previous usage snapshot from disk", map[string]any{
-			"file":  cfg.Storage.UsageFile,
-			"error": errPersist.Error(),
-		})
+	if dbPath := strings.TrimSpace(cfg.Storage.UsageDBFile); dbPath != "" {
+		if errDB := m.usageStore.ConfigureSQLite(dbPath, flushDur); errDB != nil {
+			m.host.Log("warn", "failed to configure the plugin sqlite database", map[string]any{
+				"file":  dbPath,
+				"error": errDB.Error(),
+			})
+		}
+		m.mu.Lock()
+		m.rulesRepo = newRulesRepository(m.usageStore.DB())
+		m.mu.Unlock()
 	}
 
 	syncKey := fmt.Sprintf("%s|%s|%d|%d",
@@ -1019,11 +1082,10 @@ func (m *Manager) SyncHostAPIKeys(keys []string) error {
 	}
 
 	m.cfg = MergeDynamicState(m.seedCfg, m.dynamicState, m.hostAPIKeys...)
-	rulesFile := m.cfg.Storage.RulesFile
-	errSave := SaveDynamicRulesFile(rulesFile, m.dynamicState)
+	errSave := m.persistRules()
 	if errSave != nil {
 		m.host.Log("error", "failed to save dynamic rules file on sync host keys", map[string]any{
-			"file":  rulesFile,
+			"file":  m.rulesLocation(),
 			"error": errSave.Error(),
 		})
 	}
@@ -1137,6 +1199,24 @@ func (m *Manager) BuildPersistenceDiagnostics() map[string]any {
 		rulesFileSize = info.Size()
 	}
 
+	usageDBFile := ""
+	usageDBExists := false
+	usageDBSize := int64(0)
+	m.mu.RLock()
+	if m.cfg.Storage.UsageDBFile != "" {
+		usageDBFile = m.cfg.Storage.UsageDBFile
+	}
+	m.mu.RUnlock()
+	if usageDBFile == "" {
+		usageDBFile = m.usageStore.SQLitePath()
+	}
+	if usageDBFile != "" {
+		if info, errStat := os.Stat(usageDBFile); errStat == nil && !info.IsDir() {
+			usageDBExists = true
+			usageDBSize = info.Size()
+		}
+	}
+
 	return map[string]any{
 		"rules_file":           rulesFile,
 		"rules_file_exists":    rulesFileExists,
@@ -1146,6 +1226,9 @@ func (m *Manager) BuildPersistenceDiagnostics() map[string]any {
 		"usage_file":           usageFile,
 		"usage_candidates":     UsageFileCandidates(usageFile),
 		"usage_report":         UsageFileReport(usageFile),
+		"usage_db_file":        usageDBFile,
+		"usage_db_exists":      usageDBExists,
+		"usage_db_size":        usageDBSize,
 		"config_file":          configFile,
 		"auth_dirs":            existingAuthDirs(),
 		"state_dirs":           StateDirs(),
@@ -1198,8 +1281,7 @@ func (m *Manager) ResetKeyQuota(apiKey string) (float64, error) {
 		return 0, fmt.Errorf("api key not found")
 	}
 	m.cfg = MergeDynamicState(m.seedCfg, m.dynamicState, m.hostAPIKeys...)
-	rulesFile := m.cfg.Storage.RulesFile
-	errSave := SaveDynamicRulesFile(rulesFile, m.dynamicState)
+	errSave := m.persistRules()
 	m.mu.Unlock()
 
 	return used, errSave
@@ -1302,11 +1384,10 @@ func (m *Manager) UpsertKeyRuleFromJSON(rawBody []byte) (any, error) {
 	for _, k := range m.cfg.Keys {
 		allKeys = append(allKeys, k.APIKey)
 	}
-	rulesFile := m.cfg.Storage.RulesFile
-	errSave := SaveDynamicRulesFile(rulesFile, m.dynamicState)
+	errSave := m.persistRules()
 	if errSave != nil {
 		m.host.Log("error", "failed to save dynamic rules file on upsert", map[string]any{
-			"file":  rulesFile,
+			"file":  m.rulesLocation(),
 			"error": errSave.Error(),
 		})
 	}
@@ -1318,7 +1399,7 @@ func (m *Manager) UpsertKeyRuleFromJSON(rawBody []byte) (any, error) {
 		})
 	}
 	if errSave != nil {
-		return nil, fmt.Errorf("failed to persist rules to %s: %w", rulesFile, errSave)
+		return nil, fmt.Errorf("failed to persist rules to %s: %w", m.rulesLocation(), errSave)
 	}
 	return rule, nil
 }
@@ -1377,11 +1458,10 @@ func (m *Manager) DeleteKeyRule(apiKey string) error {
 	for _, k := range m.cfg.Keys {
 		allKeys = append(allKeys, k.APIKey)
 	}
-	rulesFile := m.cfg.Storage.RulesFile
-	errSave := SaveDynamicRulesFile(rulesFile, m.dynamicState)
+	errSave := m.persistRules()
 	if errSave != nil {
 		m.host.Log("error", "failed to save dynamic rules file on delete", map[string]any{
-			"file":  rulesFile,
+			"file":  m.rulesLocation(),
 			"error": errSave.Error(),
 		})
 	}
@@ -1421,11 +1501,10 @@ func (m *Manager) ReorderKeys(keys []string) error {
 	}
 	m.dynamicState.KeyOrder = cleaned
 	m.cfg = MergeDynamicState(m.seedCfg, m.dynamicState, m.hostAPIKeys...)
-	rulesFile := m.cfg.Storage.RulesFile
-	errSave := SaveDynamicRulesFile(rulesFile, m.dynamicState)
+	errSave := m.persistRules()
 	if errSave != nil {
 		m.host.Log("error", "failed to save key order", map[string]any{
-			"file":  rulesFile,
+			"file":  m.rulesLocation(),
 			"error": errSave.Error(),
 		})
 	}
@@ -1460,11 +1539,10 @@ func (m *Manager) SaveDefaultPolicyFromJSON(rawBody []byte) (any, error) {
 	dpCopy := dp
 	m.dynamicState.DefaultPolicy = &dpCopy
 	m.cfg = MergeDynamicState(m.seedCfg, m.dynamicState, m.hostAPIKeys...)
-	rulesFile := m.cfg.Storage.RulesFile
-	errSave := SaveDynamicRulesFile(rulesFile, m.dynamicState)
+	errSave := m.persistRules()
 	if errSave != nil {
 		m.host.Log("error", "failed to save dynamic rules file on save default policy", map[string]any{
-			"file":  rulesFile,
+			"file":  m.rulesLocation(),
 			"error": errSave.Error(),
 		})
 	}
@@ -1507,8 +1585,7 @@ func (m *Manager) UpsertCustomPrice(model string, price pricing.ModelPrice) erro
 
 	m.cfg = MergeDynamicState(m.seedCfg, m.dynamicState, m.hostAPIKeys...)
 	m.pricingEngine.SetCustomPrices(m.cfg.Pricing.CustomPrices, m.cfg.Pricing.DefaultPrice)
-	rulesFile := m.cfg.Storage.RulesFile
-	errSave := SaveDynamicRulesFile(rulesFile, m.dynamicState)
+	errSave := m.persistRules()
 	m.mu.Unlock()
 
 	return errSave
@@ -1545,8 +1622,7 @@ func (m *Manager) DeleteCustomPrice(model string) error {
 
 	m.cfg = MergeDynamicState(m.seedCfg, m.dynamicState, m.hostAPIKeys...)
 	m.pricingEngine.SetCustomPrices(m.cfg.Pricing.CustomPrices, m.cfg.Pricing.DefaultPrice)
-	rulesFile := m.cfg.Storage.RulesFile
-	errSave := SaveDynamicRulesFile(rulesFile, m.dynamicState)
+	errSave := m.persistRules()
 	m.mu.Unlock()
 
 	return errSave
