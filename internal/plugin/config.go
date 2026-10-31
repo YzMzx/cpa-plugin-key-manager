@@ -846,9 +846,9 @@ func LoadDynamicRulesFile(filePath string) (*DynamicRulesState, error) {
 		return &DynamicRulesState{Version: 1, CustomPrices: make(map[string]pricing.ModelPrice)}, nil
 	}
 
-	// Converge all candidate locations onto the winning state so that every
-	// persistent location holds the same authoritative snapshot.
-	_ = SaveDynamicRulesFile(cleanPath, best.state)
+	// Read-only on purpose: this is only used to import legacy JSON rules into
+	// SQLite once. Rewriting the mirrors here would resurrect files the SQLite
+	// backend is supposed to have retired.
 	return best.state, nil
 }
 
