@@ -564,53 +564,6 @@
   .quota-bar-fill.quota-bar-critical { background: #f87171; }
   .quota-bar-text { font-size: 11.5px; color: var(--text-secondary); font-family: var(--font-mono); white-space: nowrap; }
 
-  /* Toggle switch */
-  .switch {
-    position: relative;
-    display: inline-block;
-    width: 38px;
-    height: 20px;
-    vertical-align: middle;
-  }
-  .switch input {
-    opacity: 0;
-    width: 0;
-    height: 0;
-    position: absolute;
-  }
-  .switch-slider {
-    position: absolute;
-    inset: 0;
-    cursor: pointer;
-    background: var(--bg-tertiary);
-    border: 1px solid var(--border-color);
-    border-radius: 999px;
-    transition: background 0.18s ease, border-color 0.18s ease;
-  }
-  .switch-slider::before {
-    content: "";
-    position: absolute;
-    width: 14px;
-    height: 14px;
-    left: 2px;
-    top: 2px;
-    border-radius: 50%;
-    background: var(--text-tertiary);
-    transition: transform 0.18s ease, background 0.18s ease;
-  }
-  .switch input:checked + .switch-slider {
-    background: rgba(52, 211, 153, 0.22);
-    border-color: rgba(52, 211, 153, 0.55);
-  }
-  .switch input:checked + .switch-slider::before {
-    transform: translateX(18px);
-    background: #34d399;
-  }
-  .switch input:focus-visible + .switch-slider {
-    outline: 2px solid rgba(56, 189, 248, 0.6);
-    outline-offset: 2px;
-  }
-
   /* Tags & Pills (CPAMC .tag style) */
   .tag {
     display: inline-flex;
@@ -1578,7 +1531,6 @@
         <table>
           <thead>
             <tr>
-              <th style="width:64px">状态</th>
               <th>API Key</th>
               <th style="min-width:220px">密钥限额</th>
               <th>已用 / 剩余</th>
@@ -1586,7 +1538,7 @@
             </tr>
           </thead>
           <tbody id="quotaTableBody">
-            <tr><td colspan="5" style="text-align:center;color:var(--text-tertiary)">加载中...</td></tr>
+            <tr><td colspan="4" style="text-align:center;color:var(--text-tertiary)">加载中...</td></tr>
           </tbody>
         </table>
       </div>
@@ -3516,13 +3468,12 @@
     });
 
     if (!list.length) {
-      tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:var(--text-tertiary)">暂无 API Key</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="4" style="text-align:center;color:var(--text-tertiary)">暂无 API Key</td></tr>`;
       return;
     }
 
     tbody.innerHTML = list.map(rule => {
       const usage = quotaUsageOf(rule);
-      const enabled = rule.enabled !== false;
       const label = rule.name ? `<span style="font-weight:600;color:var(--text-primary)">${escapeHtml(rule.name)}</span>` : "";
       const masked = escapeHtml(maskKeyStr(rule.api_key));
       const limitText = usage.unlimited
@@ -3535,12 +3486,6 @@
         ? `<span class="mono">$${usage.used.toFixed(4)}</span> <span style="color:var(--text-tertiary)">/ Infinity</span>`
         : `<span class="mono">$${usage.used.toFixed(4)}</span> <span style="color:var(--text-tertiary)">/ $${usage.remaining.toFixed(4)}</span>`;
       return `<tr>
-        <td class="cell-nowrap">
-          <label class="switch" title="${enabled ? "点击禁用" : "点击启用"}">
-            <input type="checkbox" ${enabled ? "checked" : ""} onchange="quickToggleKeyEnabled('${escapeHtml(rule.api_key)}')">
-            <span class="switch-slider"></span>
-          </label>
-        </td>
         <td class="cell-nowrap">
           <div class="ov-key-cell">
             <span class="mono" style="font-size:12px;color:var(--text-primary)">${masked}</span>
