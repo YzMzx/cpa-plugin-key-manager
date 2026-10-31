@@ -120,6 +120,8 @@ type PersistedSnapshot struct {
 	UpdatedAt string                   `json:"updated_at"`
 	Keys      map[string]*KeyStats     `json:"keys"`
 	Accounts  map[string]*AccountStats `json:"accounts,omitempty"`
+	// Ledger keeps hourly usage slices that power the overview dashboard.
+	Ledger []*LedgerEntry `json:"ledger,omitempty"`
 }
 
 // TrackedRequest holds in-flight and recently completed request state for deduplicating
@@ -169,6 +171,10 @@ type Store struct {
 	flushInterval     time.Duration
 	stopFlushCh       chan struct{}
 	flushStopped      chan struct{}
+
+	// ledger holds hourly aggregated usage slices for the overview dashboard.
+	ledger          map[string]*LedgerEntry
+	ledgerRetention time.Duration
 }
 
 // NewStore creates a new usage Store backed by the given pricing Engine.
@@ -177,12 +183,14 @@ func NewStore(pricingEngine *pricing.Engine) *Store {
 		pricingEngine = pricing.NewEngine()
 	}
 	return &Store{
-		pricing:       pricingEngine,
-		keys:          make(map[string]*KeyStats),
-		accounts:      make(map[string]*AccountStats),
-		byRequestID:   make(map[string]*TrackedRequest),
-		byTraceID:     make(map[string]*TrackedRequest),
-		seenHostReqID: make(map[string]time.Time),
+		pricing:         pricingEngine,
+		keys:            make(map[string]*KeyStats),
+		accounts:        make(map[string]*AccountStats),
+		ledger:          make(map[string]*LedgerEntry),
+		ledgerRetention: 90 * 24 * time.Hour,
+		byRequestID:     make(map[string]*TrackedRequest),
+		byTraceID:       make(map[string]*TrackedRequest),
+		seenHostReqID:   make(map[string]time.Time),
 	}
 }
 
@@ -781,7 +789,20 @@ func (s *Store) reconcileTrackerDeltaLocked(tr *TrackedRequest) {
 
 	ms := getOrCreateTupleStats(ks, key, requested, served)
 	ams := getOrCreateAccountTupleStats(acct, key, requested, served)
-	nowStr := time.Now().UTC().Format(time.RFC3339)
+	now := time.Now()
+	nowStr := now.UTC().Format(time.RFC3339)
+
+	// Ledger dimensions: bill by the client-requested (catalog) model, never by the
+	// substituted upstream name, so usage history matches the model catalog.
+	ledgerAccount, ledgerProvider := "", ""
+	if acct != nil {
+		ledgerAccount = acct.AuthID
+		ledgerProvider = acct.Provider
+	}
+	recordLedger := func(requests, in, out, read, write, total, costNano int64) {
+		s.recordLedgerLocked(now, apiKey, tr.KeyName, ledgerAccount, ledgerProvider,
+			requested, served, tr.SourceFormat, requests, in, out, read, write, total, costNano)
+	}
 
 	// 2. Apply request count once
 	if !tr.CountedRequest {
@@ -818,6 +839,7 @@ func (s *Store) reconcileTrackerDeltaLocked(tr *TrackedRequest) {
 		}
 		ks.LastRequestAt = nowStr
 		ms.LastUsedAt = nowStr
+		recordLedger(1, 0, 0, 0, 0, 0, 0)
 		s.dirty = true
 	}
 
@@ -895,6 +917,8 @@ func (s *Store) reconcileTrackerDeltaLocked(tr *TrackedRequest) {
 		ams.CostFormatted = pricing.FormatUSD(ams.CostNanoUSD)
 		ams.LastUsedAt = nowStr
 	}
+
+	recordLedger(0, dIn, dOut, dRead, dWrite, dTotal, costBreakdown.NanoUSD)
 
 	s.dirty = true
 }
@@ -1396,11 +1420,17 @@ func (s *Store) Reset(apiKey string) error {
 	if target == "" {
 		s.keys = make(map[string]*KeyStats)
 		s.accounts = make(map[string]*AccountStats)
+		s.ledger = make(map[string]*LedgerEntry)
 		s.byRequestID = make(map[string]*TrackedRequest)
 		s.byTraceID = make(map[string]*TrackedRequest)
 		s.seenHostReqID = make(map[string]time.Time)
 	} else {
 		delete(s.keys, target)
+		for key, entry := range s.ledger {
+			if entry != nil && entry.APIKey == target {
+				delete(s.ledger, key)
+			}
+		}
 	}
 	s.dirty = true
 	s.mu.Unlock()
@@ -1465,6 +1495,23 @@ func (s *Store) FlushNow() error {
 		}
 		snap.Accounts[k] = &acp
 	}
+	s.pruneLedgerLocked(time.Now())
+	if len(s.ledger) > 0 {
+		snap.Ledger = make([]*LedgerEntry, 0, len(s.ledger))
+		for _, entry := range s.ledger {
+			if entry == nil {
+				continue
+			}
+			cp := *entry
+			snap.Ledger = append(snap.Ledger, &cp)
+		}
+		sort.Slice(snap.Ledger, func(i, j int) bool {
+			if snap.Ledger[i].Hour != snap.Ledger[j].Hour {
+				return snap.Ledger[i].Hour < snap.Ledger[j].Hour
+			}
+			return snap.Ledger[i].Model < snap.Ledger[j].Model
+		})
+	}
 	s.dirty = false
 	s.mu.Unlock()
 
@@ -1502,6 +1549,16 @@ func (s *Store) loadFromDisk(filePath string) error {
 	if s.keys == nil {
 		s.keys = make(map[string]*KeyStats)
 	}
+	if s.ledger == nil {
+		s.ledger = make(map[string]*LedgerEntry)
+	}
+	for _, entry := range snap.Ledger {
+		if entry == nil || entry.Hour <= 0 || strings.TrimSpace(entry.Model) == "" {
+			continue
+		}
+		s.ledger[ledgerEntryKey(entry.Hour, entry.APIKey, entry.Account, entry.Model, entry.Source)] = entry
+	}
+	s.pruneLedgerLocked(time.Now())
 	cleanedDisk := false
 	for k, ks := range snap.Keys {
 		if ks == nil {

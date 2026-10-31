@@ -22,7 +22,7 @@ import (
 
 const (
 	PluginID      = "cpa-plugin-key-manager"
-	PluginVersion = "0.6.10"
+	PluginVersion = "0.7.0"
 	PluginAuthor  = "YzMzx"
 	PluginRepo    = "https://github.com/YzMzx/cpa-plugin-key-manager"
 	PluginLogoSVG = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%238b8680'/><path d='M24 22a10 10 0 1 0 9.5 13H42v5h6v-5h4v-6H33.5A10 10 0 0 0 24 22zm0 6a4 4 0 1 1 0 8 4 4 0 0 1 0-8z' fill='%23fff'/></svg>"
@@ -244,6 +244,7 @@ func (m *Manager) Configure(raw []byte) error {
 	m.pricingEngine.SetCustomPrices(cfg.Pricing.CustomPrices, cfg.Pricing.DefaultPrice)
 
 	flushDur := time.Duration(cfg.Storage.FlushIntervalSeconds) * time.Second
+	m.usageStore.SetLedgerRetention(cfg.Storage.LedgerRetentionDays)
 	// Durable usage mirrors keep billing history alive when the configured file
 	// lives in an ephemeral directory such as a container's ./data.
 	m.usageStore.SetMirrorFiles(UsageMirrorFiles(cfg.Storage.UsageFile))
@@ -714,6 +715,11 @@ func (m *Manager) SearchReferencePrices(query string, limit int) []pricing.Refer
 // TriggerPricingSync runs an immediate synchronization with models.dev.
 func (m *Manager) TriggerPricingSync(ctx context.Context) (int, error) {
 	return m.pricingSyncer.SyncOnce(ctx)
+}
+
+// QueryLedger aggregates the retained hourly ledger according to the overview filters.
+func (m *Manager) QueryLedger(q usage.LedgerQuery) usage.LedgerResult {
+	return m.usageStore.QueryLedger(q)
 }
 
 // ExtractCallerAPIKey extracts the caller's API key from a self-service resource request and checks if it matches AdminToken.

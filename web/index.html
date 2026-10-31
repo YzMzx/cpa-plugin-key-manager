@@ -391,6 +391,95 @@
     padding-left: 14px;
   }
 
+  /* ===== Overview (额度概览) ===== */
+  .seg {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: var(--bg-primary);
+  }
+  .seg-btn {
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 12px;
+    padding: 3px 9px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+  }
+  .seg-btn:hover { color: var(--text-primary); }
+  .seg-btn.active {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+    font-weight: 600;
+  }
+  .ov-legend {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 0 16px 6px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    flex-wrap: wrap;
+  }
+  .ov-legend-item { display: inline-flex; align-items: center; gap: 6px; }
+  .ov-swatch { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+  .ov-chart-box { padding: 0 12px 12px; min-height: 240px; }
+  .ov-chart-box svg { width: 100%; height: auto; display: block; }
+  .ov-skeleton {
+    background: linear-gradient(90deg, var(--bg-tertiary) 25%, var(--bg-hover) 37%, var(--bg-tertiary) 63%);
+    background-size: 400% 100%;
+    animation: ov-shimmer 1.3s ease infinite;
+    border-radius: 8px;
+  }
+  @keyframes ov-shimmer {
+    0% { background-position: 100% 50%; }
+    100% { background-position: 0 50%; }
+  }
+  .ov-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-height: 200px;
+    color: var(--text-tertiary);
+    font-size: 13px;
+  }
+  .ov-empty-icon { font-size: 26px; opacity: 0.55; }
+  .ov-dist-grid {
+    display: grid;
+    grid-template-columns: 280px 1fr;
+    gap: 18px;
+    padding: 4px 16px 16px;
+    align-items: start;
+  }
+  @media (max-width: 900px) {
+    .ov-dist-grid { grid-template-columns: 1fr; }
+  }
+  .ov-donut-box { display: flex; align-items: center; justify-content: center; min-height: 220px; }
+  .ov-donut-box svg { width: 220px; height: 220px; }
+  .ov-model-list { display: flex; flex-direction: column; gap: 4px; max-height: 320px; overflow-y: auto; }
+  .ov-model-row {
+    display: grid;
+    grid-template-columns: 12px 1fr auto auto auto;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 8px;
+    border-radius: 7px;
+    font-size: 12.5px;
+    cursor: pointer;
+    border: 1px solid transparent;
+  }
+  .ov-model-row:hover { background: var(--bg-hover); }
+  .ov-model-row.active { border-color: var(--border-color); background: var(--bg-hover); }
+  .ov-model-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); }
+  .ov-model-num { color: var(--text-secondary); font-family: var(--font-mono); font-size: 11.5px; white-space: nowrap; }
+  .ov-model-share { color: var(--text-primary); font-family: var(--font-mono); font-weight: 600; font-size: 11.5px; }
+
   /* Tags & Pills (CPAMC .tag style) */
   .tag {
     display: inline-flex;
@@ -1136,7 +1225,8 @@
   <!-- Navigation Tabs -->
   <div class="page-tabs-row">
     <div class="tabs" role="tablist">
-      <button type="button" class="tab-btn active" data-tab="tab-keys" onclick="switchAdminTab('tab-keys')">API Key 与规则管控</button>
+      <button type="button" class="tab-btn active" data-tab="tab-overview" onclick="switchAdminTab('tab-overview')">概览</button>
+      <button type="button" class="tab-btn" data-tab="tab-keys" onclick="switchAdminTab('tab-keys')">API Key 与规则管控</button>
       <button type="button" class="tab-btn" data-tab="tab-dashboard" onclick="switchAdminTab('tab-dashboard')">Token 用量统计看板</button>
       <button type="button" class="tab-btn" data-tab="tab-routing" onclick="switchAdminTab('tab-routing')">全局默认策略与凭证池</button>
       <button type="button" class="tab-btn" data-tab="tab-pricing" onclick="switchAdminTab('tab-pricing')">模型与价格</button>
@@ -1162,8 +1252,177 @@
     </div>
   </div>
 
+  <!-- TAB 0: QUOTA OVERVIEW (default landing tab) -->
+  <section id="tab-overview" class="admin-tab">
+    <!-- Controls -->
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <h2 class="card-title">额度概览</h2>
+          <div style="font-size:12px;color:var(--text-tertiary);margin-top:4px">
+            基于本地账本的多维聚合视图；计费模型始终取客户端请求的目录模型，上游替换不影响计费归属。
+          </div>
+        </div>
+        <div class="input-row">
+          <div class="seg" id="ovTokenUnitSeg">
+            <button type="button" class="seg-btn active" data-unit="1" onclick="setOverviewTokenUnit('1')">个</button>
+            <button type="button" class="seg-btn" data-unit="1e3" onclick="setOverviewTokenUnit('1e3')">千</button>
+            <button type="button" class="seg-btn" data-unit="1e4" onclick="setOverviewTokenUnit('1e4')">万</button>
+            <button type="button" class="seg-btn" data-unit="1e6" onclick="setOverviewTokenUnit('1e6')">百万</button>
+          </div>
+          <div class="seg" id="ovCurrencySeg">
+            <button type="button" class="seg-btn active" data-cur="USD" onclick="setOverviewCurrency('USD')">USD</button>
+            <button type="button" class="seg-btn" data-cur="CNY" onclick="setOverviewCurrency('CNY')">CNY</button>
+          </div>
+          <span class="tag plain" id="ovLedgerStatus" title="本地账本状态">账本：检测中…</span>
+          <button type="button" class="btn btn-sm" onclick="openLedgerSettings()">连接设置</button>
+          <button type="button" class="btn btn-sm btn-primary" onclick="loadOverviewLedger(true)">🔄 刷新</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Filters -->
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <h2 class="card-title">概览筛选</h2>
+        </div>
+        <div class="input-row">
+          <button type="button" class="btn btn-sm" onclick="resetOverviewFilters()">重置</button>
+          <button type="button" class="btn btn-sm btn-primary" onclick="loadOverviewLedger(true)">刷新概览 / 查询</button>
+        </div>
+      </div>
+      <div class="form-grid">
+        <div class="form-group">
+          <label class="form-label">时间范围</label>
+          <select id="ovRange" onchange="onOverviewRangeChange()">
+            <option value="today">今日</option>
+            <option value="yesterday">昨日</option>
+            <option value="7d" selected>近 7 天</option>
+            <option value="30d">近 30 天</option>
+            <option value="custom">自定义范围</option>
+          </select>
+          <div class="input-row" id="ovCustomRange" style="margin-top:6px;display:none">
+            <input type="date" class="input" id="ovFromDate" style="width:150px" onchange="loadOverviewLedger(true)">
+            <span style="color:var(--text-tertiary)">至</span>
+            <input type="date" class="input" id="ovToDate" style="width:150px" onchange="loadOverviewLedger(true)">
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">密钥搜索（标签 / Key ID）</label>
+          <input type="text" class="input" id="ovKeySearch" placeholder="模糊匹配备注名或 Key" oninput="debouncedOverviewQuery()">
+        </div>
+        <div class="form-group">
+          <label class="form-label">账号搜索（名称 / ID）</label>
+          <input type="text" class="input" id="ovAccountSearch" placeholder="模糊匹配账号或提供商" oninput="debouncedOverviewQuery()">
+        </div>
+      </div>
+      <div class="form-grid" style="margin-bottom:0">
+        <div class="form-group" style="margin-bottom:0">
+          <label class="form-label">模型</label>
+          <select id="ovModelFilter" onchange="loadOverviewLedger(true)">
+            <option value="">全部已使用模型</option>
+          </select>
+        </div>
+        <div class="form-group" style="margin-bottom:0">
+          <label class="form-label">来源渠道</label>
+          <select id="ovSourceFilter" onchange="loadOverviewLedger(true)">
+            <option value="">全部来源</option>
+          </select>
+        </div>
+        <div class="form-group" style="margin-bottom:0">
+          <label class="form-label">快捷时间</label>
+          <div class="input-row">
+            <button type="button" class="btn btn-sm" onclick="quickOverviewRange('today')">今日</button>
+            <button type="button" class="btn btn-sm" onclick="quickOverviewRange('7d')">近 7 天</button>
+            <button type="button" class="btn btn-sm" onclick="quickOverviewRange('30d')">近 30 天</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Metric cards -->
+    <div class="kpi-grid" id="ovMetricCards">
+      <div class="kpi-card">
+        <div class="kpi-label">密钥状态</div>
+        <div class="kpi-value" id="ovMetricKeys">-</div>
+        <div class="kpi-sub">总密钥 / 可用密钥</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">筛选请求数</div>
+        <div class="kpi-value" id="ovMetricRequests">-</div>
+        <div class="kpi-sub">次</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">筛选 Token</div>
+        <div class="kpi-value" id="ovMetricTokens">-</div>
+        <div class="kpi-sub" id="ovMetricTokensSub">输入 / 输出 / 缓存</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">筛选费用</div>
+        <div class="kpi-value" id="ovMetricCost">-</div>
+        <div class="kpi-sub" id="ovMetricCostSub">按当前币种汇率换算</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">模型数量</div>
+        <div class="kpi-value" id="ovMetricModels">-</div>
+        <div class="kpi-sub">独立模型数</div>
+      </div>
+    </div>
+
+    <!-- Trend chart -->
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <h2 class="card-title">Token 趋势</h2>
+          <div style="font-size:12px;color:var(--text-tertiary);margin-top:4px" id="ovTrendMeta">-</div>
+        </div>
+        <div class="input-row">
+          <div class="seg" id="ovGranularitySeg">
+            <button type="button" class="seg-btn" data-gran="hour" onclick="setOverviewGranularity('hour')">时</button>
+            <button type="button" class="seg-btn active" data-gran="day" onclick="setOverviewGranularity('day')">日</button>
+            <button type="button" class="seg-btn" data-gran="month" onclick="setOverviewGranularity('month')">月</button>
+          </div>
+        </div>
+      </div>
+      <div class="ov-legend">
+        <span class="ov-legend-item"><i class="ov-swatch" style="background:#38bdf8"></i>入 <b id="ovLegendInput">0</b></span>
+        <span class="ov-legend-item"><i class="ov-swatch" style="background:#34d399"></i>出 <b id="ovLegendOutput">0</b></span>
+        <span class="ov-legend-item"><i class="ov-swatch" style="background:#a78bfa"></i>缓存 <b id="ovLegendCache">0</b></span>
+        <span class="ov-legend-item"><i class="ov-swatch" style="background:#f59e0b"></i>命中 <b id="ovLegendHit">0%</b></span>
+      </div>
+      <div id="ovTrendChart" class="ov-chart-box">
+        <div class="ov-skeleton" style="height:240px"></div>
+      </div>
+    </div>
+
+    <!-- Model distribution -->
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <h2 class="card-title">模型调用分布</h2>
+        </div>
+        <div class="input-row">
+          <div class="seg" id="ovModelDimSeg">
+            <button type="button" class="seg-btn active" data-dim="requests" onclick="setOverviewModelDim('requests')">调用次数</button>
+            <button type="button" class="seg-btn" data-dim="tokens" onclick="setOverviewModelDim('tokens')">Token 消耗量</button>
+            <button type="button" class="seg-btn" data-dim="cost" onclick="setOverviewModelDim('cost')">费用金额</button>
+          </div>
+        </div>
+      </div>
+      <div class="ov-dist-grid">
+        <div class="ov-donut-box" id="ovDonutChart">
+          <div class="ov-skeleton" style="width:220px;height:220px;border-radius:50%"></div>
+        </div>
+        <div class="ov-model-list" id="ovModelList">
+          <div class="ov-skeleton" style="height:120px"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <!-- TAB 1: UNIFIED API KEYS & GOVERNANCE CRUD -->
-  <section id="tab-keys" class="admin-tab">
+  <section id="tab-keys" class="admin-tab hidden">
     <div class="card">
       <div class="card-header">
         <div>
@@ -2038,12 +2297,38 @@
     } catch (_) {}
   }
 
-  function switchAdminTab(tabId) {
+  function switchAdminTab(tabId, options) {
+    const opts = options || {};
     document.querySelectorAll(".admin-tab").forEach(s => s.classList.add("hidden"));
-    document.getElementById(tabId).classList.remove("hidden");
+    const section = document.getElementById(tabId);
+    if (section) section.classList.remove("hidden");
     document.querySelectorAll(".tab-btn").forEach(b => {
       b.classList.toggle("active", b.getAttribute("data-tab") === tabId);
     });
+    // Keep the active tab in the URL so a refresh restores the same view.
+    if (!opts.skipUrl) {
+      try {
+        const url = new URL(window.location.href);
+        url.searchParams.set("tab", String(tabId).replace(/^tab-/, ""));
+        window.history.replaceState(null, "", url.toString());
+      } catch (_) {}
+    }
+    if (tabId === "tab-overview" && activeManagementKey && !overviewState.data) {
+      loadOverviewLedger(true);
+    }
+  }
+
+  // Restores the tab requested in the URL (defaults to the overview tab).
+  function restoreAdminTabFromUrl() {
+    let tabId = "tab-overview";
+    try {
+      const param = new URL(window.location.href).searchParams.get("tab");
+      if (param) {
+        const candidate = "tab-" + param.replace(/^tab-/, "");
+        if (document.getElementById(candidate)) tabId = candidate;
+      }
+    } catch (_) {}
+    switchAdminTab(tabId, { skipUrl: true });
   }
 
   // ==================== ADMIN OVERVIEW & UNIFIED KEY SYNC ====================
@@ -2072,6 +2357,7 @@
       initDefaultPolicySelectors();
       renderHostAuthTable();
       renderPricingTab();
+      loadOverviewLedger(true);
     } catch (err) {
       if (activeManagementKey) {
         showToast(err.message, true);
@@ -3400,6 +3686,494 @@
     }).join("");
   }
 
+  // ==================== TAB 0: QUOTA OVERVIEW (local ledger) ====================
+  const API_LEDGER = "/v0/management/key-guard/ledger";
+  const OVERVIEW_TZ = (() => {
+    try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch (_) { return "UTC"; }
+  })();
+
+  const overviewState = {
+    tokenUnit: 1,          // 个 / 1e3 / 1e4 / 1e6
+    currency: "USD",       // USD | CNY
+    rate: 7.2,             // CNY per USD
+    granularity: "day",
+    modelDim: "requests",
+    range: "7d",
+    activeModel: "",
+    loading: false,
+    data: null
+  };
+
+  const TOKEN_UNIT_LABELS = { 1: "个", 1000: "千", 10000: "万", 1000000: "百万" };
+  const CURRENCY_SYMBOLS = { USD: "$", CNY: "¥" };
+
+  function loadOverviewPrefs() {
+    try {
+      const raw = localStorage.getItem("km_overview_prefs");
+      if (raw) {
+        const p = JSON.parse(raw);
+        if (p.tokenUnit) overviewState.tokenUnit = Number(p.tokenUnit) || 1;
+        if (p.currency === "CNY" || p.currency === "USD") overviewState.currency = p.currency;
+        if (Number(p.rate) > 0) overviewState.rate = Number(p.rate);
+      }
+    } catch (_) {}
+  }
+
+  function saveOverviewPrefs() {
+    try {
+      localStorage.setItem("km_overview_prefs", JSON.stringify({
+        tokenUnit: overviewState.tokenUnit,
+        currency: overviewState.currency,
+        rate: overviewState.rate
+      }));
+    } catch (_) {}
+  }
+
+  function fmtTokenValue(raw) {
+    const n = Number(raw || 0) / overviewState.tokenUnit;
+    if (!Number.isFinite(n)) return "0";
+    const abs = Math.abs(n);
+    const digits = abs >= 1000 ? 0 : abs >= 100 ? 1 : abs >= 1 ? 2 : 3;
+    const text = n.toFixed(digits).replace(/\.0+$/, "").replace(/(\.\d*?)0+$/, "$1");
+    const suffix = overviewState.tokenUnit === 1 ? "" : " " + (TOKEN_UNIT_LABELS[overviewState.tokenUnit] || "");
+    return text + suffix;
+  }
+
+  function fmtMoneyNano(nanoUSD) {
+    const usd = Number(nanoUSD || 0) / 1e9;
+    const value = overviewState.currency === "CNY" ? usd * overviewState.rate : usd;
+    const symbol = CURRENCY_SYMBOLS[overviewState.currency] || "$";
+    if (value === 0) return symbol + "0.000000";
+    const abs = Math.abs(value);
+    const digits = abs >= 1 ? 4 : abs >= 0.01 ? 6 : 8;
+    return symbol + value.toFixed(digits);
+  }
+
+  function overviewRangeBounds() {
+    const now = new Date();
+    const startOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0);
+    const today = startOfDay(now);
+    const minusDays = (d, n) => new Date(d.getFullYear(), d.getMonth(), d.getDate() - n);
+    let from, to;
+    switch (overviewState.range) {
+      case "today":
+        from = today;
+        to = new Date(today.getTime() + 24 * 3600 * 1000 - 1);
+        break;
+      case "yesterday":
+        from = minusDays(today, 1);
+        to = new Date(today.getTime() - 1);
+        break;
+      case "30d":
+        from = minusDays(today, 29);
+        to = new Date(today.getTime() + 24 * 3600 * 1000 - 1);
+        break;
+      case "custom": {
+        const fromVal = (document.getElementById("ovFromDate") || {}).value;
+        const toVal = (document.getElementById("ovToDate") || {}).value;
+        const parse = (v, fallback) => {
+          if (!v) return fallback;
+          const parts = String(v).split("-").map(Number);
+          if (parts.length !== 3 || parts.some(x => !Number.isFinite(x))) return fallback;
+          return new Date(parts[0], parts[1] - 1, parts[2], 0, 0, 0, 0);
+        };
+        from = parse(fromVal, minusDays(today, 6));
+        to = parse(toVal, today);
+        to = new Date(to.getTime() + 24 * 3600 * 1000 - 1);
+        break;
+      }
+      case "7d":
+      default:
+        from = minusDays(today, 6);
+        to = new Date(today.getTime() + 24 * 3600 * 1000 - 1);
+        break;
+    }
+    return { from: from, to: to };
+  }
+
+  function overviewQueryParams() {
+    const bounds = overviewRangeBounds();
+    const params = new URLSearchParams();
+    params.set("from", bounds.from.toISOString());
+    params.set("to", bounds.to.toISOString());
+    params.set("granularity", overviewState.granularity);
+    params.set("tz", OVERVIEW_TZ);
+    const key = (document.getElementById("ovKeySearch") || {}).value || "";
+    const account = (document.getElementById("ovAccountSearch") || {}).value || "";
+    const model = (document.getElementById("ovModelFilter") || {}).value || "";
+    const source = (document.getElementById("ovSourceFilter") || {}).value || "";
+    if (key.trim()) params.set("key", key.trim());
+    if (account.trim()) params.set("account", account.trim());
+    if (model) params.set("model", model);
+    if (source) params.set("source", source);
+    return params;
+  }
+
+  let overviewDebounce = null;
+  function debouncedOverviewQuery() {
+    if (overviewDebounce) clearTimeout(overviewDebounce);
+    overviewDebounce = setTimeout(() => loadOverviewLedger(false), 320);
+  }
+
+  function setOverviewTokenUnit(unit) {
+    overviewState.tokenUnit = Number(unit) || 1;
+    saveOverviewPrefs();
+    document.querySelectorAll("#ovTokenUnitSeg .seg-btn").forEach(b => {
+      b.classList.toggle("active", b.getAttribute("data-unit") === String(unit));
+    });
+    renderOverviewAll();
+  }
+
+  function setOverviewCurrency(cur) {
+    overviewState.currency = cur === "CNY" ? "CNY" : "USD";
+    saveOverviewPrefs();
+    document.querySelectorAll("#ovCurrencySeg .seg-btn").forEach(b => {
+      b.classList.toggle("active", b.getAttribute("data-cur") === overviewState.currency);
+    });
+    renderOverviewAll();
+  }
+
+  function setOverviewGranularity(gran) {
+    overviewState.granularity = ["hour", "day", "month"].includes(gran) ? gran : "day";
+    document.querySelectorAll("#ovGranularitySeg .seg-btn").forEach(b => {
+      b.classList.toggle("active", b.getAttribute("data-gran") === overviewState.granularity);
+    });
+    loadOverviewLedger(true);
+  }
+
+  function setOverviewModelDim(dim) {
+    overviewState.modelDim = ["requests", "tokens", "cost"].includes(dim) ? dim : "requests";
+    document.querySelectorAll("#ovModelDimSeg .seg-btn").forEach(b => {
+      b.classList.toggle("active", b.getAttribute("data-dim") === overviewState.modelDim);
+    });
+    renderModelDistribution();
+  }
+
+  function onOverviewRangeChange() {
+    overviewState.range = (document.getElementById("ovRange") || {}).value || "7d";
+    const custom = document.getElementById("ovCustomRange");
+    if (custom) custom.style.display = overviewState.range === "custom" ? "flex" : "none";
+    if (overviewState.range === "custom") {
+      const fromEl = document.getElementById("ovFromDate");
+      const toEl = document.getElementById("ovToDate");
+      const today = new Date();
+      const iso = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      if (fromEl && !fromEl.value) fromEl.value = iso(new Date(today.getTime() - 6 * 864e5));
+      if (toEl && !toEl.value) toEl.value = iso(today);
+    }
+    loadOverviewLedger(true);
+  }
+
+  function quickOverviewRange(range) {
+    overviewState.range = range;
+    const sel = document.getElementById("ovRange");
+    if (sel) sel.value = range;
+    const custom = document.getElementById("ovCustomRange");
+    if (custom) custom.style.display = "none";
+    loadOverviewLedger(true);
+  }
+
+  function resetOverviewFilters() {
+    overviewState.range = "7d";
+    overviewState.activeModel = "";
+    const sel = document.getElementById("ovRange");
+    if (sel) sel.value = "7d";
+    const custom = document.getElementById("ovCustomRange");
+    if (custom) custom.style.display = "none";
+    ["ovKeySearch", "ovAccountSearch"].forEach(id => { const el = document.getElementById(id); if (el) el.value = ""; });
+    const model = document.getElementById("ovModelFilter");
+    if (model) model.value = "";
+    const source = document.getElementById("ovSourceFilter");
+    if (source) source.value = "";
+    loadOverviewLedger(true);
+  }
+
+  async function loadOverviewLedger(showSkeleton) {
+    if (!activeManagementKey) return;
+    if (showSkeleton) showOverviewSkeleton();
+    overviewState.loading = true;
+    try {
+      const params = overviewQueryParams();
+      const data = await callManagementAPI(API_LEDGER + "?" + params.toString(), { method: "GET" });
+      overviewState.data = data;
+      renderOverviewAll();
+    } catch (err) {
+      overviewState.data = null;
+      const statusEl = document.getElementById("ovLedgerStatus");
+      if (statusEl) {
+        statusEl.textContent = "账本：离线";
+        statusEl.className = "tag bad";
+        statusEl.title = err.message;
+      }
+      renderOverviewEmpty(err.message);
+    } finally {
+      overviewState.loading = false;
+    }
+  }
+
+  function showOverviewSkeleton() {
+    const trend = document.getElementById("ovTrendChart");
+    if (trend) trend.innerHTML = `<div class="ov-skeleton" style="height:240px"></div>`;
+    const donut = document.getElementById("ovDonutChart");
+    if (donut) donut.innerHTML = `<div class="ov-skeleton" style="width:220px;height:220px;border-radius:50%"></div>`;
+    const list = document.getElementById("ovModelList");
+    if (list) list.innerHTML = `<div class="ov-skeleton" style="height:140px"></div>`;
+  }
+
+  function renderOverviewEmpty(message) {
+    const trend = document.getElementById("ovTrendChart");
+    if (trend) {
+      trend.innerHTML = `<div class="ov-empty"><div class="ov-empty-icon">📭</div><div>暂无可用数据</div><div style="font-size:11.5px">${escapeHtml(message || "当前筛选范围内没有调用记录")}</div></div>`;
+    }
+    const donut = document.getElementById("ovDonutChart");
+    if (donut) donut.innerHTML = `<div class="ov-empty" style="min-height:200px"><div class="ov-empty-icon">📊</div><div>无模型调用</div></div>`;
+    const list = document.getElementById("ovModelList");
+    if (list) list.innerHTML = `<div class="ov-empty" style="min-height:120px"><div>当前筛选条件下没有模型数据</div></div>`;
+    ["ovMetricKeys", "ovMetricRequests", "ovMetricTokens", "ovMetricCost", "ovMetricModels"].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = "-";
+    });
+  }
+
+  function renderOverviewAll() {
+    const data = overviewState.data;
+    if (!data) return;
+    syncOverviewFilterOptions(data);
+    renderOverviewStatus(data.status || {});
+    renderOverviewMetrics(data);
+    renderOverviewTrend(data);
+    renderModelDistribution();
+  }
+
+  // Keeps the model / source dropdowns populated with every value seen in the
+  // ledger query, without clobbering the current selection.
+  function syncOverviewFilterOptions(data) {
+    const fill = (id, values, allLabel) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const current = el.value;
+      const list = Array.from(new Set(values || [])).filter(Boolean).sort();
+      el.innerHTML = `<option value="">${allLabel}</option>` +
+        list.map(v => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join("");
+      if (current && list.includes(current)) {
+        el.value = current;
+      } else if (current) {
+        el.value = "";
+      }
+    };
+    fill("ovModelFilter", data.used_models, "全部已使用模型");
+    fill("ovSourceFilter", data.used_sources, "全部来源");
+  }
+
+  function renderOverviewStatus(status) {
+    const el = document.getElementById("ovLedgerStatus");
+    if (!el) return;
+    const entries = Number(status.entries || 0);
+    el.className = "tag ok";
+    el.textContent = `账本运行中 · ${fmtInt(entries)} 条`;
+    el.title = [
+      "类型: 本地内嵌账本",
+      `保留: ${status.retention_days || 0} 天`,
+      status.oldest_at ? `最早: ${status.oldest_at}` : "",
+      status.newest_at ? `最新: ${status.newest_at}` : "",
+      status.storage ? `存储: ${status.storage}` : ""
+    ].filter(Boolean).join("\n");
+  }
+
+  function renderOverviewMetrics(data) {
+    const setText = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
+    setText("ovMetricKeys", `${fmtInt(data.keys_total || 0)} / ${fmtInt(data.keys_available || 0)}`);
+    setText("ovMetricRequests", fmtInt(data.requests || 0));
+    setText("ovMetricTokens", fmtTokenValue(data.total_tokens || 0));
+    setText("ovMetricCost", fmtMoneyNano(data.cost_nano_usd || 0));
+    setText("ovMetricModels", fmtInt(data.model_count || 0));
+    setText("ovMetricTokensSub",
+      `入 ${fmtTokenValue(data.input_tokens)} · 出 ${fmtTokenValue(data.output_tokens)} · 缓存 ${fmtTokenValue(data.cache_read_tokens)}`);
+    setText("ovMetricCostSub", overviewState.currency === "CNY"
+      ? `按 1 USD = ${overviewState.rate} CNY 换算`
+      : "USD 原币金额");
+    setText("ovLegendInput", fmtTokenValue(data.input_tokens));
+    setText("ovLegendOutput", fmtTokenValue(data.output_tokens));
+    setText("ovLegendCache", fmtTokenValue(data.cache_read_tokens));
+    const denom = Number(data.input_tokens || 0) + Number(data.cache_read_tokens || 0);
+    const hit = denom > 0 ? (Number(data.cache_read_tokens || 0) / denom * 100) : 0;
+    setText("ovLegendHit", hit.toFixed(1) + "%");
+    setText("ovTrendMeta", `${data.active_days || 0} 个有使用记录的自然日 · ${data.from || ""} ~ ${data.to || ""}`);
+  }
+
+  // ---- Trend chart (stacked bars + hit-rate line, dual Y axis) ----
+  function renderOverviewTrend(data) {
+    const box = document.getElementById("ovTrendChart");
+    if (!box) return;
+    const series = (data.series || []).filter(s => s.total_tokens > 0 || s.requests > 0);
+    if (!series.length) {
+      box.innerHTML = `<div class="ov-empty"><div class="ov-empty-icon">📈</div><div>当前筛选条件下暂无趋势数据</div><div style="font-size:11.5px">调整时间范围或筛选条件后再试</div></div>`;
+      return;
+    }
+
+    const W = 900, H = 280, padL = 56, padR = 52, padT = 16, padB = 34;
+    const plotW = W - padL - padR;
+    const plotH = H - padT - padB;
+    const maxTokens = Math.max(1, ...series.map(s => Number(s.input_tokens || 0) + Number(s.output_tokens || 0) + Number(s.cache_read_tokens || 0)));
+    const slot = plotW / series.length;
+    const barW = Math.max(3, Math.min(38, slot * 0.62));
+
+    const yTok = v => padT + plotH - (v / maxTokens) * plotH;
+    const yPct = v => padT + plotH - (Math.min(100, Math.max(0, v)) / 100) * plotH;
+
+    const colors = { input: "#38bdf8", output: "#34d399", cache: "#a78bfa" };
+
+    let bars = "";
+    let points = [];
+    series.forEach((s, i) => {
+      const cx = padL + slot * i + slot / 2;
+      const x = cx - barW / 2;
+      const input = Number(s.input_tokens || 0);
+      const output = Number(s.output_tokens || 0);
+      const cache = Number(s.cache_read_tokens || 0);
+      let baseY = padT + plotH;
+      for (const [key, val] of [["input", input], ["output", output], ["cache", cache]]) {
+        if (val <= 0) continue;
+        const h = (val / maxTokens) * plotH;
+        baseY -= h;
+        bars += `<rect x="${x.toFixed(1)}" y="${baseY.toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" fill="${colors[key]}" rx="2" opacity="0.9"><title>${escapeHtml(s.label)} ${key}: ${fmtTokenValue(val)}</title></rect>`;
+      }
+      const rate = Number(s.cache_hit_rate || 0);
+      points.push({ x: cx, y: yPct(rate), rate: rate, label: s.label });
+    });
+
+    const linePath = points.map((p, i) => (i === 0 ? `M ${p.x.toFixed(1)} ${p.y.toFixed(1)}` : `L ${p.x.toFixed(1)} ${p.y.toFixed(1)}`)).join(" ");
+    const dots = points.map(p => `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="2.6" fill="#f59e0b"><title>${escapeHtml(p.label)} 命中率 ${p.rate.toFixed(1)}%</title></circle>`).join("");
+
+    const gridLines = [0, 0.25, 0.5, 0.75, 1].map(frac => {
+      const y = padT + plotH * (1 - frac);
+      const tokLabel = fmtTokenValue(maxTokens * frac);
+      return `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${W - padR}" y2="${y.toFixed(1)}" stroke="rgba(128,128,128,0.18)" stroke-dasharray="3 4"/>` +
+        `<text x="${padL - 8}" y="${(y + 3.5).toFixed(1)}" text-anchor="end" font-size="10" fill="var(--text-tertiary)">${tokLabel}</text>` +
+        `<text x="${W - padR + 8}" y="${(y + 3.5).toFixed(1)}" font-size="10" fill="#f59e0b">${(frac * 100).toFixed(0)}%</text>`;
+    }).join("");
+
+    const labelStep = Math.max(1, Math.ceil(series.length / 10));
+    const xLabels = series.map((s, i) => {
+      if (i % labelStep !== 0 && i !== series.length - 1) return "";
+      const x = padL + slot * i + slot / 2;
+      return `<text x="${x.toFixed(1)}" y="${H - padB + 16}" text-anchor="middle" font-size="10" fill="var(--text-tertiary)">${escapeHtml(s.label)}</text>`;
+    }).join("");
+
+    box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Token 趋势图">
+      ${gridLines}
+      <g>${bars}</g>
+      <path d="${linePath}" fill="none" stroke="#f59e0b" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>
+      <g>${dots}</g>
+      <g>${xLabels}</g>
+    </svg>`;
+  }
+
+  // ---- Model distribution (donut + list) ----
+  function modelDimValue(row) {
+    if (overviewState.modelDim === "tokens") return Number(row.total_tokens || 0);
+    if (overviewState.modelDim === "cost") return Number(row.cost_nano_usd || 0);
+    return Number(row.requests || 0);
+  }
+
+  function modelDimText(row) {
+    if (overviewState.modelDim === "tokens") return fmtTokenValue(row.total_tokens || 0);
+    if (overviewState.modelDim === "cost") return fmtMoneyNano(row.cost_nano_usd || 0);
+    return fmtInt(row.requests || 0) + " 次";
+  }
+
+  function renderModelDistribution() {
+    const donutBox = document.getElementById("ovDonutChart");
+    const listBox = document.getElementById("ovModelList");
+    if (!donutBox || !listBox) return;
+    const rows = ((overviewState.data || {}).models) || [];
+    if (!rows.length) {
+      donutBox.innerHTML = `<div class="ov-empty" style="min-height:200px"><div class="ov-empty-icon">📊</div><div>暂无模型调用</div></div>`;
+      listBox.innerHTML = `<div class="ov-empty" style="min-height:120px"><div>当前筛选条件下没有模型数据</div></div>`;
+      return;
+    }
+
+    const values = rows.map(modelDimValue);
+    const total = values.reduce((a, b) => a + b, 0);
+    const palette = ["#38bdf8", "#34d399", "#f59e0b", "#a78bfa", "#f472b6", "#22d3ee", "#fbbf24", "#4ade80", "#818cf8", "#fb7185", "#2dd4bf", "#c084fc"];
+
+    const R = 78, C = 110, STROKE = 26;
+    const circumference = 2 * Math.PI * R;
+    let offset = 0;
+    let arcs = "";
+    rows.forEach((row, i) => {
+      const value = values[i];
+      if (total <= 0 || value <= 0) return;
+      const frac = value / total;
+      const len = frac * circumference;
+      const color = palette[i % palette.length];
+      arcs += `<circle cx="${C}" cy="${C}" r="${R}" fill="none" stroke="${color}" stroke-width="${STROKE}" ` +
+        `stroke-dasharray="${Math.max(0, len - 1.5).toFixed(2)} ${(circumference - Math.max(0, len - 1.5)).toFixed(2)}" ` +
+        `stroke-dashoffset="${(-offset).toFixed(2)}" transform="rotate(-90 ${C} ${C})" opacity="0.92">` +
+        `<title>${escapeHtml(row.model)} ${(frac * 100).toFixed(1)}%</title></circle>`;
+      offset += len;
+    });
+
+    const centerLabel = overviewState.modelDim === "cost" ? fmtMoneyNano(total)
+      : overviewState.modelDim === "tokens" ? fmtTokenValue(total)
+      : fmtInt(total) + " 次";
+
+    donutBox.innerHTML = `<svg viewBox="0 0 220 220" role="img" aria-label="模型调用分布">
+      <circle cx="${C}" cy="${C}" r="${R}" fill="none" stroke="rgba(128,128,128,0.14)" stroke-width="${STROKE}"/>
+      ${arcs}
+      <text x="${C}" y="${C - 4}" text-anchor="middle" font-size="16" font-weight="700" fill="var(--text-primary)">${escapeHtml(centerLabel)}</text>
+      <text x="${C}" y="${C + 16}" text-anchor="middle" font-size="10.5" fill="var(--text-tertiary)">${{requests:"调用次数",tokens:"Token 总量",cost:"费用合计"}[overviewState.modelDim]}</text>
+    </svg>`;
+
+    listBox.innerHTML = rows.map((row, i) => {
+      const value = values[i];
+      const share = total > 0 ? (value / total * 100) : 0;
+      const active = overviewState.activeModel && overviewState.activeModel.toLowerCase() === String(row.model).toLowerCase();
+      return `<div class="ov-model-row${active ? " active" : ""}" onclick="toggleOverviewModel('${escapeHtml(String(row.model).replace(/'/g, "\\'"))}')">
+        <span class="ov-swatch" style="background:${palette[i % palette.length]}"></span>
+        <span class="ov-model-name" title="${escapeHtml(row.model)}">${escapeHtml(row.model)}</span>
+        <span class="ov-model-share">${share.toFixed(1)}%</span>
+        <span class="ov-model-num">${fmtInt(row.requests || 0)} 次</span>
+        <span class="ov-model-num">${fmtTokenValue(row.total_tokens || 0)}</span>
+        <span class="ov-model-num">${fmtMoneyNano(row.cost_nano_usd || 0)}</span>
+      </div>`;
+    }).join("");
+  }
+
+  function toggleOverviewModel(model) {
+    const current = (overviewState.activeModel || "").toLowerCase();
+    overviewState.activeModel = current === String(model).toLowerCase() ? "" : String(model);
+    const modelSelect = document.getElementById("ovModelFilter");
+    if (modelSelect) modelSelect.value = overviewState.activeModel;
+    renderModelDistribution();
+    loadOverviewLedger(true);
+  }
+
+  function openLedgerSettings() {
+    const status = (overviewState.data && overviewState.data.status) || {};
+    const lines = [
+      "账本类型: 本地内嵌（随插件运行，无需额外服务）",
+      `状态: ${status.entries ? "运行中" : "空闲"} · 条目 ${fmtInt(status.entries || 0)}`,
+      `保留时长: ${status.retention_days || 90} 天`,
+      `存储位置: ${status.storage || "-"}`,
+      status.oldest_at ? `数据范围: ${status.oldest_at} ~ ${status.newest_at || "-"}` : "数据范围: 暂无历史数据",
+      "",
+      "汇率设置（用于 CNY 换算）"
+    ].join("\n");
+    const input = window.prompt(lines + "\n\n请输入 1 USD = ? CNY 的汇率：", String(overviewState.rate));
+    if (input !== null) {
+      const rate = Number(input);
+      if (Number.isFinite(rate) && rate > 0) {
+        overviewState.rate = rate;
+        saveOverviewPrefs();
+        renderOverviewAll();
+        showToast(`汇率已更新为 1 USD = ${rate} CNY`);
+      } else {
+        showToast("汇率必须是大于 0 的数字", true);
+      }
+    }
+  }
+
   // ==================== TAB 4: MODELS & PRICING (models.dev + custom overrides) ====================
   let modelsDevSearchTimer = null;
 
@@ -3744,6 +4518,14 @@
     }
   }
 
+  loadOverviewPrefs();
+  document.querySelectorAll("#ovTokenUnitSeg .seg-btn").forEach(b => {
+    b.classList.toggle("active", Number(b.getAttribute("data-unit")) === overviewState.tokenUnit);
+  });
+  document.querySelectorAll("#ovCurrencySeg .seg-btn").forEach(b => {
+    b.classList.toggle("active", b.getAttribute("data-cur") === overviewState.currency);
+  });
+  restoreAdminTabFromUrl();
   loadAdminOverview().catch(() => {});
 </script>
 <div class="model-popover" id="modelPopover" role="dialog" aria-label="模型白名单明细" onclick="event.stopPropagation()"></div>

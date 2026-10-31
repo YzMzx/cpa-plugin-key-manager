@@ -41,6 +41,8 @@ type StorageConfig struct {
 	FlushIntervalSeconds int    `yaml:"flush_interval_seconds" json:"flush_interval_seconds"`
 	PricingCacheFile     string `yaml:"pricing_cache_file" json:"pricing_cache_file"`
 	RulesFile            string `yaml:"rules_file" json:"rules_file"`
+	// LedgerRetentionDays controls how long the overview ledger keeps hourly slices.
+	LedgerRetentionDays int `yaml:"ledger_retention_days" json:"ledger_retention_days"`
 }
 
 // PricingConfig defines models.dev synchronization and local price overrides.
@@ -402,6 +404,9 @@ func (c *Config) Normalize() {
 
 	if c.Storage.FlushIntervalSeconds <= 0 {
 		c.Storage.FlushIntervalSeconds = 10
+	}
+	if c.Storage.LedgerRetentionDays <= 0 {
+		c.Storage.LedgerRetentionDays = 90
 	}
 	if strings.TrimSpace(c.Storage.PricingCacheFile) == "" {
 		c.Storage.PricingCacheFile = "./data/models_dev.json"

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/YzMzx/cpa-plugin-key-manager/internal/pricing"
 	"github.com/YzMzx/cpa-plugin-key-manager/internal/usage"
@@ -25,6 +26,7 @@ const (
 	RouteManagementPricing       = "/key-guard/pricing"
 	RouteManagementPriceSync     = "/key-guard/pricing/sync"
 	RouteManagementPriceCustom   = "/key-guard/pricing/custom"
+	RouteManagementLedger        = "/key-guard/ledger"
 
 	ResourcePathUI    = "/ui"
 	ResourcePathUsage = "/usage"
@@ -104,6 +106,11 @@ func RegisterManagementEndpoints() ([]pluginapi.ManagementRoute, []pluginapi.Res
 			Path:        RouteManagementPriceCustom,
 			Description: "Delete a custom model price override and persist to key_guard_rules.json.",
 		},
+		{
+			Method:      http.MethodGet,
+			Path:        RouteManagementLedger,
+			Description: "Query the hourly usage ledger for the overview dashboard (time range, key, account, model and source filters).",
+		},
 	}
 
 	resources := []pluginapi.ResourceRoute{
@@ -136,6 +143,7 @@ type SnapshotProvider interface {
 	ListHostAuthFiles(hostCallbackID string) ([]pluginapi.HostAuthFileEntry, error)
 	UpsertCustomPrice(model string, price pricing.ModelPrice) error
 	DeleteCustomPrice(model string) error
+	QueryLedger(q usage.LedgerQuery) usage.LedgerResult
 	BuildSelfAccountView(apiKey string) (map[string]any, int, error)
 }
 
@@ -407,6 +415,25 @@ func HandleManagementRequest(ctx context.Context, provider SnapshotProvider, req
 			"status":        provider.PricingStatus(),
 		})
 
+	case strings.HasSuffix(path, RouteManagementLedger):
+		if method != http.MethodGet {
+			return jsonError(http.StatusMethodNotAllowed, "method not allowed")
+		}
+		q := usage.LedgerQuery{
+			From:        parseTimeParam(queryValue(req, "from")),
+			To:          parseTimeParam(queryValue(req, "to")),
+			Granularity: queryValue(req, "granularity"),
+			Key:         queryValue(req, "key"),
+			Account:     queryValue(req, "account"),
+			Model:       queryValue(req, "model"),
+			Source:      queryValue(req, "source"),
+			Timezone:    queryValue(req, "tz"),
+		}
+		if q.Timezone == "" {
+			q.Timezone = "Local"
+		}
+		return jsonResponse(http.StatusOK, provider.QueryLedger(q))
+
 	default:
 		return jsonError(http.StatusNotFound, "unknown endpoint: "+path)
 	}
@@ -434,6 +461,24 @@ func queryValue(req pluginapi.ManagementRequest, key string) string {
 		return ""
 	}
 	return strings.TrimSpace(req.Query.Get(key))
+}
+
+// parseTimeParam accepts RFC3339, a plain date (YYYY-MM-DD) or unix seconds.
+func parseTimeParam(raw string) time.Time {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return time.Time{}
+	}
+	if parsed, err := time.Parse(time.RFC3339, value); err == nil {
+		return parsed
+	}
+	if parsed, err := time.ParseInLocation("2006-01-02", value, time.Local); err == nil {
+		return parsed
+	}
+	if secs, err := strconv.ParseInt(value, 10, 64); err == nil {
+		return time.Unix(secs, 0)
+	}
+	return time.Time{}
 }
 
 func jsonResponse(statusCode int, payload any) pluginapi.ManagementResponse {
