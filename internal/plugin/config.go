@@ -41,6 +41,9 @@ type StorageConfig struct {
 	FlushIntervalSeconds int    `yaml:"flush_interval_seconds" json:"flush_interval_seconds"`
 	PricingCacheFile     string `yaml:"pricing_cache_file" json:"pricing_cache_file"`
 	RulesFile            string `yaml:"rules_file" json:"rules_file"`
+	// UsageDBFile is the SQLite database used as the authoritative usage store.
+	// Empty disables SQLite and falls back to the JSON snapshot only.
+	UsageDBFile string `yaml:"usage_db_file" json:"usage_db_file"`
 	// LedgerRetentionDays controls how long the overview ledger keeps hourly slices.
 	LedgerRetentionDays int `yaml:"ledger_retention_days" json:"ledger_retention_days"`
 }
@@ -157,6 +160,7 @@ func DefaultConfig() Config {
 		Priority: 100,
 		Storage: StorageConfig{
 			UsageFile:            "./data/key_usage_stats.json",
+			UsageDBFile:          "./data/key_usage.db",
 			FlushIntervalSeconds: 10,
 			PricingCacheFile:     "./data/models_dev.json",
 		},
@@ -425,6 +429,9 @@ func (c *Config) Normalize() {
 		}
 	}
 	c.Storage.RulesFile = ResolveStoragePath(c.Storage.RulesFile)
+	if strings.TrimSpace(c.Storage.UsageDBFile) != "" {
+		c.Storage.UsageDBFile = ResolveStoragePath(c.Storage.UsageDBFile)
+	}
 	if strings.TrimSpace(c.Pricing.SyncURL) == "" {
 		c.Pricing.SyncURL = "https://models.dev/api.json"
 	}

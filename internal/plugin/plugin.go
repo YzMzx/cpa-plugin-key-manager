@@ -255,6 +255,16 @@ func (m *Manager) Configure(raw []byte) error {
 			"error": errPersist.Error(),
 		})
 	}
+	// SQLite becomes the authoritative usage store when configured; the JSON
+	// snapshot keeps being written as a readable export / compatibility mirror.
+	if dbPath := strings.TrimSpace(cfg.Storage.UsageDBFile); dbPath != "" {
+		if errDB := m.usageStore.EnableSQLite(dbPath); errDB != nil {
+			m.host.Log("warn", "failed to open the usage sqlite database", map[string]any{
+				"file":  dbPath,
+				"error": errDB.Error(),
+			})
+		}
+	}
 
 	syncKey := fmt.Sprintf("%s|%s|%d|%d",
 		cfg.Pricing.SyncURL,
@@ -1137,6 +1147,24 @@ func (m *Manager) BuildPersistenceDiagnostics() map[string]any {
 		rulesFileSize = info.Size()
 	}
 
+	usageDBFile := ""
+	usageDBExists := false
+	usageDBSize := int64(0)
+	m.mu.RLock()
+	if m.cfg.Storage.UsageDBFile != "" {
+		usageDBFile = m.cfg.Storage.UsageDBFile
+	}
+	m.mu.RUnlock()
+	if usageDBFile == "" {
+		usageDBFile = m.usageStore.SQLitePath()
+	}
+	if usageDBFile != "" {
+		if info, errStat := os.Stat(usageDBFile); errStat == nil && !info.IsDir() {
+			usageDBExists = true
+			usageDBSize = info.Size()
+		}
+	}
+
 	return map[string]any{
 		"rules_file":           rulesFile,
 		"rules_file_exists":    rulesFileExists,
@@ -1146,6 +1174,9 @@ func (m *Manager) BuildPersistenceDiagnostics() map[string]any {
 		"usage_file":           usageFile,
 		"usage_candidates":     UsageFileCandidates(usageFile),
 		"usage_report":         UsageFileReport(usageFile),
+		"usage_db_file":        usageDBFile,
+		"usage_db_exists":      usageDBExists,
+		"usage_db_size":        usageDBSize,
 		"config_file":          configFile,
 		"auth_dirs":            existingAuthDirs(),
 		"state_dirs":           StateDirs(),

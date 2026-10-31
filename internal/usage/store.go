@@ -188,6 +188,10 @@ type Store struct {
 	// ledger holds hourly aggregated usage slices for the overview dashboard.
 	ledger          map[string]*LedgerEntry
 	ledgerRetention time.Duration
+
+	// sqlDB is the optional SQLite backend. When set it becomes the authoritative
+	// store; the JSON snapshot is still written for compatibility/diagnostics.
+	sqlDB *sqliteStore
 }
 
 // NewStore creates a new usage Store backed by the given pricing Engine.
@@ -388,10 +392,69 @@ func (s *Store) ConfigurePersistence(filePath string, flushInterval time.Duratio
 	return loadErr
 }
 
+// EnableSQLite opens (or creates) the SQLite database and makes it the authoritative
+// usage store. When the database already holds data it replaces the in-memory state;
+// otherwise the current in-memory history is imported so an upgrade never loses data.
+func (s *Store) EnableSQLite(dbPath string) error {
+	store, err := openSQLiteStore(dbPath)
+	if err != nil {
+		return err
+	}
+
+	snap, errLoad := store.loadSnapshot()
+	if errLoad != nil {
+		_ = store.Close()
+		return errLoad
+	}
+
+	s.mu.Lock()
+	s.sqlDB = store
+	hasExisting := len(snap.Keys) > 0 || len(snap.Accounts) > 0 || len(snap.Ledger) > 0
+	if hasExisting {
+		s.keys = snap.Keys
+		s.accounts = snap.Accounts
+		s.ledger = make(map[string]*LedgerEntry, len(snap.Ledger))
+		for _, entry := range snap.Ledger {
+			if entry == nil {
+				continue
+			}
+			s.ledger[ledgerEntryKey(entry.Hour, entry.APIKey, entry.Account, entry.Model, entry.Source)] = entry
+		}
+	}
+	needsImport := !hasExisting && (len(s.keys) > 0 || len(s.ledger) > 0)
+	s.dirty = true
+	s.mu.Unlock()
+
+	if needsImport {
+		return s.FlushNow()
+	}
+	return nil
+}
+
+// SQLitePath reports the configured SQLite database file (empty when disabled).
+func (s *Store) SQLitePath() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sqlDB == nil {
+		return ""
+	}
+	return s.sqlDB.path
+}
+
 // Close stops the periodic flusher and performs a final synchronous atomic flush to disk.
 func (s *Store) Close() error {
 	s.stopFlusher()
-	return s.FlushNow()
+	errFlush := s.FlushNow()
+	s.mu.Lock()
+	sqlDB := s.sqlDB
+	s.sqlDB = nil
+	s.mu.Unlock()
+	if sqlDB != nil {
+		if errSQL := sqlDB.Close(); errSQL != nil && errFlush == nil {
+			return errSQL
+		}
+	}
+	return errFlush
 }
 
 func (s *Store) stopFlusher() {
@@ -1541,12 +1604,26 @@ func (s *Store) FlushNow() error {
 	if err != nil {
 		return err
 	}
+
+	s.mu.Lock()
+	sqlDB := s.sqlDB
+	s.mu.Unlock()
+	var sqlErr error
+	if sqlDB != nil {
+		if errSQL := sqlDB.saveSnapshot(snap); errSQL != nil {
+			sqlErr = errSQL
+		}
+	}
+
 	errWrite := writeFileAtomicallyWindowsSafe(targetFile, raw)
 	for _, mirror := range mirrors {
 		if mirror == targetFile {
 			continue
 		}
 		_ = writeFileAtomicallyWindowsSafe(mirror, raw)
+	}
+	if sqlErr != nil {
+		return sqlErr
 	}
 	return errWrite
 }
