@@ -124,6 +124,15 @@ type PersistedSnapshot struct {
 	Ledger []*LedgerEntry `json:"ledger,omitempty"`
 }
 
+// ledgerStamp records exactly what one request contributed to the ledger so a late
+// failure can be undone again.
+type ledgerStamp struct {
+	hour                           int64
+	apiKey, account, model, source string
+	requests, in, out, read, write int64
+	total, cost                    int64
+}
+
 // TrackedRequest holds in-flight and recently completed request state for deduplicating
 // and reconciling usage between response/stream interceptors (`request.complete`) and `usage.handle`.
 type TrackedRequest struct {
@@ -144,6 +153,10 @@ type TrackedRequest struct {
 	BilledKey      string
 	CountedRequest bool
 	Failed         bool
+
+	// ledgerStamps are the ledger slices this request already contributed; they are
+	// subtracted when the request is later reported as failed.
+	ledgerStamps []ledgerStamp
 
 	// Upstream credential that actually served this request (from `usage.handle`).
 	Provider  string
@@ -582,6 +595,10 @@ func (s *Store) CompleteRequest(completion pluginapi.RequestCompletion, fallback
 
 	tr.CompletedAt = time.Now()
 	tr.Failed = failed
+	if failed {
+		// A stream may already have contributed tokens before the failure was known.
+		s.rollbackLedgerStampsLocked(tr)
+	}
 	s.reconcileTrackerDeltaLocked(tr)
 }
 
@@ -800,8 +817,13 @@ func (s *Store) reconcileTrackerDeltaLocked(tr *TrackedRequest) {
 		ledgerProvider = acct.Provider
 	}
 	recordLedger := func(requests, in, out, read, write, total, costNano int64) {
-		s.recordLedgerLocked(now, apiKey, tr.KeyName, ledgerAccount, ledgerProvider,
+		// Failed calls never count toward the quota ledger.
+		if tr.Failed {
+			return
+		}
+		stamp := s.applyLedgerLocked(now, apiKey, tr.KeyName, ledgerAccount, ledgerProvider,
 			requested, served, tr.SourceFormat, requests, in, out, read, write, total, costNano)
+		tr.ledgerStamps = append(tr.ledgerStamps, stamp)
 	}
 
 	// 2. Apply request count once

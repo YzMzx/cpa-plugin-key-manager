@@ -141,6 +141,60 @@ func TestLedgerPersistsAcrossReload(t *testing.T) {
 	}
 }
 
+// TestLedgerExcludesFailedRequests pins that failed calls never reach the quota
+// ledger, including a stream that reported tokens before failing.
+func TestLedgerExcludesFailedRequests(t *testing.T) {
+	store, _ := ledgerTestStore(t)
+	now := time.Now()
+	window := LedgerQuery{From: now.Add(-2 * time.Hour), To: now.Add(2 * time.Hour)}
+
+	// 1. A plain failed call must not create a ledger row.
+	store.BeginRequest("req-fail", "sk-fail", "失败", "gpt-4o", "gpt-4o", "openai", false)
+	store.CompleteRequest(pluginapi.RequestCompletion{
+		RequestID:  "req-fail",
+		Model:      "gpt-4o",
+		Outcome:    pluginapi.RequestCompletionFailed,
+		StatusCode: 502,
+	}, "sk-fail", "失败")
+
+	if result := store.QueryLedger(window); result.Requests != 0 || len(result.Models) != 0 {
+		t.Fatalf("failed call leaked into the ledger: %+v", result)
+	}
+
+	// 2. Usage reported as success first and only later marked failed (e.g. a stream
+	//    that breaks after the host already reported usage) must be rolled back.
+	store.BeginRequest("req-late-fail", "sk-late", "迟到失败", "gemini-3.8-flash-high", "gemini-3.8-flash-high", "openai", true)
+	store.ObserveHostUsageRecord(pluginapi.UsageRecord{
+		RequestID:     "req-late-fail",
+		Provider:      "antigravity",
+		AuthID:        "antigravity-x@gmail.com.json",
+		Model:         "gemini-3.8-flash-high",
+		ResponseModel: "gemini-3.8-flash-high",
+		APIKey:        "sk-late",
+		Detail:        pluginapi.UsageDetail{InputTokens: 100, OutputTokens: 10, TotalTokens: 110},
+	}, "迟到失败")
+	if mid := store.QueryLedger(window); mid.Requests != 1 {
+		t.Fatalf("expected the early usage record in the ledger, got %+v", mid)
+	}
+	store.CompleteRequest(pluginapi.RequestCompletion{
+		RequestID: "req-late-fail",
+		Model:     "gemini-3.8-flash-high",
+		Stream:    true,
+		Outcome:   pluginapi.RequestCompletionFailed,
+	}, "sk-late", "迟到失败")
+
+	if result := store.QueryLedger(window); result.Requests != 0 || result.TotalTokens != 0 || len(result.Models) != 0 {
+		t.Fatalf("late failure was not rolled back: %+v", result)
+	}
+
+	// 3. A successful call is still recorded.
+	feedLedgerRequest(t, store, "req-ok", "sk-ok", "成功", "kimi-k2.6", "kimi-k2.6", "openai", "kimi", "kimi.json", 10, 2, 0)
+	result := store.QueryLedger(window)
+	if result.Requests != 1 || len(result.Models) != 1 || result.Models[0].Model != "kimi-k2.6" {
+		t.Fatalf("successful call missing from the ledger: %+v", result)
+	}
+}
+
 // TestLedgerResetClearsKey verifies "清零用量" also clears the ledger rows.
 func TestLedgerResetClearsKey(t *testing.T) {
 	store, _ := ledgerTestStore(t)

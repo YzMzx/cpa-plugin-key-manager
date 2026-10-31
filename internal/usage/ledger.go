@@ -47,13 +47,19 @@ func ledgerEntryKey(hour int64, apiKey, account, model, source string) string {
 		ledgerKeySeparator, source)
 }
 
-// recordLedgerLocked accumulates one slice of usage into the hourly ledger.
-func (s *Store) recordLedgerLocked(at time.Time, apiKey, keyName, account, provider, model, served, source string,
-	requests, in, out, read, write, total, costNano int64) {
+// applyLedgerLocked accumulates one slice of usage into the hourly ledger and returns
+// the applied stamp, so a later failure of the same request can be rolled back.
+func (s *Store) applyLedgerLocked(at time.Time, apiKey, keyName, account, provider, model, served, source string,
+	requests, in, out, read, write, total, costNano int64) ledgerStamp {
+	stamp := ledgerStamp{
+		apiKey: apiKey, account: account, model: model, source: source,
+		requests: requests, in: in, out: out, read: read, write: write, total: total, cost: costNano,
+	}
 	if s.ledger == nil || strings.TrimSpace(model) == "" {
-		return
+		return stamp
 	}
 	hour := at.UTC().Truncate(time.Hour).Unix()
+	stamp.hour = hour
 	key := ledgerEntryKey(hour, apiKey, account, model, source)
 	entry := s.ledger[key]
 	if entry == nil {
@@ -78,6 +84,32 @@ func (s *Store) recordLedgerLocked(at time.Time, apiKey, keyName, account, provi
 	entry.CacheWriteTokens += write
 	entry.TotalTokens += total
 	entry.CostNanoUSD += costNano
+	return stamp
+}
+
+// rollbackLedgerStampsLocked removes everything a failed request contributed to the ledger.
+func (s *Store) rollbackLedgerStampsLocked(tr *TrackedRequest) {
+	if tr == nil || len(tr.ledgerStamps) == 0 {
+		return
+	}
+	for _, stamp := range tr.ledgerStamps {
+		key := ledgerEntryKey(stamp.hour, stamp.apiKey, stamp.account, stamp.model, stamp.source)
+		entry := s.ledger[key]
+		if entry == nil {
+			continue
+		}
+		entry.Requests -= stamp.requests
+		entry.InputTokens -= stamp.in
+		entry.OutputTokens -= stamp.out
+		entry.CacheReadTokens -= stamp.read
+		entry.CacheWriteTokens -= stamp.write
+		entry.TotalTokens -= stamp.total
+		entry.CostNanoUSD -= stamp.cost
+		if entry.Requests <= 0 && entry.TotalTokens <= 0 && entry.CostNanoUSD <= 0 {
+			delete(s.ledger, key)
+		}
+	}
+	tr.ledgerStamps = nil
 }
 
 // pruneLedgerLocked drops entries older than the retention window.
