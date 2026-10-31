@@ -210,4 +210,3 @@ func TestFilterModelCatalogJSON(t *testing.T) {
 		t.Fatalf("expected empty data list, got %v", emptyRoot["data"])
 	}
 }
-

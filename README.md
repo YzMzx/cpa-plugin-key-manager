@@ -61,9 +61,9 @@
 
 ---
 
-## SQLite 持久化（实验分支 `feat/sqlite-persistence`）
+## SQLite 持久化（v0.9.0 起为默认）
 
-> 参考 [yuluo688/credit-manager](https://github.com/yuluo688/credit-manager) 的存储设计：**SQLite 是唯一后端**，不再写 JSON 快照、不再写 JSON 镜像。主分支保持不变。
+> 参考 [yuluo688/credit-manager](https://github.com/yuluo688/credit-manager) 的存储设计：**SQLite 是唯一后端**，不再写 JSON 快照、不再写 JSON 镜像。从 v0.8.x 升级时首次启动会自动导入旧的 JSON 规则与用量。
 
 ### 选型
 
@@ -125,6 +125,20 @@ plugins:
    - 将 `config.yaml` 中 `plugins.configs.cpa-plugin-key` 修改为 `plugins.configs.cpa-plugin-key-manager` 即可（使用一键安装脚本 `install.sh` / `install.ps1` 会自动帮您检测并无缝迁移该节点）。
 4. **管理后台路由地址变更**：
    - UI 资源路径更新为 `/v0/resource/plugins/cpa-plugin-key-manager/ui`。在 CPA 管理后台左侧菜单点击「API Key 管控与用量」会自动进入最新地址。
+
+---
+
+## 从 v0.8.x 升级到 v0.9.0（JSON → SQLite）
+
+v0.9.0 起持久化后端换成 SQLite，升级过程**自动完成**：
+
+1. 首次启动时，若数据库里还没有数据：
+   - 旧的 `key_guard_rules.json`（含认证目录镜像）会被**一次性导入** `rules_state`；
+   - 最新的 `key_usage_stats.json` 快照会被导入用量表与账本。
+2. 数据库默认位于 `<CPA 根目录>/data/key_usage.db`，可用 `storage.usage_db_file` 或环境变量 `CPA_KEY_MANAGER_USAGE_DB` 覆盖。
+3. 导入完成后 **JSON 与 `.state` 文件不再被写入**，可用 `scripts/cleanup-legacy-json.sh` 清理（默认 dry-run，先备份再删除）。
+4. ⚠️ 数据库必须放在**真实本地文件系统**上（不要用 NFS/SMB）；容器部署要确保该目录已挂载到宿主机，否则容器重建会丢数据。
+5. 回退到 v0.8.x 前请保留 JSON 备份：v0.9.0 不会再写回 JSON。
 
 ---
 
