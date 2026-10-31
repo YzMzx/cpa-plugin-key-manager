@@ -35,6 +35,12 @@
    - **防重记账与 Windows 安全持久化**：协同 `request.complete` 与宿主 `usage.handle`，确保单次请求绝不重复统计；持久化采用临时文件 `fsync` + 带轻量级重试的原子 `os.Rename`，兼容 Windows 文件锁机制。
    - **按「请求模型 + 服务端模型」二元组统计**：每次请求只落入一个二元组（例如请求 `gemini-3.8-flash-high` 而服务端实际返回 `gemini-3.8-flash-n`，即计入「请求 = …-high / 落地 = …-n」这一组）。明细表据此精确地按请求模型分组、在组下列出它实际落到过的每个服务端模型，**同一份数据不会被拆到多行、也不再需要模糊标注**；「按模型全局排行」仍按**服务端模型**汇总。费用计算按请求模型的价格查表，避免上游变体名查不到价格导致费用归零。
 
+5. **模型与价格（Models & Pricing）标签页**
+   - **默认价格来自 models.dev**：插件启动后自动从 <https://models.dev/api.json> 拉取全量模型价格（默认每 24 小时刷新一次），并缓存到 `storage.pricing_cache_file`，离线时自动降级使用本地缓存。
+   - **手动覆盖与通配符**：任意模型可手动设置 Input / Output / Cache Read / Cache Write 单价（USD / 1M Tokens），支持 `claude-sonnet-4-*` 这类通配符规则；可一键「恢复默认」回落到 models.dev 价格。
+   - **全局兜底价**：配置 `__default__` 兜底价后，既未命中手动规则、也未在 models.dev 中找到的模型按兜底价计费，避免费用恒为 0。
+   - **价格优先级**：手动精确规则 → 手动通配符 → models.dev → 兜底默认价。
+
 ---
 
 ## 升级与数据迁移指南（从 cpa-plugin-key 升级至 cpa-plugin-key-manager）
