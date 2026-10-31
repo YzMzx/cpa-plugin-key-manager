@@ -429,6 +429,45 @@
   .ov-swatch { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
   .ov-chart-box { padding: 0 12px 12px; min-height: 240px; }
   .ov-chart-box svg { width: 100%; height: auto; display: block; }
+  .ov-hover-zone { cursor: crosshair; }
+  .ov-chart-tip {
+    position: fixed;
+    z-index: 1300;
+    display: none;
+    min-width: 168px;
+    padding: 8px 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: var(--bg-secondary);
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.4);
+    font-size: 12px;
+    color: var(--text-secondary);
+    pointer-events: none;
+  }
+  .ov-chart-tip-title {
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 4px;
+    font-family: var(--font-mono);
+  }
+  .ov-chart-tip-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    line-height: 1.65;
+  }
+  .ov-chart-tip-row i {
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+    flex: 0 0 auto;
+  }
+  .ov-chart-tip-row b {
+    margin-left: auto;
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-weight: 600;
+  }
   .ov-skeleton {
     background: linear-gradient(90deg, var(--bg-tertiary) 25%, var(--bg-hover) 37%, var(--bg-tertiary) 63%);
     background-size: 400% 100%;
@@ -1303,11 +1342,10 @@
               <th>缓存</th>
               <th>总 Tokens</th>
               <th>费用</th>
-              <th>Token 占比</th>
             </tr>
           </thead>
           <tbody id="ovKeyTableBody">
-            <tr><td colspan="9" style="text-align:center;color:var(--text-tertiary)">加载中...</td></tr>
+            <tr><td colspan="8" style="text-align:center;color:var(--text-tertiary)">加载中...</td></tr>
           </tbody>
         </table>
       </div>
@@ -3952,7 +3990,7 @@
     const list = document.getElementById("ovModelList");
     if (list) list.innerHTML = `<div class="ov-skeleton" style="height:140px"></div>`;
     const keyBody = document.getElementById("ovKeyTableBody");
-    if (keyBody) keyBody.innerHTML = `<tr><td colspan="9" style="padding:2px 0"><div class="ov-skeleton" style="height:96px;margin:8px"></div></td></tr>`;
+    if (keyBody) keyBody.innerHTML = `<tr><td colspan="8" style="padding:2px 0"><div class="ov-skeleton" style="height:96px;margin:8px"></div></td></tr>`;
   }
 
   function renderOverviewEmpty(message) {
@@ -3965,7 +4003,7 @@
     const list = document.getElementById("ovModelList");
     if (list) list.innerHTML = `<div class="ov-empty" style="min-height:120px"><div>当前筛选条件下没有模型数据</div></div>`;
     const keyBody = document.getElementById("ovKeyTableBody");
-    if (keyBody) keyBody.innerHTML = `<tr><td colspan="9" style="text-align:center;color:var(--text-tertiary)">暂无密钥消耗数据</td></tr>`;
+    if (keyBody) keyBody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--text-tertiary)">暂无密钥消耗数据</td></tr>`;
     ["ovMetricKeys", "ovMetricRequests", "ovMetricTokens", "ovMetricCost", "ovMetricModels"].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.textContent = "-";
@@ -4037,12 +4075,15 @@
     setText("ovTrendMeta", `${data.active_days || 0} 个有使用记录的自然日 · ${data.from || ""} ~ ${data.to || ""}`);
   }
 
-  // ---- Trend chart (stacked bars + hit-rate line, dual Y axis) ----
+  // ---- Trend chart (line series + hit-rate line, dual Y axis, hover tooltip) ----
+  let overviewTrendGeom = null;
+
   function renderOverviewTrend(data) {
     const box = document.getElementById("ovTrendChart");
     if (!box) return;
     const series = (data.series || []).filter(s => s.total_tokens > 0 || s.requests > 0);
     if (!series.length) {
+      overviewTrendGeom = null;
       box.innerHTML = `<div class="ov-empty"><div>当前筛选条件下暂无趋势数据</div><div style="font-size:11.5px">调整时间范围或筛选条件后再试</div></div>`;
       return;
     }
@@ -4064,13 +4105,13 @@
     const colors = { input: "#38bdf8", output: "#34d399", cache: "#a78bfa" };
     const xAt = i => (series.length > 1 ? padL + slot * i : padL + plotW / 2);
 
-    // Three absolute-token lines (入 / 出 / 缓存) on the left axis.
+    // Three absolute-token lines (input / output / cache) on the left axis.
     const buildLine = (key, color) => {
       const pts = series.map((s, i) => ({ x: xAt(i), y: yTok(Number(s[key] || 0)), value: Number(s[key] || 0), label: s.label }));
       if (!pts.length) return { path: "", dots: "" };
       const path = pts.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(" ");
-      const dots = pts.map(p =>
-        `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="2.8" fill="${color}" stroke="var(--bg-secondary)" stroke-width="1">` +
+      const dots = pts.map((p, i) =>
+        `<circle class="ov-trend-dot" data-idx="${i}" cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="2.8" fill="${color}" stroke="var(--bg-secondary)" stroke-width="1">` +
         `<title>${escapeHtml(p.label)} ${key === "input" ? "输入" : key === "output" ? "输出" : "缓存"} ${fmtTokenValue(p.value)}</title></circle>`
       ).join("");
       return { path, dots };
@@ -4083,8 +4124,8 @@
     // Cache hit-rate line on the right axis.
     const hitPoints = series.map((s, i) => ({ x: xAt(i), y: yPct(Number(s.cache_hit_rate || 0)), rate: Number(s.cache_hit_rate || 0), label: s.label }));
     const hitPath = hitPoints.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(" ");
-    const hitDots = hitPoints.map(p =>
-      `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="2.6" fill="#f59e0b"><title>${escapeHtml(p.label)} 命中率 ${p.rate.toFixed(1)}%</title></circle>`
+    const hitDots = hitPoints.map((p, i) =>
+      `<circle class="ov-trend-dot" data-idx="${i}" cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="2.6" fill="#f59e0b"><title>${escapeHtml(p.label)} 命中率 ${p.rate.toFixed(1)}%</title></circle>`
     ).join("");
 
     const gridLines = [0, 0.25, 0.5, 0.75, 1].map(frac => {
@@ -4102,8 +4143,19 @@
       return `<text x="${x.toFixed(1)}" y="${H - padB + 16}" text-anchor="middle" font-size="10" fill="var(--text-tertiary)">${escapeHtml(s.label)}</text>`;
     }).join("");
 
+    // Full-height invisible columns capture the pointer for the hover readout.
+    const hoverZones = series.map((s, i) => {
+      const width = series.length > 1 ? slot : plotW;
+      const left = series.length > 1 ? xAt(i) - slot / 2 : padL;
+      const x = Math.max(padL, Math.min(left, W - padR - 1));
+      const w = Math.max(1, Math.min(width, W - padR - x));
+      return `<rect class="ov-hover-zone" x="${x.toFixed(1)}" y="${padT}" width="${w.toFixed(1)}" height="${plotH.toFixed(1)}" ` +
+        `fill="transparent" onmouseenter="showTrendTip(event, ${i})" onmousemove="moveTrendTip(event)" onmouseleave="hideTrendTip()"></rect>`;
+    }).join("");
+
     box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Token 趋势折线图">
       ${gridLines}
+      <line id="ovTrendGuide" x1="0" y1="${padT}" x2="0" y2="${padT + plotH}" stroke="rgba(148,163,184,0.65)" stroke-dasharray="4 4" style="display:none;pointer-events:none"/>
       <path d="${inputLine.path}" fill="none" stroke="${colors.input}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
       <path d="${outputLine.path}" fill="none" stroke="${colors.output}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
       <path d="${cacheLine.path}" fill="none" stroke="${colors.cache}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
@@ -4111,7 +4163,70 @@
       <g>${inputLine.dots}${outputLine.dots}${cacheLine.dots}</g>
       <g>${hitDots}</g>
       <g>${xLabels}</g>
+      <g>${hoverZones}</g>
     </svg>`;
+
+    overviewTrendGeom = { series, xAt, slot, padL, padT, plotW, plotH };
+  }
+
+  function ensureTrendTip() {
+    let tip = document.getElementById("ovTrendTip");
+    if (!tip) {
+      tip = document.createElement("div");
+      tip.id = "ovTrendTip";
+      tip.className = "ov-chart-tip";
+      document.body.appendChild(tip);
+    }
+    return tip;
+  }
+
+  function showTrendTip(evt, idx) {
+    const geom = overviewTrendGeom;
+    if (!geom) return;
+    const point = geom.series[idx];
+    if (!point) return;
+
+    const guide = document.getElementById("ovTrendGuide");
+    if (guide) {
+      const x = geom.xAt(idx).toFixed(1);
+      guide.setAttribute("x1", x);
+      guide.setAttribute("x2", x);
+      guide.style.display = "";
+    }
+    document.querySelectorAll("#ovTrendChart .ov-trend-dot").forEach(dot => {
+      dot.setAttribute("r", Number(dot.getAttribute("data-idx")) === idx ? "4.6" : "2.8");
+    });
+
+    const tip = ensureTrendTip();
+    tip.innerHTML = `
+      <div class="ov-chart-tip-title">${escapeHtml(point.label)}</div>
+      <div class="ov-chart-tip-row"><i style="background:#38bdf8"></i>输入<b>${fmtTokenValue(point.input_tokens)}</b></div>
+      <div class="ov-chart-tip-row"><i style="background:#34d399"></i>输出<b>${fmtTokenValue(point.output_tokens)}</b></div>
+      <div class="ov-chart-tip-row"><i style="background:#a78bfa"></i>缓存<b>${fmtTokenValue(point.cache_read_tokens)}</b></div>
+      <div class="ov-chart-tip-row"><i style="background:#f59e0b"></i>缓存命中率<b>${Number(point.cache_hit_rate || 0).toFixed(1)}%</b></div>`;
+    tip.style.display = "block";
+    moveTrendTip(evt);
+  }
+
+  function moveTrendTip(evt) {
+    const tip = document.getElementById("ovTrendTip");
+    if (!tip || tip.style.display === "none") return;
+    const pad = 14;
+    const rect = tip.getBoundingClientRect();
+    let left = (evt.clientX || 0) + pad;
+    let top = (evt.clientY || 0) + pad;
+    if (left + rect.width > window.innerWidth - 8) left = (evt.clientX || 0) - rect.width - pad;
+    if (top + rect.height > window.innerHeight - 8) top = (evt.clientY || 0) - rect.height - pad;
+    tip.style.left = Math.max(8, left) + "px";
+    tip.style.top = Math.max(8, top) + "px";
+  }
+
+  function hideTrendTip() {
+    const tip = document.getElementById("ovTrendTip");
+    if (tip) tip.style.display = "none";
+    const guide = document.getElementById("ovTrendGuide");
+    if (guide) guide.style.display = "none";
+    document.querySelectorAll("#ovTrendChart .ov-trend-dot").forEach(dot => dot.setAttribute("r", "2.8"));
   }
 
   // ---- Model distribution (donut + list) ----
@@ -4200,7 +4315,7 @@
     if (!tbody) return;
     const rows = ((overviewState.data || {}).key_rows) || [];
     if (!rows.length) {
-      tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;color:var(--text-tertiary)">当前筛选条件下没有密钥消耗数据</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--text-tertiary)">当前筛选条件下没有密钥消耗数据</td></tr>`;
       return;
     }
     const meta = document.getElementById("ovKeyTableMeta");
@@ -4213,7 +4328,6 @@
       const apiKey = String(row.api_key || "");
       const expanded = !!overviewState.expandedKeys[apiKey];
       const label = row.key_name || maskKeyStr(apiKey);
-      const share = Number(row.share || 0);
       const head = `<tr class="ov-key-row${expanded ? " expanded" : ""}" onclick="toggleOverviewKey('${escapeHtml(apiKey.replace(/'/g, "\\'"))}')">
         <td class="ov-key-toggle">${expanded ? "▾" : "▸"}</td>
         <td class="cell-nowrap">
@@ -4228,10 +4342,6 @@
         <td class="cell-nowrap mono">${fmtTokenValue(row.cache_read_tokens)}</td>
         <td class="cell-nowrap mono" style="font-weight:600">${fmtTokenValue(row.total_tokens)}</td>
         <td class="cell-nowrap mono">${fmtMoneyNano(row.cost_nano_usd)}</td>
-        <td class="cell-nowrap">
-          <div class="ov-share-bar"><span style="width:${Math.max(1, Math.min(100, share)).toFixed(1)}%"></span></div>
-          <span class="ov-share-text mono">${share.toFixed(1)}%</span>
-        </td>
       </tr>`;
 
       if (!expanded) return head;
@@ -4244,7 +4354,6 @@
         <td class="cell-nowrap mono">${fmtTokenValue(m.cache_read_tokens)}</td>
         <td class="cell-nowrap mono">${fmtTokenValue(m.total_tokens)}</td>
         <td class="cell-nowrap mono">${fmtMoneyNano(m.cost_nano_usd)}</td>
-        <td class="cell-nowrap"><span class="ov-share-text mono">${Number(m.share || 0).toFixed(1)}%</span></td>
       </tr>`).join("");
       return head + models;
     }).join("");
