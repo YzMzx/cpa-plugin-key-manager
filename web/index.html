@@ -632,20 +632,6 @@
     max-width: 320px;
     user-select: all;
   }
-  .icon-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 28px;
-    height: 28px;
-    min-height: 28px;
-    padding: 0 8px;
-    border-radius: 6px;
-    flex-shrink: 0;
-    font-size: 12px;
-    line-height: 1;
-    white-space: nowrap;
-  }
   .tag-group {
     display: flex;
     flex-wrap: wrap;
@@ -3185,7 +3171,6 @@
         <td class="cell-nowrap">
           <div class="key-cell">
             <span class="key-code">${escapeHtml(dispKey)}</span>
-            <button type="button" class="btn btn-sm icon-btn" title="复制 Key" onclick="copyText('${escapeHtml(k)}')">复制</button>
           </div>
         </td>
         <td class="cell-nowrap" style="font-weight:600;max-width:160px;overflow:hidden;text-overflow:ellipsis">${escapeHtml(kr.name || "-")}</td>
@@ -3199,8 +3184,6 @@
         <td>${bindHtml}</td>
         <td class="cell-nowrap">
           <div class="row-actions">
-            <button type="button" class="btn btn-sm" onclick="openKeyModalByKey('${escapeHtml(k)}')">编辑规则</button>
-            <button type="button" class="btn btn-sm" onclick="resetUsageStats('${escapeHtml(k)}')">清零用量</button>
             <button type="button" class="btn btn-sm btn-danger" onclick="deleteKeyRule('${escapeHtml(k)}')">删除</button>
           </div>
         </td>
