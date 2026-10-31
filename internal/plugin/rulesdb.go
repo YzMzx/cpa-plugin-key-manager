@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/YzMzx/cpa-plugin-key-manager/internal/pricing"
@@ -15,6 +18,40 @@ import (
 // policy, price overrides) as one row so every mutation is a single atomic upsert.
 type rulesRepository struct {
 	db *sqlitestore.DB
+}
+
+// importLegacyUsageDB copies a database written by an earlier build (derived from
+// `usage_file`) into the durable location when the durable file does not exist yet.
+// The SQLite side files are copied too so WAL content is preserved.
+func importLegacyUsageDB(legacyPath, targetPath string) (bool, error) {
+	legacyPath = strings.TrimSpace(legacyPath)
+	targetPath = strings.TrimSpace(targetPath)
+	if legacyPath == "" || targetPath == "" || filepath.Clean(legacyPath) == filepath.Clean(targetPath) {
+		return false, nil
+	}
+	if info, err := os.Stat(legacyPath); err != nil || info.IsDir() || info.Size() == 0 {
+		return false, nil
+	}
+	if info, err := os.Stat(targetPath); err == nil && !info.IsDir() && info.Size() > 0 {
+		return false, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		return false, err
+	}
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		src := legacyPath + suffix
+		raw, errRead := os.ReadFile(src)
+		if errRead != nil {
+			if suffix == "" {
+				return false, errRead
+			}
+			continue
+		}
+		if errWrite := os.WriteFile(targetPath+suffix, raw, 0o644); errWrite != nil {
+			return false, errWrite
+		}
+	}
+	return true, nil
 }
 
 func newRulesRepository(db *sqlitestore.DB) *rulesRepository {

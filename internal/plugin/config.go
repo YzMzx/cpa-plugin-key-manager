@@ -42,8 +42,10 @@ type StorageConfig struct {
 	PricingCacheFile     string `yaml:"pricing_cache_file" json:"pricing_cache_file"`
 	RulesFile            string `yaml:"rules_file" json:"rules_file"`
 	// UsageDBFile is the SQLite database used as the authoritative usage store.
-	// Empty disables SQLite and falls back to the JSON snapshot only.
 	UsageDBFile string `yaml:"usage_db_file" json:"usage_db_file"`
+	// LegacyUsageDBFile is the database location earlier builds derived from
+	// `usage_file`. It is imported once when the durable database does not exist yet.
+	LegacyUsageDBFile string `yaml:"-" json:"legacy_usage_db_file,omitempty"`
 	// LedgerRetentionDays controls how long the overview ledger keeps hourly slices.
 	LedgerRetentionDays int `yaml:"ledger_retention_days" json:"ledger_retention_days"`
 }
@@ -258,6 +260,19 @@ func FindCPARootDir() string {
 // to a robust absolute path. It anchors uncreated paths to the canonical CPA root directory,
 // while also discovering existing files across potential CWD, exeDir, and container locations
 // so that differences in CWD across CLIProxyAPI restarts never cause data loss.
+// legacyUsageDBPath mirrors the database location earlier experimental builds
+// derived from `usage_file`, so an upgrade can import the existing rows once.
+func legacyUsageDBPath(usageFile string) string {
+	clean := strings.TrimSpace(usageFile)
+	if clean == "" {
+		return ""
+	}
+	clean = filepath.Clean(clean)
+	if strings.HasSuffix(strings.ToLower(clean), ".db") {
+		return clean
+	}
+	return strings.TrimSuffix(clean, filepath.Ext(clean)) + ".db"
+}
 func ResolveStoragePath(rawPath string) string {
 	cleaned := strings.TrimSpace(rawPath)
 	if cleaned == "" {
@@ -409,17 +424,23 @@ func (c *Config) Normalize() {
 	}
 	c.Storage.UsageFile = ResolveStoragePath(c.Storage.UsageFile)
 
-	// SQLite only: default the database next to the legacy snapshot path so every
-	// deployment keeps its existing directory layout.
+	// SQLite only: the database is the single source of truth, so it must live on a
+	// durable volume rather than the ephemeral working directory a container recreates.
+	// Priority: explicit config > first durable state dir > legacy snapshot directory.
 	if strings.TrimSpace(c.Storage.UsageDBFile) == "" {
-		dir := filepath.Dir(filepath.Clean(c.Storage.UsageFile))
-		base := strings.TrimSuffix(filepath.Base(filepath.Clean(c.Storage.UsageFile)), filepath.Ext(c.Storage.UsageFile))
-		if dir == "" || dir == "." {
-			c.Storage.UsageDBFile = "./" + base + ".db"
+		if stateDirs := StateDirs(); len(stateDirs) > 0 {
+			c.Storage.UsageDBFile = filepath.Join(stateDirs[0], "key_usage.db")
 		} else {
-			c.Storage.UsageDBFile = filepath.Join(dir, base+".db")
+			dir := filepath.Dir(filepath.Clean(c.Storage.UsageFile))
+			base := strings.TrimSuffix(filepath.Base(filepath.Clean(c.Storage.UsageFile)), filepath.Ext(c.Storage.UsageFile))
+			if dir == "" || dir == "." {
+				c.Storage.UsageDBFile = "./" + base + ".db"
+			} else {
+				c.Storage.UsageDBFile = filepath.Join(dir, base+".db")
+			}
 		}
 	}
+	c.Storage.LegacyUsageDBFile = legacyUsageDBPath(c.Storage.UsageFile)
 
 	if c.Storage.FlushIntervalSeconds <= 0 {
 		c.Storage.FlushIntervalSeconds = 10
