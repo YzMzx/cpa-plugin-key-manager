@@ -564,6 +564,53 @@
   .quota-bar-fill.quota-bar-critical { background: #f87171; }
   .quota-bar-text { font-size: 11.5px; color: var(--text-secondary); font-family: var(--font-mono); white-space: nowrap; }
 
+  /* Toggle switch */
+  .switch {
+    position: relative;
+    display: inline-block;
+    width: 38px;
+    height: 20px;
+    vertical-align: middle;
+  }
+  .switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+    position: absolute;
+  }
+  .switch-slider {
+    position: absolute;
+    inset: 0;
+    cursor: pointer;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 999px;
+    transition: background 0.18s ease, border-color 0.18s ease;
+  }
+  .switch-slider::before {
+    content: "";
+    position: absolute;
+    width: 14px;
+    height: 14px;
+    left: 2px;
+    top: 2px;
+    border-radius: 50%;
+    background: var(--text-tertiary);
+    transition: transform 0.18s ease, background 0.18s ease;
+  }
+  .switch input:checked + .switch-slider {
+    background: rgba(52, 211, 153, 0.22);
+    border-color: rgba(52, 211, 153, 0.55);
+  }
+  .switch input:checked + .switch-slider::before {
+    transform: translateX(18px);
+    background: #34d399;
+  }
+  .switch input:focus-visible + .switch-slider {
+    outline: 2px solid rgba(56, 189, 248, 0.6);
+    outline-offset: 2px;
+  }
+
   /* Tags & Pills (CPAMC .tag style) */
   .tag {
     display: inline-flex;
@@ -1522,9 +1569,6 @@
       <div class="card-header">
         <div>
           <h2 class="card-title">API Key 额度管理</h2>
-          <div style="font-size:12px;color:var(--text-tertiary);margin-top:4px" id="quotaTableMeta">
-            额度按费用（USD）计算，默认不限额
-          </div>
         </div>
         <div class="input-row">
           <input type="text" class="input" style="width:200px" id="quotaSearch" placeholder="搜索 API Key 或备注..." oninput="renderQuotaTable()">
@@ -1534,6 +1578,7 @@
         <table>
           <thead>
             <tr>
+              <th style="width:64px">状态</th>
               <th>API Key</th>
               <th style="min-width:220px">密钥限额</th>
               <th>已用 / 剩余</th>
@@ -1541,7 +1586,7 @@
             </tr>
           </thead>
           <tbody id="quotaTableBody">
-            <tr><td colspan="4" style="text-align:center;color:var(--text-tertiary)">加载中...</td></tr>
+            <tr><td colspan="5" style="text-align:center;color:var(--text-tertiary)">加载中...</td></tr>
           </tbody>
         </table>
       </div>
@@ -1589,6 +1634,7 @@
         </div>
         <div class="input-row">
           <input type="text" class="input" style="width:210px" id="dashKeySearch" placeholder="搜索 Key 或备注..." oninput="renderDashboardTables()">
+          <button type="button" class="btn btn-sm" onclick="refreshDashboard()">刷新</button>
           <button type="button" class="btn btn-sm btn-danger" onclick="resetUsageStats('')">清空全部用量统计</button>
         </div>
       </div>
@@ -2459,6 +2505,16 @@
   }
 
   // ==================== ADMIN OVERVIEW & UNIFIED KEY SYNC ====================
+  // Manual refresh for the usage leaderboards.
+  async function refreshDashboard() {
+    try {
+      await loadAdminOverview();
+      showToast("用量数据已刷新");
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  }
+
   async function loadAdminOverview(candidateKey = "") {
     try {
       const keyToUse = cleanBearerToken(candidateKey || activeManagementKey || await discoverCPAManagementKey());
@@ -3459,29 +3515,32 @@
       return String(r.api_key || "").toLowerCase().includes(q) || String(r.name || "").toLowerCase().includes(q);
     });
 
-    const limited = rules.filter(r => Number(r.quota_limit_usd || 0) > 0).length;
-    const meta = document.getElementById("quotaTableMeta");
-    if (meta) {
-      meta.textContent = `${rules.length} 个密钥 · ${limited} 个设置了限额 · 额度按费用（USD）计算，默认不限额`;
-    }
-
     if (!list.length) {
-      tbody.innerHTML = `<tr><td colspan="4" style="text-align:center;color:var(--text-tertiary)">暂无 API Key</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:var(--text-tertiary)">暂无 API Key</td></tr>`;
       return;
     }
 
     tbody.innerHTML = list.map(rule => {
       const usage = quotaUsageOf(rule);
+      const enabled = rule.enabled !== false;
       const label = rule.name ? `<span style="font-weight:600;color:var(--text-primary)">${escapeHtml(rule.name)}</span>` : "";
       const masked = escapeHtml(maskKeyStr(rule.api_key));
-      const limitText = usage.unlimited ? `<span class="tag plain">不限额</span>` : `<span class="mono">$${usage.limit.toFixed(2)}</span>`;
+      const limitText = usage.unlimited
+        ? `<span class="mono" style="color:var(--text-secondary)">Infinity</span>`
+        : `<span class="mono">$${usage.limit.toFixed(2)}</span>`;
       const bar = usage.unlimited ? "" : `
         <div class="quota-bar"><div class="${quotaBarClass(usage.percent, usage.exceeded)}" style="width:${Math.max(1, usage.percent).toFixed(1)}%"></div></div>
         <span class="quota-bar-text">${usage.percent.toFixed(1)}%${usage.exceeded ? " · 已超额" : ""}</span>`;
       const usedText = usage.unlimited
-        ? `<span class="mono">$${usage.used.toFixed(4)}</span> <span style="color:var(--text-tertiary)">/ 不限额</span>`
+        ? `<span class="mono">$${usage.used.toFixed(4)}</span> <span style="color:var(--text-tertiary)">/ Infinity</span>`
         : `<span class="mono">$${usage.used.toFixed(4)}</span> <span style="color:var(--text-tertiary)">/ $${usage.remaining.toFixed(4)}</span>`;
       return `<tr>
+        <td class="cell-nowrap">
+          <label class="switch" title="${enabled ? "点击禁用" : "点击启用"}">
+            <input type="checkbox" ${enabled ? "checked" : ""} onchange="quickToggleKeyEnabled('${escapeHtml(rule.api_key)}')">
+            <span class="switch-slider"></span>
+          </label>
+        </td>
         <td class="cell-nowrap">
           <div class="ov-key-cell">
             <span class="mono" style="font-size:12px;color:var(--text-primary)">${masked}</span>
