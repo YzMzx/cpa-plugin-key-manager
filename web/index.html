@@ -3460,10 +3460,11 @@
         `未设置兜底默认价 · <a href="javascript:void(0)" onclick="openPriceModal('__default__')" style="color:var(--text-primary);text-decoration:underline">设置兜底价</a>`;
     }
 
-    // Build unified model pricing list from:
-    // 1. Custom price overrides (exact & wildcard patterns)
-    // 2. Host available models (from overviewData.available_models)
-    // 3. Any additional models observed in usage stats
+    // Build the pricing list from the models the host actually advertises:
+    // 1. Host available models (the same list the management center shows)
+    // 2. Explicit custom overrides (including wildcard rules like gemini-3.8-*)
+    // Models that only appear as an upstream substitution (e.g. gemini-4-argon-high
+    // served instead of the requested name) are intentionally excluded.
     const rowsByModel = new Map();
 
     // 1. Available models on host
@@ -3481,33 +3482,7 @@
       });
     }
 
-    // 2. Models observed in usage stats that aren't in available_models
-    const snapKeys = (overviewData.usage && overviewData.usage.keys) || {};
-    for (const ks of Object.values(snapKeys)) {
-      if (!ks || !ks.models) continue;
-      for (const ms of Object.values(ks.models)) {
-        if (!ms) continue;
-        for (const cand of [ms.requested_model, ms.served_model]) {
-          const m = String(cand || "").trim();
-          if (!m || m.toLowerCase() === "unknown") continue;
-          const key = m.toLowerCase();
-          if (!rowsByModel.has(key)) {
-            const p = customMap[key] || ms.unit_price_per_1m || { source: "unmatched" };
-            rowsByModel.set(key, {
-              model: m,
-              provider: modelProviderKey(m),
-              price: p,
-              refPrice: null,
-              isCustom: !!(customMap[key] || (p && p.source === "custom_override")),
-              isExactCustom: !!customMap[key],
-              isHostModel: false
-            });
-          }
-        }
-      }
-    }
-
-    // 3. Explicit custom overrides (including wildcard rules like gemini-3.8-* that aren't literal host model IDs)
+    // 2. Explicit custom overrides (including wildcard rules like gemini-3.8-* that aren't literal host model IDs)
     for (const [pat, cp] of Object.entries(customMap)) {
       const key = String(pat).toLowerCase();
       if (rowsByModel.has(key)) {
