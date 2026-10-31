@@ -84,6 +84,7 @@ func (s *Store) applyLedgerLocked(at time.Time, apiKey, keyName, account, provid
 	entry.CacheWriteTokens += write
 	entry.TotalTokens += total
 	entry.CostNanoUSD += costNano
+	s.markLedgerDirtyLocked(key)
 	return stamp
 }
 
@@ -107,7 +108,13 @@ func (s *Store) rollbackLedgerStampsLocked(tr *TrackedRequest) {
 		entry.CostNanoUSD -= stamp.cost
 		if entry.Requests <= 0 && entry.TotalTokens <= 0 && entry.CostNanoUSD <= 0 {
 			delete(s.ledger, key)
+			s.deletedLedger[ledgerRef{
+				hour: stamp.hour, apiKey: stamp.apiKey, account: stamp.account,
+				model: stamp.model, source: stamp.source,
+			}] = struct{}{}
+			continue
 		}
+		s.markLedgerDirtyLocked(key)
 	}
 	tr.ledgerStamps = nil
 }
@@ -126,6 +133,9 @@ func (s *Store) pruneLedgerLocked(now time.Time) {
 		if entry == nil || entry.Hour < cutoff {
 			delete(s.ledger, key)
 		}
+	}
+	if s.ledgerPruneBefore < cutoff {
+		s.ledgerPruneBefore = cutoff
 	}
 }
 
@@ -158,7 +168,7 @@ func (s *Store) LedgerStatus() LedgerStatus {
 		Enabled:       true,
 		Entries:       len(s.ledger),
 		RetentionDays: int(s.ledgerRetention.Hours() / 24),
-		Storage:       s.storageFile,
+		Storage:       s.sqlitePathLocked(),
 	}
 	if status.RetentionDays <= 0 {
 		status.RetentionDays = 90
@@ -327,7 +337,7 @@ func (s *Store) QueryLedger(q LedgerQuery) LedgerResult {
 			keysAvailable++
 		}
 	}
-	status := LedgerStatus{Enabled: true, Entries: len(s.ledger), Storage: s.storageFile}
+	status := LedgerStatus{Enabled: true, Entries: len(s.ledger), Storage: s.sqlitePathLocked()}
 	if status.RetentionDays = int(s.ledgerRetention.Hours() / 24); status.RetentionDays <= 0 {
 		status.RetentionDays = 90
 	}

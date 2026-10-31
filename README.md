@@ -63,27 +63,37 @@
 
 ## SQLite 持久化（实验分支 `feat/sqlite-persistence`）
 
-> 该分支参考 [yuluo688/credit-manager](https://github.com/yuluo688/credit-manager) 的存储方案，把用量与账本的持久化从 JSON 快照迁移到 SQLite。**主分支保持不变**。
+> 参考 [yuluo688/credit-manager](https://github.com/yuluo688/credit-manager) 的存储设计：**SQLite 是唯一后端**，不再写 JSON 快照、不再写 JSON 镜像。主分支保持不变。
 
-### 技术选型
+### 选型
 
 | 项 | 方案 |
 |---|---|
-| 驱动 | `modernc.org/sqlite`（纯 Go，无需 CGO，五个平台可交叉编译） |
-| 连接 | `MaxOpenConns(1)`，配合 WAL 模式 |
+| 驱动 | `modernc.org/sqlite`（纯 Go，无 CGO，五平台可交叉编译） |
+| 连接 | `MaxOpenConns(1)`，WAL 模式 |
 | DSN pragma | `journal_mode(WAL)`、`busy_timeout(5000)`、`foreign_keys(ON)`、`synchronous(NORMAL)` |
-| 迁移 | `schema_migrations` 表 + 逐版本事务化执行，重复启动幂等 |
-| 写入 | 每次 flush 在一个事务内整体重写聚合表（数据量小，简单且不会写坏） |
+| 迁移 | `schema_migrations` 表 + 逐版本事务执行，重复启动幂等 |
+| 跨进程写锁 | `<db>.lock` + `flock`(Unix) / `LockFileEx`(Windows)，进程退出自动释放，第二个写入者直接报错 |
 
-### 表结构
+### 表
 
 | 表 | 内容 |
 |---|---|
-| `key_usage` | 每个 API Key 的累计请求数 / Token / 费用 |
-| `key_model_usage` | 每 Key 的「请求模型 + 服务端模型」二元组明细与单价快照 |
-| `account_usage` | 每个上游账号的累计用量 |
-| `account_model_usage` | 账号维度的二元组明细 |
-| `usage_ledger` | 概览账本：`hour × api_key × account × model × source` 聚合，附 `hour` / `model` 索引 |
+| `rules_state` | 整份动态规则（Key 规则、排序、默认策略、价格覆盖）一个 JSON 行，写入是单条 UPSERT，天然原子 |
+| `key_usage` | 每个 API Key 的累计请求 / Token / 费用 |
+| `key_model_usage` | Key 维度的「请求模型 + 服务端模型」二元组明细与单价快照 |
+| `account_usage` / `account_model_usage` | 上游账号维度的聚合与明细 |
+| `usage_ledger` | 概览账本 `hour × key × account × model × source`，附 `hour` / `model` 索引 |
+
+### 增量写入
+
+每次 flush 只写「自上次 flush 以来变动的行」：
+
+- 变更时标记脏 Key / 脏账号 / 脏账本行；
+- 脏 Key：UPSERT `key_usage`，再原子替换该 Key 的二元组集合（每个 Key 的模型数很少）；
+- 脏账本行：按主键 UPSERT；
+- 删除（清零、失败回滚）：显式 DELETE 对应行；
+- 账本保留期裁剪：`DELETE FROM usage_ledger WHERE hour < cutoff`。
 
 ### 配置
 
@@ -92,20 +102,15 @@ plugins:
   configs:
     cpa-plugin-key-manager:
       storage:
-        usage_db_file: "./data/key_usage.db"   # 留空则完全退回 JSON 快照
-        usage_file: "./data/key_usage_stats.json"  # 仍会写入，作为可读导出/兼容镜像
+        usage_db_file: "./data/key_usage.db"   # 默认由 usage_file 推导同名 .db
 ```
 
 ### 行为
 
-- **首次升级**：若数据库为空而磁盘上已有 JSON 快照，会把历史用量与账本导入数据库（`TestSQLiteImportsExistingJSONHistory`）。
-- **数据库优先**：数据库已有数据时以数据库为准重建内存状态，JSON 不再反向覆盖。
-- **双写**：每次 flush 既写 SQLite（权威），也写 JSON 快照与镜像（兼容 / 便于人眼排查）。
-- **清零 / 重置额度**：与主分支一致，改动即时落库（`TestSQLiteResetClearsBothStores`）。
-- **诊断扩展**：`overview.diagnostics` 新增 `usage_db_file / usage_db_exists / usage_db_size`。
-
-
----
+- **唯一后端**：不再生成 `key_usage_stats.json` 与任何 `.state` 镜像；`usage_file` 仅用于推导默认数据库路径。
+- **升级迁移**：数据库为空时，会把旧的 `key_guard_rules.json` 读入 `rules_state`（一次性）。
+- **单写者**：同一数据库文件同时只允许一个插件实例写入，锁被占用时启动日志给出明确告警。
+- **诊断**：`overview.diagnostics` 暴露 `usage_db_file / usage_db_exists / usage_db_size`。
 
 ## 升级与数据迁移指南（从 cpa-plugin-key 升级至 cpa-plugin-key-manager）
 

@@ -14,17 +14,16 @@ import (
 func TestSQLitePersistsUsageAndLedger(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "usage.db")
-	jsonPath := filepath.Join(dir, "usage.json")
 
 	store := NewStore(pricing.NewEngine())
-	if err := store.ConfigurePersistence(jsonPath, time.Hour); err != nil {
-		t.Fatalf("configure json persistence: %v", err)
-	}
-	if err := store.EnableSQLite(dbPath); err != nil {
-		t.Fatalf("enable sqlite: %v", err)
+	if err := store.ConfigureSQLite(dbPath, time.Hour); err != nil {
+		t.Fatalf("configure sqlite: %v", err)
 	}
 	if got := store.SQLitePath(); got != dbPath {
 		t.Fatalf("SQLitePath = %q, want %q", got, dbPath)
+	}
+	if lock := store.SQLiteLockPath(); lock != dbPath+".lock" {
+		t.Fatalf("lock path = %q, want %q", lock, dbPath+".lock")
 	}
 
 	feedLedgerRequest(t, store, "db-req-1", "sk-db", "数据库", "gemini-3.8-flash-high", "gemini-4-argon-high",
@@ -37,16 +36,11 @@ func TestSQLitePersistsUsageAndLedger(t *testing.T) {
 	}
 	_ = store.Close()
 
-	// Reopen purely from SQLite (the JSON file is deleted to prove the DB carries the state).
+	// Reopen purely from SQLite.
 	reopened := NewStore(pricing.NewEngine())
-	if err := reopened.ConfigurePersistence(filepath.Join(dir, "missing.json"), time.Hour); err != nil {
-		t.Fatalf("configure reopened store: %v", err)
-	}
-	if err := reopened.EnableSQLite(dbPath); err != nil {
+	if err := reopened.ConfigureSQLite(dbPath, time.Hour); err != nil {
 		t.Fatalf("reopen sqlite: %v", err)
 	}
-	defer reopened.Close()
-
 	snap := reopened.Snapshot("sk-db", "", nil, nil, nil, false)
 	ks := snap.Keys["sk-db"]
 	if ks == nil {
@@ -75,9 +69,12 @@ func TestSQLitePersistsUsageAndLedger(t *testing.T) {
 		t.Fatalf("ledger wrong after reload: %+v", ledger)
 	}
 
-	// Migration must be idempotent: opening the same file again applies nothing new.
+	// Reopening again must be idempotent and keep the data.
+	if err := reopened.Close(); err != nil {
+		t.Fatalf("close reopened: %v", err)
+	}
 	again := NewStore(pricing.NewEngine())
-	if err := again.EnableSQLite(dbPath); err != nil {
+	if err := again.ConfigureSQLite(dbPath, time.Hour); err != nil {
 		t.Fatalf("third open: %v", err)
 	}
 	if data := again.Snapshot("sk-db", "", nil, nil, nil, false); data.Keys["sk-db"].TotalRequests != 2 {
@@ -86,61 +83,52 @@ func TestSQLitePersistsUsageAndLedger(t *testing.T) {
 	_ = again.Close()
 }
 
-// TestSQLiteImportsExistingJSONHistory verifies an upgrade path: an existing JSON
-// snapshot is imported into the database when the DB is still empty.
-func TestSQLiteImportsExistingJSONHistory(t *testing.T) {
+// TestSQLiteIncrementalFlush verifies that only dirty rows are written: a second
+// flush after one extra request must keep earlier rows intact.
+func TestSQLiteIncrementalFlush(t *testing.T) {
 	dir := t.TempDir()
-	jsonPath := filepath.Join(dir, "usage.json")
 	dbPath := filepath.Join(dir, "usage.db")
 
-	legacy := NewStore(pricing.NewEngine())
-	if err := legacy.ConfigurePersistence(jsonPath, time.Hour); err != nil {
-		t.Fatalf("configure legacy store: %v", err)
+	store := NewStore(pricing.NewEngine())
+	if err := store.ConfigureSQLite(dbPath, time.Hour); err != nil {
+		t.Fatalf("configure: %v", err)
 	}
-	feedLedgerRequest(t, legacy, "legacy-1", "sk-legacy", "旧数据", "kimi-k2.6", "kimi-k2.6",
-		"openai", "kimi", "kimi.json", 10, 2, 0)
-	if err := legacy.FlushNow(); err != nil {
-		t.Fatalf("legacy flush: %v", err)
+	feedLedgerRequest(t, store, "inc-1", "sk-a", "A", "glm-5.3", "glm-5.3", "openai", "zhipu", "glm-a.json", 10, 1, 0)
+	feedLedgerRequest(t, store, "inc-2", "sk-b", "B", "kimi-k3", "kimi-k3", "openai", "moonshot", "kimi-b.json", 20, 2, 0)
+	if err := store.FlushNow(); err != nil {
+		t.Fatalf("first flush: %v", err)
 	}
-	_ = legacy.Close()
 
-	migrated := NewStore(pricing.NewEngine())
-	if err := migrated.ConfigurePersistence(jsonPath, time.Hour); err != nil {
-		t.Fatalf("configure migrated store: %v", err)
+	// Touch only sk-a, then flush again.
+	feedLedgerRequest(t, store, "inc-3", "sk-a", "A", "glm-5.3", "glm-5.3", "openai", "zhipu", "glm-a.json", 5, 1, 0)
+	if err := store.FlushNow(); err != nil {
+		t.Fatalf("second flush: %v", err)
 	}
-	if err := migrated.EnableSQLite(dbPath); err != nil {
-		t.Fatalf("enable sqlite: %v", err)
-	}
-	if ks := migrated.Snapshot("sk-legacy", "", nil, nil, nil, false).Keys["sk-legacy"]; ks == nil || ks.TotalRequests != 1 {
-		t.Fatalf("json history was not imported: %+v", ks)
-	}
-	_ = migrated.Close()
+	_ = store.Close()
 
-	// The imported rows must be readable from the database alone.
-	fresh := NewStore(pricing.NewEngine())
-	if err := fresh.EnableSQLite(dbPath); err != nil {
+	reopened := NewStore(pricing.NewEngine())
+	if err := reopened.ConfigureSQLite(dbPath, time.Hour); err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
-	defer fresh.Close()
-	if ks := fresh.Snapshot("sk-legacy", "", nil, nil, nil, false).Keys["sk-legacy"]; ks == nil || ks.TotalRequests != 1 {
-		t.Fatalf("imported history not persisted to sqlite: %+v", ks)
+	snap := reopened.Snapshot("", "", nil, nil, nil, false)
+	if snap.Keys["sk-a"] == nil || snap.Keys["sk-a"].TotalRequests != 2 {
+		t.Fatalf("sk-a should have 2 requests, got %+v", snap.Keys["sk-a"])
 	}
-	now := time.Now()
-	if ledger := fresh.QueryLedger(LedgerQuery{From: now.Add(-2 * time.Hour), To: now.Add(2 * time.Hour)}); ledger.Requests != 1 {
-		t.Fatalf("ledger not imported: %+v", ledger)
+	if snap.Keys["sk-b"] == nil || snap.Keys["sk-b"].TotalRequests != 1 {
+		t.Fatalf("sk-b row was lost by the incremental flush: %+v", snap.Keys["sk-b"])
+	}
+	if err := reopened.Close(); err != nil {
+		t.Fatalf("close reopened: %v", err)
 	}
 }
 
-// TestSQLiteResetClearsBothStores verifies a reset is reflected in the database.
-func TestSQLiteResetClearsBothStores(t *testing.T) {
+// TestSQLiteResetClearsPersistedRows verifies a reset is reflected in the database.
+func TestSQLiteResetClearsPersistedRows(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "usage.db")
 	store := NewStore(pricing.NewEngine())
-	if err := store.ConfigurePersistence(filepath.Join(dir, "usage.json"), time.Hour); err != nil {
+	if err := store.ConfigureSQLite(dbPath, time.Hour); err != nil {
 		t.Fatalf("configure: %v", err)
-	}
-	if err := store.EnableSQLite(dbPath); err != nil {
-		t.Fatalf("enable sqlite: %v", err)
 	}
 	feedLedgerRequest(t, store, "reset-1", "sk-reset", "重置", "glm-5.3", "glm-5.3", "openai", "zhipu", "glm.json", 5, 5, 0)
 	if err := store.Reset("sk-reset"); err != nil {
@@ -149,7 +137,7 @@ func TestSQLiteResetClearsBothStores(t *testing.T) {
 	_ = store.Close()
 
 	reopened := NewStore(pricing.NewEngine())
-	if err := reopened.EnableSQLite(dbPath); err != nil {
+	if err := reopened.ConfigureSQLite(dbPath, time.Hour); err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
 	defer reopened.Close()
@@ -159,4 +147,29 @@ func TestSQLiteResetClearsBothStores(t *testing.T) {
 	if ledger := reopened.LedgerStatus(); ledger.Entries != 0 {
 		t.Fatalf("reset key still has ledger rows: %d", ledger.Entries)
 	}
+}
+
+// TestSQLiteRejectsSecondWriter pins the cross-process writer lock: a second open
+// of the same database must fail while the first handle is alive.
+func TestSQLiteRejectsSecondWriter(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "usage.db")
+
+	first := NewStore(pricing.NewEngine())
+	if err := first.ConfigureSQLite(dbPath, time.Hour); err != nil {
+		t.Fatalf("first open: %v", err)
+	}
+
+	second := NewStore(pricing.NewEngine())
+	err := second.ConfigureSQLite(dbPath, time.Hour)
+	if err == nil {
+		_ = second.Close()
+		t.Fatalf("second writer must be rejected while the first holds the lock")
+	}
+
+	_ = first.Close()
+	if err := second.ConfigureSQLite(dbPath, time.Hour); err != nil {
+		t.Fatalf("lock was not released after Close: %v", err)
+	}
+	_ = second.Close()
 }

@@ -62,7 +62,6 @@ func TestRestartPersistenceBugReproduction(t *testing.T) {
 		t.Fatalf("chdir failed: %v", err)
 	}
 
-	rulesFile := "./data/key_guard_rules.json"
 	cpaConfigPath := "config.yaml"
 
 	// Initial config.yaml as installed by install.ps1
@@ -134,14 +133,21 @@ storage:
 		t.Fatalf("SaveDefaultPolicyFromJSON failed: %v", err)
 	}
 
-	// Verify file content on disk before restart
-	dataBefore, err := os.ReadFile(rulesFile)
-	if err != nil {
-		t.Fatalf("failed to read rulesFile before restart: %v", err)
+	// Verify the rules were persisted into SQLite (the only backend on this branch).
+	persisted := mgr1.ListKeyRulesAndDefaultPolicy()
+	persistedKeys, _ := persisted["keys"].([]KeyRuleConfig)
+	foundPersisted := false
+	for _, k := range persistedKeys {
+		if k.APIKey == "sk-user-test-123" {
+			foundPersisted = true
+			break
+		}
 	}
-	t.Logf("rulesFile before restart:\n%s", string(dataBefore))
-	if !strings.Contains(string(dataBefore), "sk-user-test-123") {
-		t.Fatalf("rulesFile missing sk-user-test-123 before restart")
+	if !foundPersisted {
+		t.Fatalf("rules_state is missing sk-user-test-123 before restart")
+	}
+	if dbPath := mgr1.usageStore.SQLitePath(); dbPath == "" {
+		t.Fatalf("sqlite database was not configured")
 	}
 
 	// Simulate CLIProxyAPI shutdown
@@ -685,7 +691,11 @@ storage:
 	})
 	_, _ = mgr.HandleRPC(pluginabi.MethodRequestComplete, comp1)
 
-	// 5. Verify persistence across new Manager restart (loads key_guard_rules.json from disk) via authenticated /v0/management/key-guard/overview
+	// 5. Verify persistence across new Manager restart (SQLite holds the rules) via
+	// authenticated /v0/management/key-guard/overview.
+	// SQLite admits a single writer per database, so the first instance must stop
+	// before the "restarted" instance opens the same file.
+	mgr.Shutdown()
 	mgr2 := NewManager(hostInvoker)
 	defer mgr2.Shutdown()
 	if _, err := mgr2.HandleRPC(pluginabi.MethodPluginRegister, regReq); err != nil {

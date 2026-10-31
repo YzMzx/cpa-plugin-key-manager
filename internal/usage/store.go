@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/YzMzx/cpa-plugin-key-manager/internal/pricing"
+	"github.com/YzMzx/cpa-plugin-key-manager/internal/sqlitestore"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
@@ -177,21 +178,37 @@ type Store struct {
 	byTraceID     map[string]*TrackedRequest
 	seenHostReqID map[string]time.Time
 
-	storageFile       string
-	mirrorFiles       []string
-	legacyMirrorFiles []string
-	dirty             bool
-	flushInterval     time.Duration
-	stopFlushCh       chan struct{}
-	flushStopped      chan struct{}
+	storageFile   string
+	dirty         bool
+	flushInterval time.Duration
+	stopFlushCh   chan struct{}
+	flushStopped  chan struct{}
 
 	// ledger holds hourly aggregated usage slices for the overview dashboard.
 	ledger          map[string]*LedgerEntry
 	ledgerRetention time.Duration
 
-	// sqlDB is the optional SQLite backend. When set it becomes the authoritative
-	// store; the JSON snapshot is still written for compatibility/diagnostics.
-	sqlDB *sqliteStore
+	// db is the SQLite database; it is the only persistence backend on this branch.
+	db *sqlitestore.DB
+
+	// Incremental flush bookkeeping: only rows touched since the last flush are
+	// rewritten, and removals are deleted explicitly.
+	dirtyKeys         map[string]struct{}
+	dirtyAccounts     map[string]struct{}
+	dirtyLedger       map[string]struct{}
+	deletedLedger     map[ledgerRef]struct{}
+	deletedKeys       map[string]struct{}
+	ledgerPruneBefore int64
+	resetAll          bool
+}
+
+// ledgerRef identifies one hourly ledger row for deletion bookkeeping.
+type ledgerRef struct {
+	hour    int64
+	apiKey  string
+	account string
+	model   string
+	source  string
 }
 
 // NewStore creates a new usage Store backed by the given pricing Engine.
@@ -208,253 +225,101 @@ func NewStore(pricingEngine *pricing.Engine) *Store {
 		byRequestID:     make(map[string]*TrackedRequest),
 		byTraceID:       make(map[string]*TrackedRequest),
 		seenHostReqID:   make(map[string]time.Time),
+		dirtyKeys:       make(map[string]struct{}),
+		dirtyAccounts:   make(map[string]struct{}),
+		dirtyLedger:     make(map[string]struct{}),
+		deletedLedger:   make(map[ledgerRef]struct{}),
+		deletedKeys:     make(map[string]struct{}),
 	}
 }
 
-// SetMirrorFiles registers extra paths that receive a copy of the usage snapshot
-// after every flush. This keeps billing history alive when the configured file
-// lives in an ephemeral directory (e.g. a container's ./data).
-func (s *Store) SetMirrorFiles(paths []string) {
-	cleaned := cleanPathList(paths)
-	s.mu.Lock()
-	s.mirrorFiles = cleaned
-	s.mu.Unlock()
-}
-
-// SetLegacyMirrorFiles registers older, read-only snapshot locations (for example
-// `*.json` files that a previous release wrote into CLIProxyAPI's auth dir). They
-// are used to restore history and are removed only after the successor snapshot
-// has been durably written.
-func (s *Store) SetLegacyMirrorFiles(paths []string) {
-	cleaned := cleanPathList(paths)
-	s.mu.Lock()
-	s.legacyMirrorFiles = cleaned
-	s.mu.Unlock()
-}
-
-func cleanPathList(paths []string) []string {
-	cleaned := make([]string, 0, len(paths))
-	seen := make(map[string]struct{}, len(paths))
-	for _, raw := range paths {
-		path := strings.TrimSpace(raw)
-		if path == "" {
-			continue
-		}
-		path = filepath.Clean(path)
-		if _, ok := seen[path]; ok {
-			continue
-		}
-		seen[path] = struct{}{}
-		cleaned = append(cleaned, path)
-	}
-	return cleaned
-}
-
-// restoreCandidates returns every path that may hold an older snapshot: live
-// mirrors first, then the read-only legacy locations.
-func (s *Store) restoreCandidates() (mirrors []string, legacy []string) {
-	s.mu.Lock()
-	mirrors = append([]string(nil), s.mirrorFiles...)
-	legacy = append([]string(nil), s.legacyMirrorFiles...)
-	s.mu.Unlock()
-	return mirrors, legacy
-}
-
-// adoptMirrorIfEmpty restores the configured snapshot from the newest non-empty
-// mirror when the configured file is missing or empty (e.g. after the container
-// recreated its ./data directory). Legacy locations participate so that an
-// upgrade never drops history before it has been migrated.
-func (s *Store) adoptMirrorIfEmpty(target string) {
-	if target == "" {
-		return
-	}
-	// Keep the configured snapshot when it already carries history; only replace a
-	// missing or history-less file (e.g. the empty skeleton a fresh container writes).
-	if raw, errRead := os.ReadFile(target); errRead == nil && len(strings.TrimSpace(string(raw))) > 0 {
-		var existing PersistedSnapshot
-		if errUnmarshal := json.Unmarshal(raw, &existing); errUnmarshal == nil && len(existing.Keys) > 0 {
-			return
-		}
-	}
-
-	mirrors, legacy := s.restoreCandidates()
-	candidates := append(append([]string(nil), mirrors...), legacy...)
-	if len(candidates) == 0 {
-		return
-	}
-
-	bestPath := ""
-	var bestSnap *PersistedSnapshot
-	for _, candidate := range candidates {
-		if filepath.Clean(candidate) == filepath.Clean(target) {
-			continue
-		}
-		raw, errRead := os.ReadFile(candidate)
-		if errRead != nil || len(strings.TrimSpace(string(raw))) == 0 {
-			continue
-		}
-		var snap PersistedSnapshot
-		if errUnmarshal := json.Unmarshal(raw, &snap); errUnmarshal != nil {
-			continue
-		}
-		if bestSnap == nil || snap.UpdatedAt > bestSnap.UpdatedAt {
-			cp := snap
-			bestSnap = &cp
-			bestPath = candidate
-		}
-	}
-	if bestSnap == nil || bestPath == "" || len(bestSnap.Keys) == 0 {
-		return
-	}
-	raw, errRead := os.ReadFile(bestPath)
-	if errRead != nil {
-		return
-	}
-	_ = writeFileAtomicallyWindowsSafe(target, raw)
-}
-
-// cleanupLegacyMirrors removes legacy snapshot files once the successor locations
-// hold a snapshot, so migration can never delete the only surviving copy.
-func (s *Store) cleanupLegacyMirrors() {
-	s.mu.Lock()
-	legacy := append([]string(nil), s.legacyMirrorFiles...)
-	target := s.storageFile
-	s.mu.Unlock()
-	if len(legacy) == 0 || target == "" {
-		return
-	}
-	if info, errStat := os.Stat(target); errStat != nil || info.Size() == 0 {
-		return
-	}
-	for _, path := range legacy {
-		if filepath.Clean(path) == filepath.Clean(target) {
-			continue
-		}
-		if info, errStat := os.Stat(path); errStat == nil && !info.IsDir() {
-			_ = os.Remove(path)
-		}
-	}
-	s.mu.Lock()
-	s.legacyMirrorFiles = nil
-	s.mu.Unlock()
-}
-
-// ConfigurePersistence sets the persistence file path and periodic flush interval.
-// Calling ConfigurePersistence during hot-reload (`plugin.reconfigure`) preserves all in-memory
-// usage statistics while loading any existing disk history on initial startup.
+// ConfigurePersistence is kept for compatibility with the JSON era. On this branch
+// persistence is SQLite-only: the path is normalised to a `.db` file next to the
+// requested snapshot path.
 func (s *Store) ConfigurePersistence(filePath string, flushInterval time.Duration) error {
-	s.stopFlusher()
-
 	cleanPath := strings.TrimSpace(filePath)
-	if cleanPath != "" {
-		cleanPath = filepath.Clean(cleanPath)
+	if cleanPath == "" {
+		return nil
 	}
+	cleanPath = filepath.Clean(cleanPath)
+	if !strings.HasSuffix(strings.ToLower(cleanPath), ".db") {
+		cleanPath = strings.TrimSuffix(cleanPath, filepath.Ext(cleanPath)) + ".db"
+	}
+	return s.ConfigureSQLite(cleanPath, flushInterval)
+}
+
+// ConfigureSQLite opens the database, adopts its rows (or imports the current
+// in-memory history when it is empty) and starts the periodic flush loop.
+func (s *Store) ConfigureSQLite(dbPath string, flushInterval time.Duration) error {
+	s.stopFlusher()
 	if flushInterval <= 0 {
 		flushInterval = 10 * time.Second
 	}
-
-	s.adoptMirrorIfEmpty(cleanPath)
-
 	s.mu.Lock()
-	wasEmpty := len(s.keys) == 0
-	s.storageFile = cleanPath
-	s.flushInterval = flushInterval
+	previous := s.db
+	s.db = nil
 	s.mu.Unlock()
-
-	var loadErr error
-	if cleanPath != "" && wasEmpty {
-		loadErr = s.loadFromDisk(cleanPath)
+	if previous != nil {
+		_ = s.FlushNowIfOpen(previous)
+		_ = previous.Close()
 	}
-
-	// Write the migrated snapshot everywhere immediately so legacy files can be
-	// dropped without risking the only copy.
-	if cleanPath != "" {
-		s.mu.Lock()
-		hasHistory := len(s.keys) > 0
-		legacyPending := len(s.legacyMirrorFiles) > 0
-		s.mu.Unlock()
-		if hasHistory || legacyPending {
-			_ = s.FlushNow()
-			s.cleanupLegacyMirrors()
-		}
-	}
-
-	if cleanPath != "" {
-		stopCh := make(chan struct{})
-		stoppedCh := make(chan struct{})
-		s.mu.Lock()
-		s.stopFlushCh = stopCh
-		s.flushStopped = stoppedCh
-		s.mu.Unlock()
-		go s.flushLoop(stopCh, stoppedCh, flushInterval)
-	}
-
-	return loadErr
-}
-
-// EnableSQLite opens (or creates) the SQLite database and makes it the authoritative
-// usage store. When the database already holds data it replaces the in-memory state;
-// otherwise the current in-memory history is imported so an upgrade never loses data.
-func (s *Store) EnableSQLite(dbPath string) error {
-	store, err := openSQLiteStore(dbPath)
-	if err != nil {
+	if err := s.EnableSQLite(dbPath); err != nil {
 		return err
 	}
-
-	snap, errLoad := store.loadSnapshot()
-	if errLoad != nil {
-		_ = store.Close()
-		return errLoad
-	}
-
 	s.mu.Lock()
-	s.sqlDB = store
-	hasExisting := len(snap.Keys) > 0 || len(snap.Accounts) > 0 || len(snap.Ledger) > 0
-	if hasExisting {
-		s.keys = snap.Keys
-		s.accounts = snap.Accounts
-		s.ledger = make(map[string]*LedgerEntry, len(snap.Ledger))
-		for _, entry := range snap.Ledger {
-			if entry == nil {
-				continue
-			}
-			s.ledger[ledgerEntryKey(entry.Hour, entry.APIKey, entry.Account, entry.Model, entry.Source)] = entry
-		}
-	}
-	needsImport := !hasExisting && (len(s.keys) > 0 || len(s.ledger) > 0)
-	s.dirty = true
+	s.flushInterval = flushInterval
+	stopCh := make(chan struct{})
+	stoppedCh := make(chan struct{})
+	s.stopFlushCh = stopCh
+	s.flushStopped = stoppedCh
 	s.mu.Unlock()
-
-	if needsImport {
-		return s.FlushNow()
-	}
+	go s.flushLoop(stopCh, stoppedCh, flushInterval)
 	return nil
 }
 
-// SQLitePath reports the configured SQLite database file (empty when disabled).
-func (s *Store) SQLitePath() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.sqlDB == nil {
-		return ""
+// FlushNowIfOpen flushes pending rows using an explicit handle (used while swapping
+// the database during a hot reload).
+func (s *Store) FlushNowIfOpen(db *sqlitestore.DB) error {
+	if db == nil {
+		return nil
 	}
-	return s.sqlDB.path
+	s.mu.Lock()
+	swap := s.db == nil
+	if swap {
+		s.db = db
+	}
+	s.mu.Unlock()
+	err := s.flushToDB()
+	if swap {
+		s.mu.Lock()
+		s.db = nil
+		s.mu.Unlock()
+	}
+	return err
 }
 
-// Close stops the periodic flusher and performs a final synchronous atomic flush to disk.
+// Close stops the periodic flusher, flushes pending rows and releases the database.
 func (s *Store) Close() error {
 	s.stopFlusher()
 	errFlush := s.FlushNow()
 	s.mu.Lock()
-	sqlDB := s.sqlDB
-	s.sqlDB = nil
+	db := s.db
+	s.db = nil
 	s.mu.Unlock()
-	if sqlDB != nil {
-		if errSQL := sqlDB.Close(); errSQL != nil && errFlush == nil {
-			return errSQL
+	if db != nil {
+		if errClose := db.Close(); errClose != nil && errFlush == nil {
+			return errClose
 		}
 	}
 	return errFlush
+}
+
+// DB exposes the shared database handle so other layers (for example the rule
+// store in the plugin package) can use the very same connection and writer lock.
+func (s *Store) DB() *sqlitestore.DB {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.db
 }
 
 func (s *Store) stopFlusher() {
@@ -842,6 +707,8 @@ func (s *Store) reconcileTrackerDeltaLocked(tr *TrackedRequest) {
 		if acct != nil {
 			migrateTupleBucket(acct.Models, prev, key, requested, served)
 		}
+		s.markKeyDirtyLocked(apiKey)
+		s.markAccountDirtyLocked(tr)
 	}
 	tr.BilledKey = key
 
@@ -925,6 +792,8 @@ func (s *Store) reconcileTrackerDeltaLocked(tr *TrackedRequest) {
 		ks.LastRequestAt = nowStr
 		ms.LastUsedAt = nowStr
 		recordLedger(1, 0, 0, 0, 0, 0, 0)
+		s.markKeyDirtyLocked(apiKey)
+		s.markAccountDirtyLocked(tr)
 		s.dirty = true
 	}
 
@@ -1005,7 +874,35 @@ func (s *Store) reconcileTrackerDeltaLocked(tr *TrackedRequest) {
 
 	recordLedger(0, dIn, dOut, dRead, dWrite, dTotal, costBreakdown.NanoUSD)
 
+	s.markKeyDirtyLocked(apiKey)
+	s.markAccountDirtyLocked(tr)
 	s.dirty = true
+}
+
+// markKeyDirtyLocked schedules one API key (with its model tuples) for the next flush.
+func (s *Store) markKeyDirtyLocked(apiKey string) {
+	if apiKey == "" || s.dirtyKeys == nil {
+		return
+	}
+	s.dirtyKeys[apiKey] = struct{}{}
+}
+
+// markAccountDirtyLocked schedules the account bucket of a tracked request.
+func (s *Store) markAccountDirtyLocked(tr *TrackedRequest) {
+	if s.dirtyAccounts == nil || tr == nil {
+		return
+	}
+	if key := accountBucketKey(tr.Provider, tr.AuthID, tr.AuthIndex); key != "" {
+		s.dirtyAccounts[key] = struct{}{}
+	}
+}
+
+// markLedgerDirtyLocked schedules one hourly ledger row for the next flush.
+func (s *Store) markLedgerDirtyLocked(key string) {
+	if key == "" || s.dirtyLedger == nil {
+		return
+	}
+	s.dirtyLedger[key] = struct{}{}
 }
 
 // requestedModelOf resolves the client-requested model of a tracked request.
@@ -1509,11 +1406,23 @@ func (s *Store) Reset(apiKey string) error {
 		s.byRequestID = make(map[string]*TrackedRequest)
 		s.byTraceID = make(map[string]*TrackedRequest)
 		s.seenHostReqID = make(map[string]time.Time)
+		s.resetAll = true
+		s.dirtyKeys = make(map[string]struct{})
+		s.dirtyAccounts = make(map[string]struct{})
+		s.dirtyLedger = make(map[string]struct{})
+		s.deletedLedger = make(map[ledgerRef]struct{})
 	} else {
 		delete(s.keys, target)
+		s.deletedKeys[target] = struct{}{}
+		delete(s.dirtyKeys, target)
 		for key, entry := range s.ledger {
 			if entry != nil && entry.APIKey == target {
+				s.deletedLedger[ledgerRef{
+					hour: entry.Hour, apiKey: entry.APIKey, account: entry.Account,
+					model: entry.Model, source: entry.Source,
+				}] = struct{}{}
 				delete(s.ledger, key)
+				delete(s.dirtyLedger, key)
 			}
 		}
 	}
@@ -1525,7 +1434,7 @@ func (s *Store) Reset(apiKey string) error {
 // FlushIfDirty writes the snapshot to disk only if new usage has been recorded since the last flush.
 func (s *Store) FlushIfDirty() error {
 	s.mu.Lock()
-	if !s.dirty || s.storageFile == "" {
+	if !s.dirty || s.db == nil {
 		s.mu.Unlock()
 		return nil
 	}
@@ -1533,99 +1442,10 @@ func (s *Store) FlushIfDirty() error {
 	return s.FlushNow()
 }
 
-// FlushNow atomically writes the full usage statistics snapshot to `storageFile`.
+// FlushNow persists every row touched since the previous flush.
 func (s *Store) FlushNow() error {
-	s.mu.Lock()
-	targetFile := s.storageFile
-	mirrors := append([]string(nil), s.mirrorFiles...)
-	if targetFile == "" {
-		s.mu.Unlock()
-		return nil
-	}
-	snap := PersistedSnapshot{
-		Version:   1,
-		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
-		Keys:      make(map[string]*KeyStats, len(s.keys)),
-		Accounts:  make(map[string]*AccountStats, len(s.accounts)),
-	}
-	for k, v := range s.keys {
-		cp := *v
-		cp.TotalCostUSD = pricing.NanoToUSD(cp.TotalCostNanoUSD)
-		cp.TotalCostFormatted = pricing.FormatUSD(cp.TotalCostNanoUSD)
-		cp.Models = make(map[string]*ModelStats, len(v.Models))
-		for mk, mv := range v.Models {
-			mcp := *mv
-			mcp.CostUSD = pricing.NanoToUSD(mcp.CostNanoUSD)
-			mcp.CostFormatted = pricing.FormatUSD(mcp.CostNanoUSD)
-			cp.Models[mk] = &mcp
-		}
-		snap.Keys[k] = &cp
-	}
-	for k, v := range s.accounts {
-		if v == nil {
-			continue
-		}
-		acp := *v
-		if len(v.Models) > 0 {
-			acp.Models = make(map[string]*ModelStats, len(v.Models))
-			for mk, mv := range v.Models {
-				if mv == nil {
-					continue
-				}
-				mcp := *mv
-				mcp.CostUSD = pricing.NanoToUSD(mcp.CostNanoUSD)
-				mcp.CostFormatted = pricing.FormatUSD(mcp.CostNanoUSD)
-				acp.Models[mk] = &mcp
-			}
-		}
-		snap.Accounts[k] = &acp
-	}
 	s.pruneLedgerLocked(time.Now())
-	if len(s.ledger) > 0 {
-		snap.Ledger = make([]*LedgerEntry, 0, len(s.ledger))
-		for _, entry := range s.ledger {
-			if entry == nil {
-				continue
-			}
-			cp := *entry
-			snap.Ledger = append(snap.Ledger, &cp)
-		}
-		sort.Slice(snap.Ledger, func(i, j int) bool {
-			if snap.Ledger[i].Hour != snap.Ledger[j].Hour {
-				return snap.Ledger[i].Hour < snap.Ledger[j].Hour
-			}
-			return snap.Ledger[i].Model < snap.Ledger[j].Model
-		})
-	}
-	s.dirty = false
-	s.mu.Unlock()
-
-	raw, err := json.MarshalIndent(snap, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	s.mu.Lock()
-	sqlDB := s.sqlDB
-	s.mu.Unlock()
-	var sqlErr error
-	if sqlDB != nil {
-		if errSQL := sqlDB.saveSnapshot(snap); errSQL != nil {
-			sqlErr = errSQL
-		}
-	}
-
-	errWrite := writeFileAtomicallyWindowsSafe(targetFile, raw)
-	for _, mirror := range mirrors {
-		if mirror == targetFile {
-			continue
-		}
-		_ = writeFileAtomicallyWindowsSafe(mirror, raw)
-	}
-	if sqlErr != nil {
-		return sqlErr
-	}
-	return errWrite
+	return s.flushToDB()
 }
 
 func (s *Store) loadFromDisk(filePath string) error {

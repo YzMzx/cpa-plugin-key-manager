@@ -187,6 +187,7 @@ jobs:
           tag_name: ${{ github.event.inputs.tag_name || github.ref_name }}
           name: "Release ${{ github.event.inputs.tag_name || github.ref_name }}"
           generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
             artifacts/cpa-plugin-key-manager-*
             artifacts/SHA256SUMS.txt

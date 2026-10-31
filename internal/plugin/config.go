@@ -409,6 +409,18 @@ func (c *Config) Normalize() {
 	}
 	c.Storage.UsageFile = ResolveStoragePath(c.Storage.UsageFile)
 
+	// SQLite only: default the database next to the legacy snapshot path so every
+	// deployment keeps its existing directory layout.
+	if strings.TrimSpace(c.Storage.UsageDBFile) == "" {
+		dir := filepath.Dir(filepath.Clean(c.Storage.UsageFile))
+		base := strings.TrimSuffix(filepath.Base(filepath.Clean(c.Storage.UsageFile)), filepath.Ext(c.Storage.UsageFile))
+		if dir == "" || dir == "." {
+			c.Storage.UsageDBFile = "./" + base + ".db"
+		} else {
+			c.Storage.UsageDBFile = filepath.Join(dir, base+".db")
+		}
+	}
+
 	if c.Storage.FlushIntervalSeconds <= 0 {
 		c.Storage.FlushIntervalSeconds = 10
 	}
