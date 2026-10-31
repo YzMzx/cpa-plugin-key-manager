@@ -1321,6 +1321,11 @@
       <div class="kpi-value" id="kpiTotalRequests">0</div>
       <div class="kpi-sub" id="kpiReqSub">成功: 0 · 失败: 0 (100.0%)</div>
     </div>
+    <div class="kpi-card">
+      <div class="kpi-label">累计总消耗额度</div>
+      <div class="kpi-value" id="kpiTotalCost">$0.000000</div>
+      <div class="kpi-sub" id="kpiCostSub">平均每次请求 $0.000000</div>
+    </div>
   </div>
 
   <!-- TAB 0: QUOTA OVERVIEW (default landing tab) -->
@@ -1521,10 +1526,11 @@
     <div class="card">
       <div class="card-header">
         <div>
-          <h2 class="card-title">API Key 额度管理</h2>
+          <h2 class="card-title">API Key 管理</h2>
         </div>
         <div class="input-row">
           <input type="text" class="input" style="width:200px" id="quotaSearch" placeholder="搜索 API Key 或备注..." oninput="renderQuotaTable()">
+          <button type="button" class="btn btn-sm" onclick="openKeyModal(null)">新建 API Key</button>
         </div>
       </div>
       <div class="table-wrap">
@@ -1550,7 +1556,6 @@
         </div>
         <div class="input-row">
           <input type="text" class="input" style="width:220px" id="crudKeySearch" placeholder="搜索 API Key 或备注名称..." oninput="renderKeysCrudTable()">
-          <button type="button" class="btn btn-sm" onclick="openKeyModal(null)">新建 API Key</button>
         </div>
       </div>
       <div class="table-wrap">
@@ -1566,11 +1571,10 @@
               <th>累计总 Tokens</th>
               <th class="col-models">模型白名单规则</th>
               <th>绑定账号凭证</th>
-              <th>操作</th>
             </tr>
           </thead>
           <tbody id="crudKeysTableBody">
-            <tr><td colspan="10" style="text-align:center;color:var(--text-tertiary)">加载中...</td></tr>
+            <tr><td colspan="9" style="text-align:center;color:var(--text-tertiary)">加载中...</td></tr>
           </tbody>
         </table>
       </div>
@@ -2517,6 +2521,12 @@
     const rate = s.total_requests > 0 ? ((s.success_requests / s.total_requests) * 100).toFixed(1) : "100.0";
     document.getElementById("kpiReqSub").textContent =
       `成功: ${fmtInt(s.success_requests)} · 失败: ${fmtInt(s.failed_requests)} (${rate}%)`;
+
+    const totalCost = Number(s.total_cost_usd || 0);
+    document.getElementById("kpiTotalCost").textContent = fmtMoneyNano(Math.round(totalCost * 1e9));
+    const avgCost = (s.total_requests || 0) > 0 ? totalCost / s.total_requests : 0;
+    document.getElementById("kpiCostSub").textContent =
+      `平均每次请求 $${avgCost.toFixed(6)}`;
   }
 
   // ==================== PURE CHECKBOX SELECTORS (MODELS & CREDENTIALS) ====================
@@ -3138,7 +3148,7 @@
 
     const tbody = document.getElementById("crudKeysTableBody");
     if (filtered.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;color:var(--text-tertiary)">暂无 API Key</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;color:var(--text-tertiary)">暂无 API Key</td></tr>`;
       return;
     }
 
@@ -3190,11 +3200,6 @@
         </td>
         <td class="col-models">${modelsHtml}</td>
         <td>${bindHtml}</td>
-        <td class="cell-nowrap">
-          <div class="row-actions">
-            <button type="button" class="btn btn-sm btn-danger" onclick="deleteKeyRule('${escapeHtml(k)}')">删除</button>
-          </div>
-        </td>
       </tr>`;
     }).join("");
 
@@ -3501,6 +3506,7 @@
             <button type="button" class="btn btn-sm" onclick="copyText('${escapeHtml(rule.api_key)}')">复制密钥</button>
             <button type="button" class="btn btn-sm" onclick="openKeyModalByKey('${escapeHtml(rule.api_key)}')">管理密钥</button>
             <button type="button" class="btn btn-sm" onclick="resetKeyQuota('${escapeHtml(rule.api_key)}')">重置额度</button>
+            <button type="button" class="btn btn-sm btn-danger" onclick="deleteKeyRule('${escapeHtml(rule.api_key)}')">删除</button>
           </div>
         </td>
       </tr>`;
