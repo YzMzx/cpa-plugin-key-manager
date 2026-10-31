@@ -208,6 +208,16 @@ func (m *Manager) Configure(raw []byte) error {
 				"to":   dbPath,
 			})
 		}
+		// Upgrading from v0.8.x (JSON snapshots): when the database does not exist
+		// yet, adopt the newest JSON snapshot so billing history survives the switch.
+		if info, errStat := os.Stat(dbPath); errStat != nil || info.IsDir() || info.Size() == 0 {
+			candidates := UsageFileCandidates(seedCfg.Storage.UsageFile)
+			if errImport := m.usageStore.ImportLegacySnapshotCandidates(candidates); errImport != nil {
+				m.host.Log("warn", "failed to import the legacy usage snapshot", map[string]any{
+					"error": errImport.Error(),
+				})
+			}
+		}
 		if errDB := m.usageStore.ConfigureSQLite(dbPath, seedFlush); errDB != nil {
 			m.host.Log("warn", "failed to open the plugin sqlite database", map[string]any{
 				"file":  dbPath,

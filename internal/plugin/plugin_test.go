@@ -1121,8 +1121,6 @@ keys:
 	}
 }
 
-
-
 func TestModelsDevSyncAndCustomPriceOverride(t *testing.T) {
 	isolateStateDirs(t)
 	tmpDir := t.TempDir()

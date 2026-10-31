@@ -1,8 +1,11 @@
 package usage
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/YzMzx/cpa-plugin-key-manager/internal/pricing"
@@ -349,6 +352,50 @@ func (s *Store) flushToDB() error {
 		return fmt.Errorf("sqlite: commit flush: %w", err)
 	}
 	return nil
+}
+
+// ImportLegacySnapshotCandidates loads the newest JSON snapshot among the given
+// paths into memory so the following SQLite flush can persist it. This is the
+// upgrade path from v0.8.x (JSON) to v0.9.x (SQLite): usage history is imported
+// once, when the database does not exist yet.
+func (s *Store) ImportLegacySnapshotCandidates(paths []string) error {
+	if len(paths) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	empty := len(s.keys) == 0 && len(s.accounts) == 0 && len(s.ledger) == 0
+	s.mu.Unlock()
+	if !empty {
+		return nil
+	}
+
+	bestPath := ""
+	bestUpdated := ""
+	for _, raw := range paths {
+		path := strings.TrimSpace(raw)
+		if path == "" {
+			continue
+		}
+		rawBytes, errRead := os.ReadFile(path)
+		if errRead != nil || len(strings.TrimSpace(string(rawBytes))) == 0 {
+			continue
+		}
+		var snap PersistedSnapshot
+		if errUnmarshal := json.Unmarshal(rawBytes, &snap); errUnmarshal != nil {
+			continue
+		}
+		if len(snap.Keys) == 0 && len(snap.Ledger) == 0 {
+			continue
+		}
+		if bestPath == "" || snap.UpdatedAt > bestUpdated {
+			bestPath = path
+			bestUpdated = snap.UpdatedAt
+		}
+	}
+	if bestPath == "" {
+		return nil
+	}
+	return s.loadFromDisk(bestPath)
 }
 
 // EnableSQLite opens the database, loads existing rows and marks SQLite as the only backend.
