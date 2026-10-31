@@ -191,6 +191,21 @@ type LedgerModelRow struct {
 	Share            float64 `json:"share"`
 }
 
+// LedgerKeyRow aggregates one API key and carries its per-model breakdown.
+type LedgerKeyRow struct {
+	APIKey           string           `json:"api_key"`
+	KeyName          string           `json:"key_name,omitempty"`
+	Requests         int64            `json:"requests"`
+	InputTokens      int64            `json:"input_tokens"`
+	OutputTokens     int64            `json:"output_tokens"`
+	CacheReadTokens  int64            `json:"cache_read_tokens"`
+	CacheWriteTokens int64            `json:"cache_write_tokens"`
+	TotalTokens      int64            `json:"total_tokens"`
+	CostNanoUSD      int64            `json:"cost_nano_usd"`
+	Share            float64          `json:"share"`
+	Models           []LedgerModelRow `json:"models"`
+}
+
 // LedgerResult is the full payload returned to the overview tab.
 type LedgerResult struct {
 	From             string           `json:"from"`
@@ -210,6 +225,7 @@ type LedgerResult struct {
 	KeysAvailable    int              `json:"keys_available"`
 	Series           []LedgerBucket   `json:"series"`
 	Models           []LedgerModelRow `json:"models"`
+	KeyRows          []LedgerKeyRow   `json:"key_rows"`
 	UsedModels       []string         `json:"used_models"`
 	UsedSources      []string         `json:"used_sources"`
 	Status           LedgerStatus     `json:"status"`
@@ -304,6 +320,8 @@ func (s *Store) QueryLedger(q LedgerQuery) LedgerResult {
 
 	buckets := make(map[string]*LedgerBucket)
 	modelAgg := make(map[string]*LedgerModelRow)
+	keyAgg := make(map[string]*LedgerKeyRow)
+	keyModelAgg := make(map[string]map[string]*LedgerModelRow)
 	activeDays := make(map[string]struct{})
 	usedModels := make(map[string]struct{})
 	usedSources := make(map[string]struct{})
@@ -371,6 +389,41 @@ func (s *Store) QueryLedger(q LedgerQuery) LedgerResult {
 		row.CacheWriteTokens += entry.CacheWriteTokens
 		row.TotalTokens += entry.TotalTokens
 		row.CostNanoUSD += entry.CostNanoUSD
+
+		// Per-key aggregation with its own per-model breakdown.
+		keyRow := keyAgg[entry.APIKey]
+		if keyRow == nil {
+			keyRow = &LedgerKeyRow{APIKey: entry.APIKey, KeyName: entry.KeyName}
+			keyAgg[entry.APIKey] = keyRow
+		}
+		if keyRow.KeyName == "" && entry.KeyName != "" {
+			keyRow.KeyName = entry.KeyName
+		}
+		keyRow.Requests += entry.Requests
+		keyRow.InputTokens += entry.InputTokens
+		keyRow.OutputTokens += entry.OutputTokens
+		keyRow.CacheReadTokens += entry.CacheReadTokens
+		keyRow.CacheWriteTokens += entry.CacheWriteTokens
+		keyRow.TotalTokens += entry.TotalTokens
+		keyRow.CostNanoUSD += entry.CostNanoUSD
+
+		perModel := keyModelAgg[entry.APIKey]
+		if perModel == nil {
+			perModel = make(map[string]*LedgerModelRow)
+			keyModelAgg[entry.APIKey] = perModel
+		}
+		km := perModel[entry.Model]
+		if km == nil {
+			km = &LedgerModelRow{Model: entry.Model}
+			perModel[entry.Model] = km
+		}
+		km.Requests += entry.Requests
+		km.InputTokens += entry.InputTokens
+		km.OutputTokens += entry.OutputTokens
+		km.CacheReadTokens += entry.CacheReadTokens
+		km.CacheWriteTokens += entry.CacheWriteTokens
+		km.TotalTokens += entry.TotalTokens
+		km.CostNanoUSD += entry.CostNanoUSD
 	}
 
 	labels := make([]string, 0, len(buckets))
@@ -401,6 +454,43 @@ func (s *Store) QueryLedger(q LedgerQuery) LedgerResult {
 	result.Models = rows
 	result.ModelCount = len(rows)
 	result.ActiveDays = len(activeDays)
+
+	// Per-key rows with nested per-model breakdown, largest consumers first.
+	keyRows := make([]LedgerKeyRow, 0, len(keyAgg))
+	for apiKey, keyRow := range keyAgg {
+		if keyRow == nil {
+			continue
+		}
+		if keyRow.TotalTokens > 0 {
+			keyRow.Share = float64(keyRow.TotalTokens) / float64(result.TotalTokens) * 100
+		}
+		perModel := make([]LedgerModelRow, 0, len(keyModelAgg[apiKey]))
+		for _, km := range keyModelAgg[apiKey] {
+			if km == nil {
+				continue
+			}
+			km.Share = 0
+			if keyRow.TotalTokens > 0 {
+				km.Share = float64(km.TotalTokens) / float64(keyRow.TotalTokens) * 100
+			}
+			perModel = append(perModel, *km)
+		}
+		sort.Slice(perModel, func(i, j int) bool {
+			if perModel[i].TotalTokens != perModel[j].TotalTokens {
+				return perModel[i].TotalTokens > perModel[j].TotalTokens
+			}
+			return perModel[i].Model < perModel[j].Model
+		})
+		keyRow.Models = perModel
+		keyRows = append(keyRows, *keyRow)
+	}
+	sort.Slice(keyRows, func(i, j int) bool {
+		if keyRows[i].TotalTokens != keyRows[j].TotalTokens {
+			return keyRows[i].TotalTokens > keyRows[j].TotalTokens
+		}
+		return keyRows[i].APIKey < keyRows[j].APIKey
+	})
+	result.KeyRows = keyRows
 
 	for model := range usedModels {
 		result.UsedModels = append(result.UsedModels, model)

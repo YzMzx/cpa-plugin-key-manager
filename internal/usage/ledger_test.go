@@ -154,3 +154,49 @@ func TestLedgerResetClearsKey(t *testing.T) {
 		t.Fatalf("ledger rows survived the reset: %+v", result)
 	}
 }
+
+// TestLedgerPerKeyBreakdown covers the per-key table: totals per key plus the
+// model breakdown inside each key, still billed by the requested model.
+func TestLedgerPerKeyBreakdown(t *testing.T) {
+	store, _ := ledgerTestStore(t)
+
+	feedLedgerRequest(t, store, "k1-a", "sk-key-one", "Key One", "gemini-3.8-flash-high", "gemini-4-argon-high", "openai", "antigravity", "a.json", 100, 10, 0)
+	feedLedgerRequest(t, store, "k1-b", "sk-key-one", "Key One", "claude-sonnet-4-6", "claude-sonnet-4-6", "claude", "claude", "b.json", 50, 5, 0)
+	feedLedgerRequest(t, store, "k2-a", "sk-key-two", "Key Two", "kimi-k2.6", "kimi-k2.6", "openai", "kimi", "c.json", 20, 2, 0)
+
+	now := time.Now()
+	result := store.QueryLedger(LedgerQuery{From: now.Add(-2 * time.Hour), To: now.Add(2 * time.Hour)})
+
+	if len(result.KeyRows) != 2 {
+		t.Fatalf("key rows = %d, want 2", len(result.KeyRows))
+	}
+	first := result.KeyRows[0]
+	if first.APIKey != "sk-key-one" || first.KeyName != "Key One" {
+		t.Fatalf("largest key should come first, got %+v", first)
+	}
+	if first.Requests != 2 || first.TotalTokens != 165 {
+		t.Fatalf("key totals wrong: %+v", first)
+	}
+	if len(first.Models) != 2 {
+		t.Fatalf("per-key model breakdown = %d rows, want 2", len(first.Models))
+	}
+	if first.Models[0].Model != "gemini-3.8-flash-high" {
+		t.Fatalf("models should be sorted by tokens, got %+v", first.Models)
+	}
+	if first.Models[0].Model == "gemini-4-argon-high" {
+		t.Fatalf("substituted model leaked into the per-key breakdown")
+	}
+	var modelShareSum float64
+	for _, m := range first.Models {
+		modelShareSum += m.Share
+	}
+	if modelShareSum < 99.9 || modelShareSum > 100.1 {
+		t.Fatalf("per-model shares should add up to 100%%, got %.2f", modelShareSum)
+	}
+	if first.Share <= 0 || first.Share > 100 {
+		t.Fatalf("key share out of range: %.2f", first.Share)
+	}
+	if result.KeyRows[1].APIKey != "sk-key-two" || len(result.KeyRows[1].Models) != 1 {
+		t.Fatalf("second key wrong: %+v", result.KeyRows[1])
+	}
+}
