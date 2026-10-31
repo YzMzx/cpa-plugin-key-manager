@@ -8,8 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/YzMzx/cpa-plugin-key-manager/internal/handler"
+	"github.com/YzMzx/cpa-plugin-key-manager/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
@@ -779,6 +781,43 @@ storage:
 	scriptResp := decodeEnvelope[pluginapi.ResponseInterceptResponse](t, rawScriptResp)
 	if len(scriptResp.Body) != 0 {
 		t.Fatalf("X-Key-Guard-Catalog: all must bypass filtering, got body: %s", string(scriptResp.Body))
+	}
+}
+
+// TestOverviewKeyCountsComeFromConfiguredRules pins that the overview shows the
+// configured key totals immediately, without waiting for the first request.
+func TestOverviewKeyCountsComeFromConfiguredRules(t *testing.T) {
+	isolateStateDirs(t)
+	tmpDir := t.TempDir()
+
+	mgr := NewManager(nil)
+	defer mgr.Shutdown()
+
+	cfgYAML := `enabled: true
+storage:
+  usage_file: "` + filepath.ToSlash(filepath.Join(tmpDir, "usage.json")) + `"
+  rules_file: "` + filepath.ToSlash(filepath.Join(tmpDir, "rules.json")) + `"
+keys:
+  - api_key: "sk-enabled-1"
+    name: "启用一"
+  - api_key: "sk-enabled-2"
+    name: "启用二"
+  - api_key: "sk-disabled-1"
+    name: "停用"
+    enabled: false
+`
+	regReq, _ := json.Marshal(lifecycleRequest{ConfigYAML: []byte(cfgYAML), SchemaVersion: pluginabi.SchemaVersion})
+	if _, err := mgr.HandleRPC(pluginabi.MethodPluginRegister, regReq); err != nil {
+		t.Fatalf("register failed: %v", err)
+	}
+
+	now := time.Now()
+	result := mgr.QueryLedger(usage.LedgerQuery{From: now.Add(-time.Hour), To: now.Add(time.Hour)})
+	if result.Requests != 0 {
+		t.Fatalf("expected no ledger traffic yet, got %d requests", result.Requests)
+	}
+	if result.KeysTotal != 3 || result.KeysAvailable != 2 {
+		t.Fatalf("key counters should come from config: got %d/%d, want 3/2", result.KeysAvailable, result.KeysTotal)
 	}
 }
 

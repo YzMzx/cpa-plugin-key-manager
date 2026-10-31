@@ -22,7 +22,7 @@ import (
 
 const (
 	PluginID      = "cpa-plugin-key-manager"
-	PluginVersion = "0.7.4"
+	PluginVersion = "0.7.5"
 	PluginAuthor  = "YzMzx"
 	PluginRepo    = "https://github.com/YzMzx/cpa-plugin-key-manager"
 	PluginLogoSVG = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%238b8680'/><path d='M24 22a10 10 0 1 0 9.5 13H42v5h6v-5h4v-6H33.5A10 10 0 0 0 24 22zm0 6a4 4 0 1 1 0 8 4 4 0 0 1 0-8z' fill='%23fff'/></svg>"
@@ -718,8 +718,36 @@ func (m *Manager) TriggerPricingSync(ctx context.Context) (int, error) {
 }
 
 // QueryLedger aggregates the retained hourly ledger according to the overview filters.
+// The key counters come from the configured rules (not from usage buckets), so the
+// overview shows "总密钥 / 可用密钥" immediately instead of only after the first call.
 func (m *Manager) QueryLedger(q usage.LedgerQuery) usage.LedgerResult {
-	return m.usageStore.QueryLedger(q)
+	result := m.usageStore.QueryLedger(q)
+
+	m.mu.RLock()
+	total := 0
+	available := 0
+	seen := make(map[string]struct{}, len(m.cfg.Keys))
+	for _, rule := range m.cfg.Keys {
+		key := strings.TrimSpace(rule.APIKey)
+		if key == "" {
+			continue
+		}
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		total++
+		if rule.IsEnabled() {
+			available++
+		}
+	}
+	m.mu.RUnlock()
+
+	if total > 0 {
+		result.KeysTotal = total
+		result.KeysAvailable = available
+	}
+	return result
 }
 
 // ExtractCallerAPIKey extracts the caller's API key from a self-service resource request and checks if it matches AdminToken.

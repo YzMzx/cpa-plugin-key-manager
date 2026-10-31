@@ -449,7 +449,6 @@
     color: var(--text-tertiary);
     font-size: 13px;
   }
-  .ov-empty-icon { font-size: 26px; opacity: 0.55; }
   .ov-dist-grid {
     display: grid;
     grid-template-columns: 280px 1fr;
@@ -1222,7 +1221,7 @@
   <!-- Authentication Gate -->
   <div id="authGateView" class="auth-gate-wrap">
     <div class="auth-gate-card">
-      <h2 class="auth-gate-title">🔒 需要管理密钥授权</h2>
+      <h2 class="auth-gate-title">需要管理密钥授权</h2>
       <p class="auth-gate-desc" id="authGateDesc">
         请先在管理中心登录，或输入 Management Key 解锁访问。
       </p>
@@ -1327,7 +1326,7 @@
             <button type="button" class="seg-btn" data-unit="1e6" onclick="setOverviewTokenUnit('1e6')">百万</button>
           </div>
           <span class="tag plain" id="ovLedgerStatus" title="本地账本状态">账本：检测中…</span>
-          <button type="button" class="btn btn-sm btn-primary" onclick="loadOverviewLedger(true)">🔄 刷新</button>
+          <button type="button" class="btn btn-sm" onclick="loadOverviewLedger(true)">刷新</button>
         </div>
       </div>
     </div>
@@ -1480,7 +1479,7 @@
         </div>
         <div class="input-row">
           <input type="text" class="input" style="width:220px" id="crudKeySearch" placeholder="搜索 API Key 或备注名称..." oninput="renderKeysCrudTable()">
-          <button type="button" class="btn btn-primary" onclick="openKeyModal(null)">➕ 新建 API Key</button>
+          <button type="button" class="btn btn-sm" onclick="openKeyModal(null)">新建 API Key</button>
         </div>
       </div>
       <div class="table-wrap">
@@ -1603,7 +1602,7 @@
         <div>
           <h2 class="card-title">全局默认策略</h2>
         </div>
-        <button type="button" class="btn btn-primary" onclick="saveDefaultPolicy()">💾 保存全局默认策略</button>
+        <button type="button" class="btn btn-sm" onclick="saveDefaultPolicy()">保存全局默认策略</button>
       </div>
 
       <div class="form-grid">
@@ -1688,7 +1687,7 @@
         <div>
           <h2 class="card-title">上游账号凭证列表</h2>
         </div>
-        <button type="button" class="btn btn-sm" onclick="loadAdminOverview()">🔄 刷新凭证</button>
+        <button type="button" class="btn btn-sm" onclick="loadAdminOverview()">刷新凭证</button>
       </div>
       <div class="table-wrap">
         <table>
@@ -1723,8 +1722,8 @@
           </div>
         </div>
         <div class="input-row">
-          <button type="button" class="btn" id="btnSyncPricing" onclick="triggerModelsDevSync()">🔄 立即从 models.dev 同步</button>
-          <button type="button" class="btn btn-primary" onclick="openPriceModal('')">➕ 新增自定义价格</button>
+          <button type="button" class="btn btn-sm" id="btnSyncPricing" onclick="triggerModelsDevSync()">立即从 models.dev 同步</button>
+          <button type="button" class="btn btn-sm" onclick="openPriceModal('')">新增自定义价格</button>
         </div>
       </div>
 
@@ -1798,7 +1797,7 @@
         </div>
         <div class="input-row">
           <input type="text" class="input" style="width:260px" id="modelsDevSearchInput" placeholder="输入关键字检索 (如 claude, gemini, gpt, deepseek)..." oninput="debouncedSearchModelsDev()">
-          <button type="button" class="btn btn-sm" onclick="searchModelsDevCatalog()">🔍 检索</button>
+          <button type="button" class="btn btn-sm" onclick="searchModelsDevCatalog()">检索</button>
         </div>
       </div>
       <div class="table-wrap">
@@ -1828,7 +1827,7 @@
   <div class="modal" style="max-width:540px">
     <div class="modal-header">
       <h3 class="card-title" id="priceModalTitle">修改模型价格</h3>
-      <button type="button" class="btn btn-sm" onclick="closePriceModal()">✕</button>
+      <button type="button" class="btn btn-sm" onclick="closePriceModal()">×</button>
     </div>
     <div class="modal-body">
       <div class="form-group">
@@ -1838,7 +1837,7 @@
         </label>
         <div class="input-row">
           <input type="text" class="input mono" style="flex:1" id="pmModelInput" placeholder="例如: gemini-3.8-flash-high 或 claude-sonnet-4-*">
-          <button type="button" class="btn btn-sm" onclick="fillPriceModalFromModelsDev()">📥 从 models.dev 填入基准价</button>
+          <button type="button" class="btn btn-sm" onclick="fillPriceModalFromModelsDev()">从 models.dev 填入基准价</button>
         </div>
         <div id="pmRefHint" style="font-size:11.5px;color:var(--text-tertiary);margin-top:4px"></div>
       </div>
@@ -1867,7 +1866,7 @@
     </div>
     <div class="modal-footer">
       <button type="button" class="btn" onclick="closePriceModal()">取消</button>
-      <button type="button" class="btn btn-primary" onclick="submitPriceModal()">💾 保存价格配置</button>
+      <button type="button" class="btn btn-primary" onclick="submitPriceModal()">保存价格配置</button>
     </div>
   </div>
 </div>
@@ -1877,7 +1876,7 @@
   <div class="modal">
     <div class="modal-header">
       <h3 class="card-title" id="keyModalTitle">新建 / 编辑 API Key 规则</h3>
-      <button type="button" class="btn btn-sm" onclick="closeKeyModal()">✕</button>
+      <button type="button" class="btn btn-sm" onclick="closeKeyModal()">×</button>
     </div>
     <div class="modal-body">
       <input type="hidden" id="kmOriginalApiKey" value="">
@@ -1886,7 +1885,7 @@
           <label class="form-label">API Key *</label>
           <div class="input-row">
             <input type="text" class="input mono" style="flex:1" id="kmApiKey" placeholder="sk-...">
-            <button type="button" class="btn btn-sm" onclick="generateRandomSkKey()">🎲 随机生成</button>
+            <button type="button" class="btn btn-sm" onclick="generateRandomSkKey()">随机生成</button>
           </div>
         </div>
         <div class="form-group">
@@ -1969,7 +1968,7 @@
     </div>
     <div class="modal-footer">
       <button type="button" class="btn" onclick="closeKeyModal()">取消</button>
-      <button type="button" class="btn btn-primary" onclick="submitKeyModal()">💾 保存并同步至 CPA</button>
+      <button type="button" class="btn btn-primary" onclick="submitKeyModal()">保存并同步至 CPA</button>
     </div>
   </div>
 </div>
@@ -2993,13 +2992,13 @@
     popover.innerHTML = `
       <div class="model-popover-head">
         <span>${headLabel} <span class="mono" style="color:var(--text-primary)">${all.length}</span> ${unit}${q ? `（匹配 ${matchedCount}）` : ""}</span>
-        <button type="button" class="model-popover-close" onclick="closeModelPopover()" title="关闭">✕</button>
+        <button type="button" class="model-popover-close" onclick="closeModelPopover()" title="关闭">×</button>
       </div>
       <input type="text" class="model-popover-search" id="modelPopoverSearch" placeholder="${placeholder}" value="${escapeHtml(query || "")}" oninput="renderEntityPopover(this.value, true)">
       <div class="model-popover-list">${listHtml || `<div class="model-popover-empty">${emptyLabel}</div>`}</div>
       <div class="model-popover-foot">
         <button type="button" class="btn btn-sm" onclick="copyPopoverItems()">复制全部</button>
-        <button type="button" class="btn btn-sm btn-primary" onclick="editFromPopover('${isCreds ? "creds" : "models"}')">${isCreds ? "管理绑定凭证 →" : "编辑规则"}</button>
+        <button type="button" class="btn btn-sm btn-primary" onclick="editFromPopover('${isCreds ? "creds" : "models"}')">${isCreds ? "管理绑定凭证" : "编辑规则"}</button>
       </div>`;
 
     // Re-rendering replaces the input, so restore focus and caret while typing.
@@ -3087,13 +3086,13 @@
         <td class="drag-cell" title="拖动调整顺序">⠿</td>
         <td class="cell-nowrap">
           <span class="tag ${enabled ? "ok" : "bad"}" style="cursor:pointer" onclick="quickToggleKeyEnabled('${escapeHtml(k)}')" title="点击切换启用/禁用">
-            ${enabled ? "● 启用" : "⛔ 禁用"}
+            ${enabled ? "启用" : "禁用"}
           </span>
         </td>
         <td class="cell-nowrap">
           <div class="key-cell">
             <span class="key-code">${escapeHtml(dispKey)}</span>
-            <button type="button" class="btn btn-sm icon-btn" title="复制 Key" onclick="copyText('${escapeHtml(k)}')">📋</button>
+            <button type="button" class="btn btn-sm icon-btn" title="复制 Key" onclick="copyText('${escapeHtml(k)}')">复制</button>
           </div>
         </td>
         <td class="cell-nowrap" style="font-weight:600;max-width:160px;overflow:hidden;text-overflow:ellipsis">${escapeHtml(kr.name || "-")}</td>
@@ -3958,10 +3957,10 @@
   function renderOverviewEmpty(message) {
     const trend = document.getElementById("ovTrendChart");
     if (trend) {
-      trend.innerHTML = `<div class="ov-empty"><div class="ov-empty-icon">📭</div><div>暂无可用数据</div><div style="font-size:11.5px">${escapeHtml(message || "当前筛选范围内没有调用记录")}</div></div>`;
+      trend.innerHTML = `<div class="ov-empty"><div>暂无可用数据</div><div style="font-size:11.5px">${escapeHtml(message || "当前筛选范围内没有调用记录")}</div></div>`;
     }
     const donut = document.getElementById("ovDonutChart");
-    if (donut) donut.innerHTML = `<div class="ov-empty" style="min-height:200px"><div class="ov-empty-icon">📊</div><div>无模型调用</div></div>`;
+    if (donut) donut.innerHTML = `<div class="ov-empty" style="min-height:200px"><div>无模型调用</div></div>`;
     const list = document.getElementById("ovModelList");
     if (list) list.innerHTML = `<div class="ov-empty" style="min-height:120px"><div>当前筛选条件下没有模型数据</div></div>`;
     const keyBody = document.getElementById("ovKeyTableBody");
@@ -4043,7 +4042,7 @@
     if (!box) return;
     const series = (data.series || []).filter(s => s.total_tokens > 0 || s.requests > 0);
     if (!series.length) {
-      box.innerHTML = `<div class="ov-empty"><div class="ov-empty-icon">📈</div><div>当前筛选条件下暂无趋势数据</div><div style="font-size:11.5px">调整时间范围或筛选条件后再试</div></div>`;
+      box.innerHTML = `<div class="ov-empty"><div>当前筛选条件下暂无趋势数据</div><div style="font-size:11.5px">调整时间范围或筛选条件后再试</div></div>`;
       return;
     }
 
@@ -4133,7 +4132,7 @@
     if (!donutBox || !listBox) return;
     const rows = ((overviewState.data || {}).models) || [];
     if (!rows.length) {
-      donutBox.innerHTML = `<div class="ov-empty" style="min-height:200px"><div class="ov-empty-icon">📊</div><div>暂无模型调用</div></div>`;
+      donutBox.innerHTML = `<div class="ov-empty" style="min-height:200px"><div>暂无模型调用</div></div>`;
       listBox.innerHTML = `<div class="ov-empty" style="min-height:120px"><div>当前筛选条件下没有模型数据</div></div>`;
       return;
     }
@@ -4437,7 +4436,7 @@
     const btn = document.getElementById("btnSyncPricing");
     if (btn) {
       btn.disabled = true;
-      btn.textContent = "⏳ 正在从 models.dev 拉取...";
+      btn.textContent = "正在从 models.dev 拉取...";
     }
     try {
       const res = await callManagementAPI(API_PRICING_SYNC, { method: "POST" });
@@ -4448,7 +4447,7 @@
     } finally {
       if (btn) {
         btn.disabled = false;
-        btn.textContent = "🔄 立即从 models.dev 同步";
+        btn.textContent = "立即从 models.dev 同步";
       }
     }
   }
