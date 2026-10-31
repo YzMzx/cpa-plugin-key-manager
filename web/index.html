@@ -1279,14 +1279,45 @@
 
   <!-- TAB 0: QUOTA OVERVIEW (default landing tab) -->
   <section id="tab-overview" class="admin-tab">
+    <!-- Per-key breakdown (first block) -->
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <h2 class="card-title">按密钥统计消耗</h2>
+          <div style="font-size:12px;color:var(--text-tertiary);margin-top:4px" id="ovKeyTableMeta"></div>
+        </div>
+        <div class="input-row">
+          <button type="button" class="btn btn-sm" onclick="expandAllOverviewKeys(true)">展开全部</button>
+          <button type="button" class="btn btn-sm" onclick="expandAllOverviewKeys(false)">收起全部</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:26px"></th>
+              <th>密钥</th>
+              <th>请求数</th>
+              <th>Input</th>
+              <th>Output</th>
+              <th>缓存</th>
+              <th>总 Tokens</th>
+              <th>费用</th>
+              <th>Token 占比</th>
+            </tr>
+          </thead>
+          <tbody id="ovKeyTableBody">
+            <tr><td colspan="9" style="text-align:center;color:var(--text-tertiary)">加载中...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
     <!-- Controls -->
     <div class="card">
       <div class="card-header">
         <div>
           <h2 class="card-title">额度概览</h2>
-          <div style="font-size:12px;color:var(--text-tertiary);margin-top:4px">
-            基于本地账本的多维聚合视图；计费模型始终取客户端请求的目录模型，上游替换不影响计费归属。
-          </div>
         </div>
         <div class="input-row">
           <div class="seg" id="ovTokenUnitSeg">
@@ -1295,12 +1326,7 @@
             <button type="button" class="seg-btn" data-unit="1e4" onclick="setOverviewTokenUnit('1e4')">万</button>
             <button type="button" class="seg-btn" data-unit="1e6" onclick="setOverviewTokenUnit('1e6')">百万</button>
           </div>
-          <div class="seg" id="ovCurrencySeg">
-            <button type="button" class="seg-btn active" data-cur="USD" onclick="setOverviewCurrency('USD')">USD</button>
-            <button type="button" class="seg-btn" data-cur="CNY" onclick="setOverviewCurrency('CNY')">CNY</button>
-          </div>
           <span class="tag plain" id="ovLedgerStatus" title="本地账本状态">账本：检测中…</span>
-          <button type="button" class="btn btn-sm" onclick="openLedgerSettings()">连接设置</button>
           <button type="button" class="btn btn-sm btn-primary" onclick="loadOverviewLedger(true)">🔄 刷新</button>
         </div>
       </div>
@@ -1386,7 +1412,7 @@
       <div class="kpi-card">
         <div class="kpi-label">筛选费用</div>
         <div class="kpi-value" id="ovMetricCost">-</div>
-        <div class="kpi-sub" id="ovMetricCostSub">按当前币种汇率换算</div>
+        <div class="kpi-sub" id="ovMetricCostSub">USD 原币金额</div>
       </div>
       <div class="kpi-card">
         <div class="kpi-label">模型数量</div>
@@ -1442,42 +1468,6 @@
         <div class="ov-model-list" id="ovModelList">
           <div class="ov-skeleton" style="height:120px"></div>
         </div>
-      </div>
-    </div>
-
-    <!-- Per-key breakdown -->
-    <div class="card">
-      <div class="card-header">
-        <div>
-          <h2 class="card-title">按密钥统计消耗</h2>
-          <div style="font-size:12px;color:var(--text-tertiary);margin-top:4px" id="ovKeyTableMeta">
-            各密钥在当前筛选范围内的总消耗，展开可查看该密钥下每个模型的单独消耗
-          </div>
-        </div>
-        <div class="input-row">
-          <button type="button" class="btn btn-sm" onclick="expandAllOverviewKeys(true)">展开全部</button>
-          <button type="button" class="btn btn-sm" onclick="expandAllOverviewKeys(false)">收起全部</button>
-        </div>
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th style="width:26px"></th>
-              <th>密钥</th>
-              <th>请求数</th>
-              <th>Input</th>
-              <th>Output</th>
-              <th>缓存</th>
-              <th>总 Tokens</th>
-              <th>费用</th>
-              <th>Token 占比</th>
-            </tr>
-          </thead>
-          <tbody id="ovKeyTableBody">
-            <tr><td colspan="9" style="text-align:center;color:var(--text-tertiary)">加载中...</td></tr>
-          </tbody>
-        </table>
       </div>
     </div>
   </section>
@@ -3755,8 +3745,6 @@
 
   const overviewState = {
     tokenUnit: 1,          // 个 / 1e3 / 1e4 / 1e6
-    currency: "USD",       // USD | CNY
-    rate: 7.2,             // CNY per USD
     granularity: "day",
     modelDim: "requests",
     range: "7d",
@@ -3767,7 +3755,6 @@
   };
 
   const TOKEN_UNIT_LABELS = { 1: "个", 1000: "千", 10000: "万", 1000000: "百万" };
-  const CURRENCY_SYMBOLS = { USD: "$", CNY: "¥" };
 
   function loadOverviewPrefs() {
     try {
@@ -3775,8 +3762,6 @@
       if (raw) {
         const p = JSON.parse(raw);
         if (p.tokenUnit) overviewState.tokenUnit = Number(p.tokenUnit) || 1;
-        if (p.currency === "CNY" || p.currency === "USD") overviewState.currency = p.currency;
-        if (Number(p.rate) > 0) overviewState.rate = Number(p.rate);
       }
     } catch (_) {}
   }
@@ -3784,9 +3769,7 @@
   function saveOverviewPrefs() {
     try {
       localStorage.setItem("km_overview_prefs", JSON.stringify({
-        tokenUnit: overviewState.tokenUnit,
-        currency: overviewState.currency,
-        rate: overviewState.rate
+        tokenUnit: overviewState.tokenUnit
       }));
     } catch (_) {}
   }
@@ -3803,12 +3786,10 @@
 
   function fmtMoneyNano(nanoUSD) {
     const usd = Number(nanoUSD || 0) / 1e9;
-    const value = overviewState.currency === "CNY" ? usd * overviewState.rate : usd;
-    const symbol = CURRENCY_SYMBOLS[overviewState.currency] || "$";
-    if (value === 0) return symbol + "0.000000";
-    const abs = Math.abs(value);
+    if (usd === 0) return "$0.000000";
+    const abs = Math.abs(usd);
     const digits = abs >= 1 ? 4 : abs >= 0.01 ? 6 : 8;
-    return symbol + value.toFixed(digits);
+    return "$" + usd.toFixed(digits);
   }
 
   function overviewRangeBounds() {
@@ -3882,15 +3863,6 @@
     saveOverviewPrefs();
     document.querySelectorAll("#ovTokenUnitSeg .seg-btn").forEach(b => {
       b.classList.toggle("active", b.getAttribute("data-unit") === String(unit));
-    });
-    renderOverviewAll();
-  }
-
-  function setOverviewCurrency(cur) {
-    overviewState.currency = cur === "CNY" ? "CNY" : "USD";
-    saveOverviewPrefs();
-    document.querySelectorAll("#ovCurrencySeg .seg-btn").forEach(b => {
-      b.classList.toggle("active", b.getAttribute("data-cur") === overviewState.currency);
     });
     renderOverviewAll();
   }
@@ -4056,9 +4028,7 @@
     setText("ovMetricModels", fmtInt(data.model_count || 0));
     setText("ovMetricTokensSub",
       `入 ${fmtTokenValue(data.input_tokens)} · 出 ${fmtTokenValue(data.output_tokens)} · 缓存 ${fmtTokenValue(data.cache_read_tokens)}`);
-    setText("ovMetricCostSub", overviewState.currency === "CNY"
-      ? `按 1 USD = ${overviewState.rate} CNY 换算`
-      : "USD 原币金额");
+    setText("ovMetricCostSub", "USD 原币金额");
     setText("ovLegendInput", fmtTokenValue(data.input_tokens));
     setText("ovLegendOutput", fmtTokenValue(data.output_tokens));
     setText("ovLegendCache", fmtTokenValue(data.cache_read_tokens));
@@ -4295,31 +4265,6 @@
       overviewState.expandedKeys = {};
     }
     renderOverviewKeyTable();
-  }
-
-  function openLedgerSettings() {
-    const status = (overviewState.data && overviewState.data.status) || {};
-    const lines = [
-      "账本类型: 本地内嵌（随插件运行，无需额外服务）",
-      `状态: ${status.entries ? "运行中" : "空闲"} · 条目 ${fmtInt(status.entries || 0)}`,
-      `保留时长: ${status.retention_days || 90} 天`,
-      `存储位置: ${status.storage || "-"}`,
-      status.oldest_at ? `数据范围: ${status.oldest_at} ~ ${status.newest_at || "-"}` : "数据范围: 暂无历史数据",
-      "",
-      "汇率设置（用于 CNY 换算）"
-    ].join("\n");
-    const input = window.prompt(lines + "\n\n请输入 1 USD = ? CNY 的汇率：", String(overviewState.rate));
-    if (input !== null) {
-      const rate = Number(input);
-      if (Number.isFinite(rate) && rate > 0) {
-        overviewState.rate = rate;
-        saveOverviewPrefs();
-        renderOverviewAll();
-        showToast(`汇率已更新为 1 USD = ${rate} CNY`);
-      } else {
-        showToast("汇率必须是大于 0 的数字", true);
-      }
-    }
   }
 
   // ==================== TAB 4: MODELS & PRICING (models.dev + custom overrides) ====================
@@ -4669,9 +4614,6 @@
   loadOverviewPrefs();
   document.querySelectorAll("#ovTokenUnitSeg .seg-btn").forEach(b => {
     b.classList.toggle("active", Number(b.getAttribute("data-unit")) === overviewState.tokenUnit);
-  });
-  document.querySelectorAll("#ovCurrencySeg .seg-btn").forEach(b => {
-    b.classList.toggle("active", b.getAttribute("data-cur") === overviewState.currency);
   });
   restoreAdminTabFromUrl();
   loadAdminOverview().catch(() => {});
