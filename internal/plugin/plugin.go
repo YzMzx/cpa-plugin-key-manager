@@ -22,7 +22,7 @@ import (
 
 const (
 	PluginID      = "cpa-plugin-key-manager"
-	PluginVersion = "0.7.7"
+	PluginVersion = "0.8.0"
 	PluginAuthor  = "YzMzx"
 	PluginRepo    = "https://github.com/YzMzx/cpa-plugin-key-manager"
 	PluginLogoSVG = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%238b8680'/><path d='M24 22a10 10 0 1 0 9.5 13H42v5h6v-5h4v-6H33.5A10 10 0 0 0 24 22zm0 6a4 4 0 1 1 0 8 4 4 0 0 1 0-8z' fill='%23fff'/></svg>"
@@ -388,9 +388,13 @@ func (m *Manager) handleRequestInterceptBefore(raw []byte) ([]byte, error) {
 		return okEnvelope(authz.NewForbiddenModelResponse(displayModel))
 	}
 
-	// 3. Check per-API-Key cumulative USD quota limit (if quota_limit_usd > 0)
+	// 3. Check per-API-Key cumulative USD quota limit (if quota_limit_usd > 0).
+	//    The quota counts usage since the last "重置额度", not the lifetime total.
 	if rule.QuotaLimitUSD > 0 {
-		usedUSD := m.usageStore.GetKeyCostUSD(apiKey)
+		usedUSD := m.usageStore.GetKeyCostUSD(apiKey) - rule.QuotaUsedBaseUSD
+		if usedUSD < 0 {
+			usedUSD = 0
+		}
 		if usedUSD >= rule.QuotaLimitUSD {
 			return okEnvelope(authz.NewQuotaExceededResponse(usedUSD, rule.QuotaLimitUSD))
 		}
@@ -1161,6 +1165,62 @@ func (m *Manager) ListKeyRulesAndDefaultPolicy() map[string]any {
 	}
 }
 
+// ResetKeyQuota writes off the quota already consumed by one API key by moving its
+// baseline to the current accumulated cost. Billing history is left untouched.
+func (m *Manager) ResetKeyQuota(apiKey string) (float64, error) {
+	key := strings.TrimSpace(apiKey)
+	if key == "" {
+		return 0, fmt.Errorf("api_key is required")
+	}
+	used := m.usageStore.GetKeyCostUSD(key)
+
+	m.mu.Lock()
+	if m.dynamicState == nil {
+		m.dynamicState = &DynamicRulesState{Version: 1, CustomPrices: make(map[string]pricing.ModelPrice)}
+	}
+	found := false
+	for i := range m.dynamicState.Keys {
+		if m.dynamicState.Keys[i].APIKey != key {
+			continue
+		}
+		m.dynamicState.Keys[i].QuotaUsedBaseUSD = used
+		m.dynamicState.Keys[i].UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		found = true
+		break
+	}
+	if !found {
+		m.mu.Unlock()
+		return 0, fmt.Errorf("api key not found")
+	}
+	m.cfg = MergeDynamicState(m.seedCfg, m.dynamicState, m.hostAPIKeys...)
+	rulesFile := m.cfg.Storage.RulesFile
+	errSave := SaveDynamicRulesFile(rulesFile, m.dynamicState)
+	m.mu.Unlock()
+
+	return used, errSave
+}
+
+// GetKeyQuota reports the configured limit and the usage counted since the last reset.
+func (m *Manager) GetKeyQuota(apiKey string) (limitUSD, usedUSD, remainingUSD float64, unlimited bool) {
+	m.mu.RLock()
+	rule, _ := m.cfg.ResolveKeyRule(apiKey)
+	m.mu.RUnlock()
+
+	limitUSD = rule.QuotaLimitUSD
+	usedUSD = m.usageStore.GetKeyCostUSD(strings.TrimSpace(apiKey)) - rule.QuotaUsedBaseUSD
+	if usedUSD < 0 {
+		usedUSD = 0
+	}
+	if limitUSD <= 0 {
+		return 0, usedUSD, 0, true
+	}
+	remainingUSD = limitUSD - usedUSD
+	if remainingUSD < 0 {
+		remainingUSD = 0
+	}
+	return limitUSD, usedUSD, remainingUSD, false
+}
+
 // UpsertKeyRuleFromJSON creates or updates a KeyRuleConfig, hot-reloads in-memory rules, and persists to `key_guard_rules.json`.
 func (m *Manager) UpsertKeyRuleFromJSON(rawBody []byte) (any, error) {
 	var rule KeyRuleConfig
@@ -1206,6 +1266,9 @@ func (m *Manager) UpsertKeyRuleFromJSON(rawBody []byte) (any, error) {
 			if rule.CreatedAt == "" {
 				rule.CreatedAt = m.dynamicState.Keys[i].CreatedAt
 			}
+			// The quota baseline is owned by "重置额度" only, so editing a rule never
+			// silently restores spent quota.
+			rule.QuotaUsedBaseUSD = m.dynamicState.Keys[i].QuotaUsedBaseUSD
 			m.dynamicState.Keys[i] = cloneKeyRule(rule)
 			replaced = true
 			break

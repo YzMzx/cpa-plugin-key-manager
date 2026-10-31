@@ -543,6 +543,27 @@
   .ov-share-bar span { display: block; height: 100%; background: #38bdf8; border-radius: 999px; }
   .ov-share-text { font-size: 11.5px; color: var(--text-secondary); }
 
+  /* API Key quota bars */
+  .quota-limit-cell { display: flex; align-items: center; gap: 8px; flex-wrap: nowrap; }
+  .quota-bar {
+    width: 110px;
+    height: 6px;
+    border-radius: 999px;
+    background: var(--bg-tertiary);
+    overflow: hidden;
+    flex: 0 0 auto;
+  }
+  .quota-bar-fill {
+    display: block;
+    height: 100%;
+    background: #38bdf8;
+    border-radius: 999px;
+    transition: width 0.2s ease;
+  }
+  .quota-bar-fill.quota-bar-warn { background: #f59e0b; }
+  .quota-bar-fill.quota-bar-critical { background: #f87171; }
+  .quota-bar-text { font-size: 11.5px; color: var(--text-secondary); font-family: var(--font-mono); white-space: nowrap; }
+
   /* Tags & Pills (CPAMC .tag style) */
   .tag {
     display: inline-flex;
@@ -1514,6 +1535,34 @@
     <div class="card">
       <div class="card-header">
         <div>
+          <h2 class="card-title">API Key 额度管理</h2>
+          <div style="font-size:12px;color:var(--text-tertiary);margin-top:4px" id="quotaTableMeta">
+            额度按费用（USD）计算，默认不限额
+          </div>
+        </div>
+        <div class="input-row">
+          <input type="text" class="input" style="width:200px" id="quotaSearch" placeholder="搜索 API Key 或备注..." oninput="renderQuotaTable()">
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>API Key</th>
+              <th style="min-width:220px">密钥限额</th>
+              <th>已用 / 剩余</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="quotaTableBody">
+            <tr><td colspan="4" style="text-align:center;color:var(--text-tertiary)">加载中...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <div>
           <h2 class="card-title">API Key 列表</h2>
         </div>
         <div class="input-row">
@@ -1937,6 +1986,10 @@
         <div class="form-group">
           <label class="form-label">最大并发数限制</label>
           <input type="number" min="0" class="input" id="kmMaxConcurrency" value="0" placeholder="0 表示不限并发">
+        </div>
+        <div class="form-group">
+          <label class="form-label">可用额度（USD，0 表示不限额）</label>
+          <input type="number" min="0" step="0.01" class="input" id="kmQuotaLimit" value="0" placeholder="例如 20.00">
         </div>
         <div class="form-group">
           <label class="form-label">启用状态</label>
@@ -2441,6 +2494,7 @@
       overviewData = data;
       renderDashboardKPIs(data);
       renderKeysCrudTable();
+      renderQuotaTable();
       renderDashboardTables();
       initDefaultPolicySelectors();
       renderHostAuthTable();
@@ -3269,6 +3323,7 @@
     document.getElementById("kmApiKey").value = rule ? rule.api_key : "";
     document.getElementById("kmName").value = (rule && rule.name) || "";
     document.getElementById("kmMaxConcurrency").value = (rule && rule.max_concurrency) || 0;
+    document.getElementById("kmQuotaLimit").value = (rule && rule.quota_limit_usd) || 0;
     document.getElementById("kmEnabled").value = (rule && rule.enabled === false) ? "false" : "true";
 
     const ub = (rule && rule.upstream_binding) || {};
@@ -3307,6 +3362,7 @@
       name: document.getElementById("kmName").value.trim(),
       enabled: document.getElementById("kmEnabled").value === "true",
       max_concurrency: parseInt(document.getElementById("kmMaxConcurrency").value || "0", 10) || 0,
+      quota_limit_usd: Math.max(0, Number(document.getElementById("kmQuotaLimit").value || "0") || 0),
       allowed_models: allowedModels,
       upstream_binding: {
         strategy: document.getElementById("kmBindStrategy").value,
@@ -3383,6 +3439,96 @@
         body: JSON.stringify({ api_key: apiKey })
       });
       showToast(`已清零 ${desc} 的 Token 用量统计`);
+      await loadAdminOverview();
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  }
+
+  // ==================== API KEY QUOTA TABLE ====================
+  const API_QUOTA_RESET = "/v0/management/key-guard/keys/quota/reset";
+
+  function quotaUsageOf(rule) {
+    const ks = ((overviewData && overviewData.usage && overviewData.usage.keys) || {})[rule.api_key] || {};
+    const base = Number(rule.quota_used_base_usd || 0);
+    const total = Number(ks.total_cost_usd || 0);
+    const used = Math.max(0, total - base);
+    const limit = Math.max(0, Number(rule.quota_limit_usd || 0));
+    const unlimited = limit <= 0;
+    const remaining = unlimited ? 0 : Math.max(0, limit - used);
+    const percent = unlimited ? 0 : Math.min(100, (used / limit) * 100);
+    return { used, limit, remaining, unlimited, percent, exceeded: !unlimited && used >= limit };
+  }
+
+  function quotaBarClass(percent, exceeded) {
+    if (exceeded) return "quota-bar-fill quota-bar-critical";
+    if (percent >= 80) return "quota-bar-fill quota-bar-warn";
+    return "quota-bar-fill";
+  }
+
+  function renderQuotaTable() {
+    const tbody = document.getElementById("quotaTableBody");
+    if (!tbody || !overviewData) return;
+    const rules = (overviewData.keys || []).slice();
+    const q = (String((document.getElementById("quotaSearch") || {}).value || "")).trim().toLowerCase();
+    const list = rules.filter(r => {
+      if (!q) return true;
+      return String(r.api_key || "").toLowerCase().includes(q) || String(r.name || "").toLowerCase().includes(q);
+    });
+
+    const limited = rules.filter(r => Number(r.quota_limit_usd || 0) > 0).length;
+    const meta = document.getElementById("quotaTableMeta");
+    if (meta) {
+      meta.textContent = `${rules.length} 个密钥 · ${limited} 个设置了限额 · 额度按费用（USD）计算，默认不限额`;
+    }
+
+    if (!list.length) {
+      tbody.innerHTML = `<tr><td colspan="4" style="text-align:center;color:var(--text-tertiary)">暂无 API Key</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = list.map(rule => {
+      const usage = quotaUsageOf(rule);
+      const label = rule.name ? `<span style="font-weight:600;color:var(--text-primary)">${escapeHtml(rule.name)}</span>` : "";
+      const masked = escapeHtml(maskKeyStr(rule.api_key));
+      const limitText = usage.unlimited ? `<span class="tag plain">不限额</span>` : `<span class="mono">$${usage.limit.toFixed(2)}</span>`;
+      const bar = usage.unlimited ? "" : `
+        <div class="quota-bar"><div class="${quotaBarClass(usage.percent, usage.exceeded)}" style="width:${Math.max(1, usage.percent).toFixed(1)}%"></div></div>
+        <span class="quota-bar-text">${usage.percent.toFixed(1)}%${usage.exceeded ? " · 已超额" : ""}</span>`;
+      const usedText = usage.unlimited
+        ? `<span class="mono">$${usage.used.toFixed(4)}</span> <span style="color:var(--text-tertiary)">/ 不限额</span>`
+        : `<span class="mono">$${usage.used.toFixed(4)}</span> <span style="color:var(--text-tertiary)">/ $${usage.remaining.toFixed(4)}</span>`;
+      return `<tr>
+        <td class="cell-nowrap">
+          <div class="ov-key-cell">
+            <span class="mono" style="font-size:12px;color:var(--text-primary)">${masked}</span>
+            ${label}
+          </div>
+        </td>
+        <td>
+          <div class="quota-limit-cell">${limitText}${bar}</div>
+        </td>
+        <td class="cell-nowrap">${usedText}</td>
+        <td class="cell-nowrap">
+          <div class="row-actions">
+            <button type="button" class="btn btn-sm" onclick="copyText('${escapeHtml(rule.api_key)}')">复制密钥</button>
+            <button type="button" class="btn btn-sm" onclick="openKeyModalByKey('${escapeHtml(rule.api_key)}')">管理密钥</button>
+            <button type="button" class="btn btn-sm" onclick="resetKeyQuota('${escapeHtml(rule.api_key)}')">重置额度</button>
+          </div>
+        </td>
+      </tr>`;
+    }).join("");
+  }
+
+  async function resetKeyQuota(apiKey) {
+    if (!apiKey) return;
+    if (!confirm(`确定重置 Key [${maskKeyStr(apiKey)}] 的已用额度吗？\n（仅重置额度计量，不清空历史用量与费用统计）`)) return;
+    try {
+      await callManagementAPI(API_QUOTA_RESET, {
+        method: "POST",
+        body: JSON.stringify({ api_key: apiKey })
+      });
+      showToast(`已重置 ${maskKeyStr(apiKey)} 的已用额度`);
       await loadAdminOverview();
     } catch (err) {
       showToast(err.message, true);

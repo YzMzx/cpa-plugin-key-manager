@@ -66,15 +66,18 @@ type DefaultPolicyConfig struct {
 
 // KeyRuleConfig defines governance, routing, quota, and concurrency policies for a specific API Key.
 type KeyRuleConfig struct {
-	APIKey          string                `yaml:"api_key" json:"api_key"`
-	Name            string                `yaml:"name" json:"name,omitempty"`
-	Enabled         *bool                 `yaml:"enabled" json:"enabled,omitempty"`
-	MaxConcurrency  int                   `yaml:"max_concurrency" json:"max_concurrency"`
-	QuotaLimitUSD   float64               `yaml:"quota_limit_usd" json:"quota_limit_usd"`
-	AllowedModels   []string              `yaml:"allowed_models" json:"allowed_models"`
-	UpstreamBinding authz.UpstreamBinding `yaml:"upstream_binding" json:"upstream_binding"`
-	CreatedAt       string                `yaml:"created_at,omitempty" json:"created_at,omitempty"`
-	UpdatedAt       string                `yaml:"updated_at,omitempty" json:"updated_at,omitempty"`
+	APIKey         string  `yaml:"api_key" json:"api_key"`
+	Name           string  `yaml:"name" json:"name,omitempty"`
+	Enabled        *bool   `yaml:"enabled" json:"enabled,omitempty"`
+	MaxConcurrency int     `yaml:"max_concurrency" json:"max_concurrency"`
+	QuotaLimitUSD  float64 `yaml:"quota_limit_usd" json:"quota_limit_usd"`
+	// QuotaUsedBaseUSD is the accumulated cost already written off by "重置额度".
+	// The effective usage is (total cost - base), so resetting never touches billing history.
+	QuotaUsedBaseUSD float64               `yaml:"quota_used_base_usd,omitempty" json:"quota_used_base_usd,omitempty"`
+	AllowedModels    []string              `yaml:"allowed_models" json:"allowed_models"`
+	UpstreamBinding  authz.UpstreamBinding `yaml:"upstream_binding" json:"upstream_binding"`
+	CreatedAt        string                `yaml:"created_at,omitempty" json:"created_at,omitempty"`
+	UpdatedAt        string                `yaml:"updated_at,omitempty" json:"updated_at,omitempty"`
 }
 
 // DynamicRulesState is persisted to `storage.rules_file` (default `./data/key_guard_rules.json`)

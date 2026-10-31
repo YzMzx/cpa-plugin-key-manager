@@ -19,6 +19,7 @@ const (
 	RouteManagementKeys          = "/key-guard/keys"
 	RouteManagementKeysSync      = "/key-guard/keys/sync"
 	RouteManagementKeysReorder   = "/key-guard/keys/reorder"
+	RouteManagementQuotaReset    = "/key-guard/keys/quota/reset"
 	RouteManagementDefaultPolicy = "/key-guard/default-policy"
 	RouteManagementAuthFiles     = "/key-guard/auth-files"
 	RouteManagementUsage         = "/key-guard/usage"
@@ -65,6 +66,11 @@ func RegisterManagementEndpoints() ([]pluginapi.ManagementRoute, []pluginapi.Res
 			Method:      http.MethodPost,
 			Path:        RouteManagementKeysReorder,
 			Description: "Persist the drag & drop display order of API keys.",
+		},
+		{
+			Method:      http.MethodPost,
+			Path:        RouteManagementQuotaReset,
+			Description: "Write off the quota already consumed by one API key (moves its quota baseline to the current cost).",
 		},
 		{
 			Method:      http.MethodPost,
@@ -143,6 +149,7 @@ type SnapshotProvider interface {
 	ListHostAuthFiles(hostCallbackID string) ([]pluginapi.HostAuthFileEntry, error)
 	UpsertCustomPrice(model string, price pricing.ModelPrice) error
 	DeleteCustomPrice(model string) error
+	ResetKeyQuota(apiKey string) (float64, error)
 	QueryLedger(q usage.LedgerQuery) usage.LedgerResult
 	BuildSelfAccountView(apiKey string) (map[string]any, int, error)
 }
@@ -189,6 +196,36 @@ func HandleManagementRequest(ctx context.Context, provider SnapshotProvider, req
 			return jsonError(http.StatusBadRequest, err.Error())
 		}
 		return jsonResponse(http.StatusOK, provider.BuildAdminOverview(hostCallbackID))
+
+	case strings.HasSuffix(path, RouteManagementQuotaReset):
+		if method != http.MethodPost && method != http.MethodPut {
+			return jsonError(http.StatusMethodNotAllowed, "method not allowed")
+		}
+		var body struct {
+			APIKey string `json:"api_key"`
+		}
+		if len(req.Body) > 0 {
+			if err := json.Unmarshal(req.Body, &body); err != nil {
+				return jsonError(http.StatusBadRequest, "invalid JSON body: "+err.Error())
+			}
+		}
+		targetKey := strings.TrimSpace(body.APIKey)
+		if targetKey == "" {
+			targetKey = queryValue(req, "api_key")
+		}
+		if targetKey == "" {
+			return jsonError(http.StatusBadRequest, "api_key is required")
+		}
+		used, err := provider.ResetKeyQuota(targetKey)
+		if err != nil {
+			return jsonError(http.StatusBadRequest, err.Error())
+		}
+		return jsonResponse(http.StatusOK, map[string]any{
+			"ok":             true,
+			"api_key":        usage.MaskAPIKey(targetKey),
+			"quota_used_usd": used,
+			"overview":       provider.BuildAdminOverview(hostCallbackID),
+		})
 
 	case strings.HasSuffix(path, RouteManagementKeysSync):
 		if method != http.MethodPost && method != http.MethodPut {

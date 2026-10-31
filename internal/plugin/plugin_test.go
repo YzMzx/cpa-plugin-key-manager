@@ -784,6 +784,106 @@ storage:
 	}
 }
 
+// TestKeyQuotaEnforcementAndReset covers the per-key USD quota: exceeding it must
+// terminate the request with an insufficient_quota error, and 重置额度 must write off
+// the consumed amount without touching billing history.
+func TestKeyQuotaEnforcementAndReset(t *testing.T) {
+	isolateStateDirs(t)
+	tmpDir := t.TempDir()
+
+	mgr := NewManager(nil)
+	defer mgr.Shutdown()
+
+	cfgYAML := `enabled: true
+storage:
+  usage_file: "` + filepath.ToSlash(filepath.Join(tmpDir, "usage.json")) + `"
+  rules_file: "` + filepath.ToSlash(filepath.Join(tmpDir, "rules.json")) + `"
+pricing:
+  sync_url: "http://127.0.0.1:1/offline"
+  custom_prices:
+    "gpt-4o":
+      input: 1.0
+      output: 0
+keys:
+  - api_key: "sk-quota"
+    name: "额度测试"
+    quota_limit_usd: 0.005
+    allowed_models: ["*"]
+`
+	regReq, _ := json.Marshal(lifecycleRequest{ConfigYAML: []byte(cfgYAML), SchemaVersion: pluginabi.SchemaVersion})
+	if _, err := mgr.HandleRPC(pluginabi.MethodPluginRegister, regReq); err != nil {
+		t.Fatalf("register failed: %v", err)
+	}
+
+	// 10,000 input tokens at $1/1M = $0.01, twice the $0.005 quota.
+	mgr.usageStore.ObserveHostUsageRecord(pluginapi.UsageRecord{
+		RequestID: "quota-usage-1",
+		Provider:  "openai",
+		Model:     "gpt-4o",
+		APIKey:    "sk-quota",
+		Detail:    pluginapi.UsageDetail{InputTokens: 10000, TotalTokens: 10000},
+	}, "额度测试")
+
+	doRequest := func() pluginapi.RequestInterceptResponse {
+		raw, _ := json.Marshal(pluginapi.RequestInterceptRequest{
+			RequestID:      "quota-req-" + time.Now().Format("150405.000000"),
+			SourceFormat:   "openai",
+			Model:          "gpt-4o",
+			RequestedModel: "gpt-4o",
+			Headers:        http.Header{"Authorization": {"Bearer sk-quota"}},
+			Body:           []byte(`{"model":"gpt-4o"}`),
+		})
+		rawResp, err := mgr.HandleRPC(pluginabi.MethodRequestInterceptBefore, raw)
+		if err != nil {
+			t.Fatalf("intercept failed: %v", err)
+		}
+		return decodeEnvelope[pluginapi.RequestInterceptResponse](t, rawResp)
+	}
+
+	blocked := doRequest()
+	if !blocked.Terminate || blocked.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 quota rejection, got %+v", blocked)
+	}
+	if !strings.Contains(string(blocked.ResponseBody), "insufficient_quota") {
+		t.Fatalf("quota error body should use insufficient_quota, got %s", string(blocked.ResponseBody))
+	}
+
+	limit, used, remaining, unlimited := mgr.GetKeyQuota("sk-quota")
+	if unlimited || limit != 0.005 || used < 0.0099 || remaining != 0 {
+		t.Fatalf("unexpected quota snapshot: limit=%v used=%v remaining=%v unlimited=%v", limit, used, remaining, unlimited)
+	}
+
+	// Editing the rule must not restore spent quota.
+	editBody, _ := json.Marshal(map[string]any{
+		"api_key":         "sk-quota",
+		"name":            "额度测试改名",
+		"quota_limit_usd": 0.005,
+		"allowed_models":  []string{"*"},
+	})
+	if _, err := mgr.UpsertKeyRuleFromJSON(editBody); err != nil {
+		t.Fatalf("edit rule failed: %v", err)
+	}
+	if _, usedAfterEdit, _, _ := mgr.GetKeyQuota("sk-quota"); usedAfterEdit < 0.0099 {
+		t.Fatalf("editing a rule must keep the consumed quota, got used=%v", usedAfterEdit)
+	}
+
+	// 重置额度 writes off the consumed amount.
+	if _, err := mgr.ResetKeyQuota("sk-quota"); err != nil {
+		t.Fatalf("reset quota failed: %v", err)
+	}
+	if _, usedAfterReset, _, _ := mgr.GetKeyQuota("sk-quota"); usedAfterReset != 0 {
+		t.Fatalf("quota not reset, used=%v", usedAfterReset)
+	}
+	if allowed := doRequest(); allowed.Terminate {
+		t.Fatalf("request should pass after the quota reset, got %+v", allowed)
+	}
+
+	// Billing history is untouched by the reset.
+	if cost := mgr.usageStore.GetKeyCostUSD("sk-quota"); cost < 0.0099 {
+		t.Fatalf("reset must not clear billing history, cost=%v", cost)
+	}
+}
+
 // TestOverviewKeyCountsComeFromConfiguredRules pins that the overview shows the
 // configured key totals immediately, without waiting for the first request.
 func TestOverviewKeyCountsComeFromConfiguredRules(t *testing.T) {
