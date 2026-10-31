@@ -3415,6 +3415,10 @@
     if (src === "custom_override") {
       return `<span class="tag warn">手动修改</span>`;
     }
+    if (src.startsWith("models.dev(prefix:")) {
+      const matched = String(source).replace(/^models\.dev\(prefix:/i, "").replace(/\)$/, "");
+      return `<span class="tag ok" title="完整模型名未收录，按前缀降级匹配到 ${escapeHtml(matched)}">models.dev 前缀</span>`;
+    }
     if (src.startsWith("models.dev")) {
       return `<span class="tag ok">models.dev</span>`;
     }

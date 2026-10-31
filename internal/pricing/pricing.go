@@ -92,6 +92,7 @@ type Engine struct {
 	customExact   map[string]ModelPrice
 	customRules   []customRule
 	modelsDevMap  map[string]ModelPrice
+	modelsDevKeys []string // sorted keys of modelsDevMap, for prefix degradation
 	defaultPrice  *ModelPrice
 	lastSyncAt    time.Time
 	lastSyncError string
@@ -156,8 +157,8 @@ func (e *Engine) SetCustomPrices(custom map[string]ModelPrice, defaultPrice *Mod
 	e.mu.Unlock()
 }
 
-// Lookup resolves the price for the given model (checking custom exact -> custom wildcard -> models.dev -> default).
-func (e *Engine) Lookup(modelCandidates ...string) (ModelPrice, bool) {
+// normalizeModelVariants flattens the candidate names into unique lowercase variants.
+func normalizeModelVariants(modelCandidates []string) []string {
 	variants := make([]string, 0, len(modelCandidates)*3)
 	seen := make(map[string]struct{}, len(modelCandidates)*3)
 	for _, cand := range modelCandidates {
@@ -168,6 +169,83 @@ func (e *Engine) Lookup(modelCandidates ...string) (ModelPrice, bool) {
 			}
 		}
 	}
+	return variants
+}
+
+// modelPrefixLadder returns progressively shorter prefixes of a model id, each still
+// containing at least two dash-separated segments.
+//
+//	gemini-3.8-flash-high -> [gemini-3.8-flash gemini-3.8]
+//	claude-sonnet-4-6     -> [claude-sonnet-4 claude-sonnet]
+func modelPrefixLadder(model string) []string {
+	model = strings.ToLower(strings.TrimSpace(model))
+	if model == "" {
+		return nil
+	}
+	segments := strings.Split(model, "-")
+	out := make([]string, 0, len(segments))
+	for n := len(segments) - 1; n >= 2; n-- {
+		prefix := strings.Join(segments[:n], "-")
+		if prefix != model {
+			out = append(out, prefix)
+		}
+	}
+	return out
+}
+
+// bestPrefixMatchLocked finds the most specific models.dev key that is either equal to
+// `base` or extends it with a further "-" segment. Callers must hold at least a read lock.
+func (e *Engine) bestPrefixMatchLocked(base string) (string, ModelPrice, bool) {
+	keys := e.modelsDevKeys
+	if len(keys) == 0 || base == "" {
+		return "", ModelPrice{}, false
+	}
+	idx := sort.SearchStrings(keys, base)
+	bestKey := ""
+	var bestPrice ModelPrice
+	for ; idx < len(keys); idx++ {
+		key := keys[idx]
+		if !strings.HasPrefix(key, base) {
+			// Sorted keys: once the prefix block ends, no later key can start with base.
+			break
+		}
+		if len(key) > len(base) && key[len(base)] != '-' {
+			// "gemini-3" must not match "gemini-30-flash".
+			continue
+		}
+		if len(key) > len(bestKey) {
+			bestKey = key
+			bestPrice = e.modelsDevMap[key]
+		}
+	}
+	if bestKey == "" {
+		return "", ModelPrice{}, false
+	}
+	return bestKey, bestPrice, true
+}
+
+// lookupModelsDevLocked resolves a models.dev price: exact variant first, then a
+// degraded prefix match (gemini-3.8-flash-high -> gemini-3.8-flash-* -> gemini-3.8-*).
+func (e *Engine) lookupModelsDevLocked(variants []string) (ModelPrice, bool) {
+	for _, v := range variants {
+		if p, ok := e.modelsDevMap[v]; ok {
+			return p, true
+		}
+	}
+	for _, v := range variants {
+		for _, prefix := range modelPrefixLadder(v) {
+			if key, price, ok := e.bestPrefixMatchLocked(prefix); ok {
+				price.Source = "models.dev(prefix:" + key + ")"
+				return price, true
+			}
+		}
+	}
+	return ModelPrice{}, false
+}
+
+// Lookup resolves the price for the given model (checking custom exact -> custom wildcard -> models.dev -> default).
+func (e *Engine) Lookup(modelCandidates ...string) (ModelPrice, bool) {
+	variants := normalizeModelVariants(modelCandidates)
 
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -188,11 +266,9 @@ func (e *Engine) Lookup(modelCandidates ...string) (ModelPrice, bool) {
 		}
 	}
 
-	// 3. models.dev match (exact normalized variant)
-	for _, v := range variants {
-		if p, ok := e.modelsDevMap[v]; ok {
-			return p, true
-		}
+	// 3. models.dev match (exact, then progressively degraded prefix match)
+	if p, ok := e.lookupModelsDevLocked(variants); ok {
+		return p, true
 	}
 
 	// 4. Default price fallback if configured
@@ -205,24 +281,13 @@ func (e *Engine) Lookup(modelCandidates ...string) (ModelPrice, bool) {
 
 // LookupReference resolves the models.dev reference price for the given model, ignoring custom overrides and default fallback.
 func (e *Engine) LookupReference(modelCandidates ...string) (ModelPrice, bool) {
-	variants := make([]string, 0, len(modelCandidates)*3)
-	seen := make(map[string]struct{}, len(modelCandidates)*3)
-	for _, cand := range modelCandidates {
-		for _, v := range authz.NormalizeModelVariants(cand) {
-			if _, ok := seen[v]; !ok {
-				seen[v] = struct{}{}
-				variants = append(variants, v)
-			}
-		}
-	}
+	variants := normalizeModelVariants(modelCandidates)
 
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
-	for _, v := range variants {
-		if p, ok := e.modelsDevMap[v]; ok {
-			return p, true
-		}
+	if p, ok := e.lookupModelsDevLocked(variants); ok {
+		return p, true
 	}
 	return ModelPrice{Source: "unmatched"}, false
 }
@@ -346,6 +411,11 @@ func (e *Engine) ParseAndLoadModelsDevJSON(rawJSON []byte, source string) (int, 
 
 	e.mu.Lock()
 	e.modelsDevMap = parsed
+	e.modelsDevKeys = make([]string, 0, len(parsed))
+	for k := range parsed {
+		e.modelsDevKeys = append(e.modelsDevKeys, k)
+	}
+	sort.Strings(e.modelsDevKeys)
 	e.lastSyncAt = time.Now()
 	e.lastSyncError = ""
 	e.syncSource = source

@@ -39,7 +39,8 @@
    - **默认价格来自 models.dev**：插件启动后自动从 <https://models.dev/api.json> 拉取全量模型价格（默认每 24 小时刷新一次），并缓存到 `storage.pricing_cache_file`，离线时自动降级使用本地缓存。
    - **手动覆盖与通配符**：任意模型可手动设置 Input / Output / Cache Read / Cache Write 单价（USD / 1M Tokens），支持 `claude-sonnet-4-*` 这类通配符规则；可一键「恢复默认」回落到 models.dev 价格。
    - **全局兜底价**：配置 `__default__` 兜底价后，既未命中手动规则、也未在 models.dev 中找到的模型按兜底价计费，避免费用恒为 0。
-   - **价格优先级**：手动精确规则 → 手动通配符 → models.dev → 兜底默认价。
+   - **价格优先级**：手动精确规则 → 手动通配符 → models.dev 精确 → **models.dev 前缀降级** → 兜底默认价。
+   - **前缀降级匹配**：完整模型名在 models.dev 中查不到时，自动按「去掉末尾段」逐级降级（`gemini-3.8-flash-high` → `gemini-3.8-flash-*` → `gemini-3.8-*`），命中后再取最具体的那个家族价格；分段边界严格按 `-` 对齐，`gemini-3` 不会误匹配 `gemini-30-flash`。命中的价格来源会标记为 `models.dev(prefix:xxx)`，面板上显示为「models.dev 前缀」并可悬停查看实际匹配到的模型。
 
 ---
 

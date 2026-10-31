@@ -166,3 +166,80 @@ func TestSyncerCacheAndGracefulDegradation(t *testing.T) {
 		t.Fatalf("expected warn log when remote sync fails")
 	}
 }
+
+// TestPrefixDegradedModelsDevLookup covers the "many models do not match exactly" case:
+// a full model id that is absent from models.dev degrades to progressively shorter
+// prefixes (gemini-3.8-flash-high -> gemini-3.8-flash-* -> gemini-3.8-*).
+func TestPrefixDegradedModelsDevLookup(t *testing.T) {
+	payload := `{
+	  "google": {
+	    "id": "google",
+	    "name": "Google",
+	    "models": {
+	      "gemini-3.8-flash": {
+	        "id": "gemini-3.8-flash",
+	        "cost": {"input": 0.3, "output": 2.5, "cache_read": 0.03}
+	      },
+	      "gemini-3.8-pro": {
+	        "id": "gemini-3.8-pro",
+	        "cost": {"input": 1.25, "output": 10.0}
+	      },
+	      "gemini-30-flash": {
+	        "id": "gemini-30-flash",
+	        "cost": {"input": 9.0, "output": 90.0}
+	      }
+	    }
+	  }
+	}`
+
+	eng := NewEngine()
+	if _, err := eng.ParseAndLoadModelsDevJSON([]byte(payload), "models.dev"); err != nil {
+		t.Fatalf("load models.dev payload: %v", err)
+	}
+
+	// 1. Exact hit keeps a plain models.dev source.
+	p, ok := eng.Lookup("gemini-3.8-flash")
+	if !ok || p.Input != 0.3 || p.Source != "models.dev" {
+		t.Fatalf("exact match should stay a plain models.dev price, got ok=%v price=%+v", ok, p)
+	}
+
+	// 2. Unknown suffix degrades to the closest shorter family (gemini-3.8-flash-*).
+	for _, name := range []string{"gemini-3.8-flash-high", "gemini-3.8-flash-thinking", "gemini-3.8-flash-image-v2"} {
+		pSub, okSub := eng.Lookup(name)
+		if !okSub {
+			t.Fatalf("%s should resolve through prefix degradation", name)
+		}
+		if pSub.Input != 0.3 || pSub.Output != 2.5 {
+			t.Fatalf("%s resolved to the wrong family: %+v", name, pSub)
+		}
+		if pSub.Source != "models.dev(prefix:gemini-3.8-flash)" {
+			t.Fatalf("%s should report the matched prefix, got %q", name, pSub.Source)
+		}
+	}
+
+	// 3. A different family still picks its own price.
+	pPro, okPro := eng.Lookup("gemini-3.8-pro-experimental")
+	if !okPro || pPro.Input != 1.25 {
+		t.Fatalf("gemini-3.8-pro-experimental should match gemini-3.8-pro, got ok=%v price=%+v", okPro, pPro)
+	}
+
+	// 4. Prefix boundaries must respect "-": "gemini-3" must not match "gemini-30-flash".
+	if pBad, okBad := eng.Lookup("gemini-3-unknown"); okBad && pBad.Input == 9.0 {
+		t.Fatalf("prefix match leaked across a segment boundary: %+v", pBad)
+	}
+
+	// 5. Reference lookup uses the same degradation, so the UI can show the baseline.
+	ref, okRef := eng.LookupReference("gemini-3.8-flash-lite")
+	if !okRef || ref.Input != 0.3 || ref.Source != "models.dev(prefix:gemini-3.8-flash)" {
+		t.Fatalf("LookupReference should degrade too, got ok=%v price=%+v", okRef, ref)
+	}
+
+	// 6. Custom exact override still wins over a degraded models.dev match.
+	eng.SetCustomPrices(map[string]ModelPrice{
+		"gemini-3.8-flash-high": {Input: 1.0, Output: 2.0},
+	}, nil)
+	pOver, _ := eng.Lookup("gemini-3.8-flash-high")
+	if pOver.Input != 1.0 || pOver.Source != "custom_override" {
+		t.Fatalf("custom override must win over prefix degradation, got %+v", pOver)
+	}
+}
