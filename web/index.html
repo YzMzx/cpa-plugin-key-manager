@@ -1340,7 +1340,6 @@
         </div>
         <div class="input-row">
           <button type="button" class="btn btn-sm" onclick="resetOverviewFilters()">重置</button>
-          <button type="button" class="btn btn-sm btn-primary" onclick="loadOverviewLedger(true)">刷新概览 / 查询</button>
         </div>
       </div>
       <div class="form-grid">
@@ -1437,10 +1436,10 @@
         </div>
       </div>
       <div class="ov-legend">
-        <span class="ov-legend-item"><i class="ov-swatch" style="background:#38bdf8"></i>入 <b id="ovLegendInput">0</b></span>
-        <span class="ov-legend-item"><i class="ov-swatch" style="background:#34d399"></i>出 <b id="ovLegendOutput">0</b></span>
+        <span class="ov-legend-item"><i class="ov-swatch" style="background:#38bdf8"></i>输入 <b id="ovLegendInput">0</b></span>
+        <span class="ov-legend-item"><i class="ov-swatch" style="background:#34d399"></i>输出 <b id="ovLegendOutput">0</b></span>
         <span class="ov-legend-item"><i class="ov-swatch" style="background:#a78bfa"></i>缓存 <b id="ovLegendCache">0</b></span>
-        <span class="ov-legend-item"><i class="ov-swatch" style="background:#f59e0b"></i>命中 <b id="ovLegendHit">0%</b></span>
+        <span class="ov-legend-item"><i class="ov-swatch" style="background:#f59e0b"></i>缓存命中率 <b id="ovLegendHit">0%</b></span>
       </div>
       <div id="ovTrendChart" class="ov-chart-box">
         <div class="ov-skeleton" style="height:240px"></div>
@@ -4072,7 +4071,7 @@
       const path = pts.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(" ");
       const dots = pts.map(p =>
         `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="2.8" fill="${color}" stroke="var(--bg-secondary)" stroke-width="1">` +
-        `<title>${escapeHtml(p.label)} ${key === "input" ? "入" : key === "output" ? "出" : "缓存"} ${fmtTokenValue(p.value)}</title></circle>`
+        `<title>${escapeHtml(p.label)} ${key === "input" ? "输入" : key === "output" ? "输出" : "缓存"} ${fmtTokenValue(p.value)}</title></circle>`
       ).join("");
       return { path, dots };
     };
