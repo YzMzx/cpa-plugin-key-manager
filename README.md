@@ -111,6 +111,7 @@ plugins:
 - **升级迁移**：数据库为空时，会把旧的 `key_guard_rules.json` 读入 `rules_state`（一次性）。
 - **单写者**：同一数据库文件同时只允许一个插件实例写入，锁被占用时启动日志给出明确告警。
 - **诊断**：`overview.diagnostics` 暴露 `usage_db_file / usage_db_exists / usage_db_size`。
+- **清理旧 JSON**：`scripts/cleanup-legacy-json.sh` 可列出并清理 v0.8.*／sqlite.1-3 留下的 JSON 与 `.state` 文件（默认 dry-run，`--apply` 移入备份目录，`--apply --delete` 直接删除；找不到 `key_usage.db` 时拒绝执行）。
 
 ## 升级与数据迁移指南（从 cpa-plugin-key 升级至 cpa-plugin-key-manager）
 
