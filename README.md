@@ -102,7 +102,7 @@ plugins:
   configs:
     cpa-plugin-key-manager:
       storage:
-        usage_db_file: "./data/key_usage.db"   # 默认由 usage_file 推导同名 .db
+        usage_db_file: "./data/key_usage.db"   # 默认 <CPA 根目录>/data/key_usage.db
 ```
 
 ### 行为

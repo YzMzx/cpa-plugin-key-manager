@@ -32,7 +32,11 @@ func TestMain(m *testing.M) {
 // isolateStateDirs gives a single test its own private set of mirror directories.
 func isolateStateDirs(t *testing.T) {
 	t.Helper()
-	t.Setenv("CPA_KEY_MANAGER_STATE_DIRS", t.TempDir())
+	dir := t.TempDir()
+	t.Setenv("CPA_KEY_MANAGER_STATE_DIRS", dir)
+	// The database also needs a per-test file, otherwise tests share the CPA
+	// root's ./data database and leak counters into each other.
+	t.Setenv("CPA_KEY_MANAGER_USAGE_DB", filepath.Join(dir, "key_usage.db"))
 }
 
 func decodeEnvelope[T any](t *testing.T, raw []byte) T {

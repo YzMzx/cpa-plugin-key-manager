@@ -424,22 +424,18 @@ func (c *Config) Normalize() {
 	}
 	c.Storage.UsageFile = ResolveStoragePath(c.Storage.UsageFile)
 
-	// SQLite only: the database is the single source of truth, so it must live on a
-	// durable volume rather than the ephemeral working directory a container recreates.
-	// Priority: explicit config > first durable state dir > legacy snapshot directory.
-	if strings.TrimSpace(c.Storage.UsageDBFile) == "" {
-		if stateDirs := StateDirs(); len(stateDirs) > 0 {
-			c.Storage.UsageDBFile = filepath.Join(stateDirs[0], "key_usage.db")
-		} else {
-			dir := filepath.Dir(filepath.Clean(c.Storage.UsageFile))
-			base := strings.TrimSuffix(filepath.Base(filepath.Clean(c.Storage.UsageFile)), filepath.Ext(c.Storage.UsageFile))
-			if dir == "" || dir == "." {
-				c.Storage.UsageDBFile = "./" + base + ".db"
-			} else {
-				c.Storage.UsageDBFile = filepath.Join(dir, base+".db")
-			}
-		}
+	// SQLite only: the database is the single source of truth and lives in the CPA
+	// root's `data` directory by default (explicit configuration always wins).
+	// CPA_KEY_MANAGER_USAGE_DB pins it explicitly, which tests and multi-instance
+	// deployments use to keep databases apart.
+	if override := strings.TrimSpace(os.Getenv("CPA_KEY_MANAGER_USAGE_DB")); override != "" {
+		c.Storage.UsageDBFile = ResolveStoragePath(override)
 	}
+	if strings.TrimSpace(c.Storage.UsageDBFile) == "" {
+		c.Storage.UsageDBFile = filepath.Join(FindCPARootDir(), "data", "key_usage.db")
+	}
+	// Database files written by earlier experimental builds were derived from
+	// `usage_file`; that location is adopted once when the default is missing.
 	c.Storage.LegacyUsageDBFile = legacyUsageDBPath(c.Storage.UsageFile)
 
 	if c.Storage.FlushIntervalSeconds <= 0 {
