@@ -1384,7 +1384,7 @@
       <div class="kpi-card">
         <div class="kpi-label">费用</div>
         <div class="kpi-value" id="ovMetricCost">-</div>
-        <div class="kpi-sub" id="ovMetricCostSub">USD 原币金额</div>
+        <div class="kpi-sub" id="ovMetricCostSub">USD</div>
       </div>
       <div class="kpi-card">
         <div class="kpi-label">模型数量</div>
@@ -1752,7 +1752,7 @@
         <div>
           <h2 class="card-title">当前可用模型与自定义价格配置</h2>
           <div style="font-size:12px;color:var(--text-tertiary);margin-top:4px">
-            汇总当前宿主已注册的可用模型、已产生流量的模型以及所有手动修改的价格规则；点击「修改价格」可覆盖 models.dev 默认价格。
+            点击「修改价格」可覆盖 models.dev 默认价格。
           </div>
         </div>
         <div class="input-row">
@@ -4036,7 +4036,7 @@
     setText("ovMetricModels", fmtInt(data.model_count || 0));
     setText("ovMetricTokensSub",
       `入 ${fmtTokenValue(data.input_tokens)} · 出 ${fmtTokenValue(data.output_tokens)} · 缓存 ${fmtTokenValue(data.cache_read_tokens)}`);
-    setText("ovMetricCostSub", "USD 原币金额");
+    setText("ovMetricCostSub", "USD");
     setText("ovLegendInput", fmtTokenValue(data.input_tokens));
     setText("ovLegendOutput", fmtTokenValue(data.output_tokens));
     setText("ovLegendCache", fmtTokenValue(data.cache_read_tokens));
