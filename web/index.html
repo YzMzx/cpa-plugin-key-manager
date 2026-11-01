@@ -1453,6 +1453,7 @@
         </div>
         <div class="input-row">
           <input type="text" class="input" style="width:200px" id="quotaSearch" placeholder="搜索 API Key 或备注..." oninput="renderQuotaTable()">
+          <button type="button" class="btn btn-sm" onclick="refreshKeyManagement()">刷新</button>
           <button type="button" class="btn btn-sm" onclick="openKeyModal(null)">新建 API Key</button>
         </div>
       </div>
@@ -2389,6 +2390,16 @@
     try {
       await loadAdminOverview();
       showToast("用量数据已刷新");
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  }
+
+  // Manual refresh for the API Key management card (keys, limits and enable state).
+  async function refreshKeyManagement() {
+    try {
+      await loadAdminOverview();
+      showToast("API Key 数据已刷新");
     } catch (err) {
       showToast(err.message, true);
     }
