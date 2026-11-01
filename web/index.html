@@ -391,7 +391,7 @@
     padding-left: 14px;
   }
 
-  /* ===== Overview (额度概览) ===== */
+  /* ===== Quota overview tab ===== */
   .seg {
     display: inline-flex;
     align-items: center;
@@ -1338,6 +1338,7 @@
           <div style="font-size:12px;color:var(--text-tertiary);margin-top:4px" id="ovKeyTableMeta"></div>
         </div>
         <div class="input-row">
+          <button type="button" class="btn btn-sm" onclick="loadOverviewLedger(true)">刷新</button>
           <button type="button" class="btn btn-sm" onclick="expandAllOverviewKeys(true)">展开全部</button>
           <button type="button" class="btn btn-sm" onclick="expandAllOverviewKeys(false)">收起全部</button>
         </div>
@@ -1360,25 +1361,6 @@
             <tr><td colspan="8" style="text-align:center;color:var(--text-tertiary)">加载中...</td></tr>
           </tbody>
         </table>
-      </div>
-    </div>
-
-    <!-- Controls -->
-    <div class="card">
-      <div class="card-header">
-        <div>
-          <h2 class="card-title">额度概览</h2>
-        </div>
-        <div class="input-row">
-          <div class="seg" id="ovTokenUnitSeg">
-            <button type="button" class="seg-btn active" data-unit="1" onclick="setOverviewTokenUnit('1')">个</button>
-            <button type="button" class="seg-btn" data-unit="1e3" onclick="setOverviewTokenUnit('1e3')">千</button>
-            <button type="button" class="seg-btn" data-unit="1e4" onclick="setOverviewTokenUnit('1e4')">万</button>
-            <button type="button" class="seg-btn" data-unit="1e6" onclick="setOverviewTokenUnit('1e6')">百万</button>
-          </div>
-          <span class="tag plain" id="ovLedgerStatus" title="本地账本状态">账本：检测中…</span>
-          <button type="button" class="btn btn-sm" onclick="loadOverviewLedger(true)">刷新</button>
-        </div>
       </div>
     </div>
 
@@ -2451,13 +2433,13 @@
 
   function renderDashboardKPIs(data) {
     const s = data.summary || {};
-    document.getElementById("kpiTotalTokens").textContent = fmtInt(s.total_tokens || 0);
+    document.getElementById("kpiTotalTokens").textContent = fmtTokenValue(s.total_tokens || 0);
     document.getElementById("kpiTokenSub").textContent =
-      `输入: ${fmtInt(s.input_tokens)} · 输出: ${fmtInt(s.output_tokens)} · 推理: ${fmtInt(s.reasoning_tokens)}`;
+      `输入: ${fmtTokenValue(s.input_tokens)} · 输出: ${fmtTokenValue(s.output_tokens)} · 推理: ${fmtTokenValue(s.reasoning_tokens)}`;
     const totalCache = (s.cache_read_tokens || 0) + (s.cache_write_tokens || 0);
     document.getElementById("kpiCacheTokens").textContent = fmtInt(totalCache);
     document.getElementById("kpiCacheSub").textContent =
-      `缓存读取: ${fmtInt(s.cache_read_tokens)} · 缓存写入: ${fmtInt(s.cache_write_tokens)}`;
+      `缓存读取: ${fmtTokenValue(s.cache_read_tokens)} · 缓存写入: ${fmtTokenValue(s.cache_write_tokens)}`;
     document.getElementById("kpiTotalRequests").textContent = fmtInt(s.total_requests || 0);
     const rate = s.total_requests > 0 ? ((s.success_requests / s.total_requests) * 100).toFixed(1) : "100.0";
     document.getElementById("kpiReqSub").textContent =
@@ -3136,8 +3118,8 @@
         <td class="cell-nowrap mono">${maxC > 0 ? maxC : "不限"}</td>
         <td class="cell-nowrap mono">${fmtInt(ks.total_requests)} <span style="color:var(--text-tertiary)">(${fmtInt(ks.success_requests)}/${fmtInt(ks.failed_requests)})</span></td>
         <td class="cell-nowrap">
-          <span class="token-val">${fmtInt(ks.total_tokens)}</span>
-          <span class="mono" style="font-size:12px;color:var(--text-secondary)"> (${fmtInt(ks.input_tokens)} / ${fmtInt(ks.output_tokens)})</span>
+          <span class="token-val">${fmtTokenValue(ks.total_tokens)}</span>
+          <span class="mono" style="font-size:12px;color:var(--text-secondary)"> (${fmtTokenValue(ks.input_tokens)} / ${fmtTokenValue(ks.output_tokens)})</span>
         </td>
         <td class="col-models">${modelsHtml}</td>
         <td>${bindHtml}</td>
@@ -3552,10 +3534,10 @@
             ${keyNote ? `<div style="font-size:12px;color:var(--text-secondary)">${escapeHtml(keyNote)}</div>` : ""}
           </td>
           <td class="cell-nowrap mono">${fmtInt(ks.total_requests)} <span style="color:var(--text-tertiary)">(${fmtInt(ks.success_requests)}/${fmtInt(ks.failed_requests)})</span></td>
-          <td class="cell-nowrap mono">${fmtInt(ks.input_tokens)}</td>
-          <td class="cell-nowrap mono">${fmtInt(ks.output_tokens)} <span style="color:var(--text-tertiary)">(推理 ${fmtInt(ks.reasoning_tokens)})</span></td>
-          <td class="cell-nowrap mono">${fmtInt(ks.cache_read_tokens)} / ${fmtInt(ks.cache_write_tokens)}</td>
-          <td class="cell-nowrap token-val">${fmtInt(ks.total_tokens)}</td>
+          <td class="cell-nowrap mono">${fmtTokenValue(ks.input_tokens)}</td>
+          <td class="cell-nowrap mono">${fmtTokenValue(ks.output_tokens)} <span style="color:var(--text-tertiary)">(推理 ${fmtTokenValue(ks.reasoning_tokens)})</span></td>
+          <td class="cell-nowrap mono">${fmtTokenValue(ks.cache_read_tokens)} / ${fmtTokenValue(ks.cache_write_tokens)}</td>
+          <td class="cell-nowrap token-val">${fmtTokenValue(ks.total_tokens)}</td>
           <td style="min-width:120px">
             <div style="font-size:12px" class="mono">${share}%</div>
             <div class="bar"><div class="bar-fill" style="width:${share}%"></div></div>
@@ -3571,10 +3553,10 @@
         if (isExpanded && validModels.length > 0) {
           const modelCells = (st) => `
               <td class="cell-nowrap mono">${fmtInt(st.requests)} (${fmtInt(st.success_requests !== undefined ? st.success_requests : st.success)}/${fmtInt(st.failed_requests !== undefined ? st.failed_requests : st.failed)})</td>
-              <td class="cell-nowrap mono">${fmtInt(st.input_tokens !== undefined ? st.input_tokens : st.input)}</td>
-              <td class="cell-nowrap mono">${fmtInt(st.output_tokens !== undefined ? st.output_tokens : st.output)} (推理 ${fmtInt(st.reasoning_tokens !== undefined ? st.reasoning_tokens : st.reasoning)})</td>
-              <td class="cell-nowrap mono">${fmtInt(st.cache_read_tokens !== undefined ? st.cache_read_tokens : st.cacheRead)} / ${fmtInt(st.cache_write_tokens !== undefined ? st.cache_write_tokens : st.cacheWrite)}</td>
-              <td class="cell-nowrap token-val">${fmtInt(st.total_tokens !== undefined ? st.total_tokens : st.totalTokens)}</td>`;
+              <td class="cell-nowrap mono">${fmtTokenValue(st.input_tokens !== undefined ? st.input_tokens : st.input)}</td>
+              <td class="cell-nowrap mono">${fmtTokenValue(st.output_tokens !== undefined ? st.output_tokens : st.output)} (推理 ${fmtTokenValue(st.reasoning_tokens !== undefined ? st.reasoning_tokens : st.reasoning)})</td>
+              <td class="cell-nowrap mono">${fmtTokenValue(st.cache_read_tokens !== undefined ? st.cache_read_tokens : st.cacheRead)} / ${fmtTokenValue(st.cache_write_tokens !== undefined ? st.cache_write_tokens : st.cacheWrite)}</td>
+              <td class="cell-nowrap token-val">${fmtTokenValue(st.total_tokens !== undefined ? st.total_tokens : st.totalTokens)}</td>`;
           for (const group of buildRequestedModelGroups(validModels)) {
             // Nothing substituted: one row carrying the requested model name.
             if (group.single) {
@@ -3657,7 +3639,7 @@
           <td class="mono">${fmtInt(m.output)}</td>
           <td class="mono">${fmtInt(m.reasoning)}</td>
           <td class="mono">${fmtInt(m.cacheRead)} / ${fmtInt(m.cacheWrite)}</td>
-          <td class="token-val">${fmtInt(m.totalTokens)}</td>
+          <td class="token-val">${fmtTokenValue(m.totalTokens)}</td>
           <td style="min-width:130px">
             <div style="font-size:12px" class="mono">${share}%</div>
             <div class="bar"><div class="bar-fill" style="width:${share}%"></div></div>
@@ -3715,10 +3697,10 @@
           ${lastUsedHint}
         </td>
         <td class="cell-nowrap mono">${reqCell}</td>
-        <td class="cell-nowrap mono">${fmtInt(a.input_tokens)}</td>
-        <td class="cell-nowrap mono">${fmtInt(a.output_tokens)} <span style="color:var(--text-tertiary)">(推理 ${fmtInt(a.reasoning_tokens)})</span></td>
-        <td class="cell-nowrap mono">${fmtInt(a.cache_read_tokens)} / ${fmtInt(a.cache_write_tokens)}</td>
-        <td class="cell-nowrap token-val">${fmtInt(a.total_tokens)}</td>
+        <td class="cell-nowrap mono">${fmtTokenValue(a.input_tokens)}</td>
+        <td class="cell-nowrap mono">${fmtTokenValue(a.output_tokens)} <span style="color:var(--text-tertiary)">(推理 ${fmtTokenValue(a.reasoning_tokens)})</span></td>
+        <td class="cell-nowrap mono">${fmtTokenValue(a.cache_read_tokens)} / ${fmtTokenValue(a.cache_write_tokens)}</td>
+        <td class="cell-nowrap token-val">${fmtTokenValue(a.total_tokens)}</td>
         <td class="cell-nowrap">
           <button type="button" class="btn btn-sm" onclick="toggleDashAccountExpand('${escapeHtml(bucketKey)}')">${isExpanded ? "收起" : "展开明细 (" + groupCount + ")"}</button>
         </td>
@@ -3729,10 +3711,10 @@
         // are not separated by the wide provider/account columns.
         const acctCells = (st) => `
             <td class="cell-nowrap mono">${fmtInt(st.requests)} (${fmtInt(st.success_requests !== undefined ? st.success_requests : st.success)}/${fmtInt(st.failed_requests !== undefined ? st.failed_requests : st.failed)})</td>
-            <td class="cell-nowrap mono">${fmtInt(st.input_tokens !== undefined ? st.input_tokens : st.input)}</td>
-            <td class="cell-nowrap mono">${fmtInt(st.output_tokens !== undefined ? st.output_tokens : st.output)} (推理 ${fmtInt(st.reasoning_tokens !== undefined ? st.reasoning_tokens : st.reasoning)})</td>
-            <td class="cell-nowrap mono">${fmtInt(st.cache_read_tokens !== undefined ? st.cache_read_tokens : st.cacheRead)} / ${fmtInt(st.cache_write_tokens !== undefined ? st.cache_write_tokens : st.cacheWrite)}</td>
-            <td class="cell-nowrap token-val">${fmtInt(st.total_tokens !== undefined ? st.total_tokens : st.totalTokens)}</td>`;
+            <td class="cell-nowrap mono">${fmtTokenValue(st.input_tokens !== undefined ? st.input_tokens : st.input)}</td>
+            <td class="cell-nowrap mono">${fmtTokenValue(st.output_tokens !== undefined ? st.output_tokens : st.output)} (推理 ${fmtTokenValue(st.reasoning_tokens !== undefined ? st.reasoning_tokens : st.reasoning)})</td>
+            <td class="cell-nowrap mono">${fmtTokenValue(st.cache_read_tokens !== undefined ? st.cache_read_tokens : st.cacheRead)} / ${fmtTokenValue(st.cache_write_tokens !== undefined ? st.cache_write_tokens : st.cacheWrite)}</td>
+            <td class="cell-nowrap token-val">${fmtTokenValue(st.total_tokens !== undefined ? st.total_tokens : st.totalTokens)}</td>`;
         for (const group of buildRequestedModelGroups(modelList)) {
           if (group.single) {
             const ms = group.children[0];
@@ -3861,7 +3843,6 @@
   })();
 
   const overviewState = {
-    tokenUnit: 1,          // 个 / 1e3 / 1e4 / 1e6
     granularity: "day",
     modelDim: "requests",
     range: "7d",
@@ -3871,34 +3852,34 @@
     data: null
   };
 
-  const TOKEN_UNIT_LABELS = { 1: "个", 1000: "千", 10000: "万", 1000000: "百万" };
-
-  function loadOverviewPrefs() {
-    try {
-      const raw = localStorage.getItem("km_overview_prefs");
-      if (raw) {
-        const p = JSON.parse(raw);
-        if (p.tokenUnit) overviewState.tokenUnit = Number(p.tokenUnit) || 1;
-      }
-    } catch (_) {}
-  }
-
-  function saveOverviewPrefs() {
-    try {
-      localStorage.setItem("km_overview_prefs", JSON.stringify({
-        tokenUnit: overviewState.tokenUnit
-      }));
-    } catch (_) {}
-  }
-
   function fmtTokenValue(raw) {
-    const n = Number(raw || 0) / overviewState.tokenUnit;
+    const n = Number(raw || 0);
     if (!Number.isFinite(n)) return "0";
     const abs = Math.abs(n);
-    const digits = abs >= 1000 ? 0 : abs >= 100 ? 1 : abs >= 1 ? 2 : 3;
-    const text = n.toFixed(digits).replace(/\.0+$/, "").replace(/(\.\d*?)0+$/, "$1");
-    const suffix = overviewState.tokenUnit === 1 ? "" : " " + (TOKEN_UNIT_LABELS[overviewState.tokenUnit] || "");
-    return text + suffix;
+    const units = [
+      { div: 1e9, suffix: " B" },
+      { div: 1e6, suffix: " M" },
+      { div: 1e3, suffix: " K" },
+      { div: 1, suffix: "" }
+    ];
+    let index = units.length - 1;
+    for (let i = 0; i < units.length; i++) {
+      if (abs >= units[i].div) { index = i; break; }
+    }
+    const digitsFor = (scaled) => (Math.abs(scaled) >= 100 ? 0 : Math.abs(scaled) >= 10 ? 1 : 2);
+    let scaled = n / units[index].div;
+    let digits = digitsFor(scaled);
+    // 999,999 must read "1 M", not "1000 K": promote when rounding crosses 1000.
+    if (index > 0 && Number(scaled.toFixed(digits)) >= 999.5) {
+      index -= 1;
+      scaled = n / units[index].div;
+      digits = digitsFor(scaled);
+    }
+    return trimTrailingZeros(scaled.toFixed(digits)) + units[index].suffix;
+  }
+
+  function trimTrailingZeros(text) {
+    return String(text).replace(/\.0+$/, "").replace(/(\.\d*?)0+$/, "$1");
   }
 
   function fmtMoneyNano(nanoUSD) {
@@ -3964,15 +3945,6 @@
     return params;
   }
 
-  function setOverviewTokenUnit(unit) {
-    overviewState.tokenUnit = Number(unit) || 1;
-    saveOverviewPrefs();
-    document.querySelectorAll("#ovTokenUnitSeg .seg-btn").forEach(b => {
-      b.classList.toggle("active", b.getAttribute("data-unit") === String(unit));
-    });
-    renderOverviewAll();
-  }
-
   function setOverviewGranularity(gran) {
     overviewState.granularity = ["hour", "day", "month"].includes(gran) ? gran : "day";
     document.querySelectorAll("#ovGranularitySeg .seg-btn").forEach(b => {
@@ -4001,12 +3973,6 @@
       renderOverviewAll();
     } catch (err) {
       overviewState.data = null;
-      const statusEl = document.getElementById("ovLedgerStatus");
-      if (statusEl) {
-        statusEl.textContent = "账本：离线";
-        statusEl.className = "tag bad";
-        statusEl.title = err.message;
-      }
       renderOverviewEmpty(err.message);
     } finally {
       overviewState.loading = false;
@@ -4044,26 +4010,10 @@
   function renderOverviewAll() {
     const data = overviewState.data;
     if (!data) return;
-    renderOverviewStatus(data.status || {});
     renderOverviewMetrics(data);
     renderOverviewTrend(data);
     renderModelDistribution();
     renderOverviewKeyTable();
-  }
-
-  function renderOverviewStatus(status) {
-    const el = document.getElementById("ovLedgerStatus");
-    if (!el) return;
-    const entries = Number(status.entries || 0);
-    el.className = "tag ok";
-    el.textContent = `账本运行中 · ${fmtInt(entries)} 条`;
-    el.title = [
-      "类型: 本地内嵌账本",
-      `保留: ${status.retention_days || 0} 天`,
-      status.oldest_at ? `最早: ${status.oldest_at}` : "",
-      status.newest_at ? `最新: ${status.newest_at}` : "",
-      status.storage ? `存储: ${status.storage}` : ""
-    ].filter(Boolean).join("\n");
   }
 
   function renderOverviewMetrics(data) {
@@ -4727,10 +4677,6 @@
     }
   }
 
-  loadOverviewPrefs();
-  document.querySelectorAll("#ovTokenUnitSeg .seg-btn").forEach(b => {
-    b.classList.toggle("active", Number(b.getAttribute("data-unit")) === overviewState.tokenUnit);
-  });
   restoreAdminTabFromUrl();
   loadAdminOverview().catch(() => {});
 </script>
