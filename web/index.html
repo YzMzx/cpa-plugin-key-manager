@@ -4036,6 +4036,35 @@
     if (list) list.innerHTML = `<div class="ov-skeleton" style="height:140px"></div>`;
     const keyBody = document.getElementById("ovKeyTableBody");
     if (keyBody) keyBody.innerHTML = `<tr><td colspan="8" style="padding:2px 0"><div class="ov-skeleton" style="height:96px;margin:8px"></div></td></tr>`;
+    showKeysTabSkeleton();
+    showDashboardSkeleton();
+  }
+
+  // Table-wide skeleton rows so a refresh blanks the tables the same way the trend
+  // chart does, instead of leaving stale numbers on screen while data is in flight.
+  function skeletonRows(cols, rows) {
+    const count = Math.max(1, rows || 3);
+    let html = "";
+    for (let i = 0; i < count; i++) {
+      html += `<tr><td colspan="${cols}" style="padding:2px 0"><div class="ov-skeleton" style="height:34px;margin:6px 8px"></div></td></tr>`;
+    }
+    return html;
+  }
+
+  function showKeysTabSkeleton() {
+    const quotaBody = document.getElementById("quotaTableBody");
+    if (quotaBody) quotaBody.innerHTML = skeletonRows(4, 3);
+    const keysBody = document.getElementById("crudKeysTableBody");
+    if (keysBody) keysBody.innerHTML = skeletonRows(9, 4);
+  }
+
+  function showDashboardSkeleton() {
+    const keyBody = document.getElementById("dashKeyTableBody");
+    if (keyBody) keyBody.innerHTML = skeletonRows(8, 4);
+    const accountBody = document.getElementById("dashAccountTableBody");
+    if (accountBody) accountBody.innerHTML = skeletonRows(8, 3);
+    const modelBody = document.getElementById("dashModelTableBody");
+    if (modelBody) modelBody.innerHTML = skeletonRows(8, 3);
   }
 
   function renderOverviewEmpty(message) {
