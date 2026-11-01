@@ -2428,8 +2428,17 @@
       btn.disabled = true;
     }
     showOverviewSkeleton();
+    showKeysTabSkeleton();
+    showDashboardSkeleton();
     try {
       await loadAdminOverview();
+      // Belt and braces: make sure the key/quota/leaderboard tables are painted even
+      // if a late ledger refresh replaced them with placeholders.
+      if (overviewData) {
+        renderKeysCrudTable();
+        renderQuotaTable();
+        renderDashboardTables();
+      }
       showToast("全部数据已刷新");
     } catch (_) {
       // loadAdminOverview already surfaced the error via toast / lock screen.
@@ -4036,8 +4045,6 @@
     if (list) list.innerHTML = `<div class="ov-skeleton" style="height:140px"></div>`;
     const keyBody = document.getElementById("ovKeyTableBody");
     if (keyBody) keyBody.innerHTML = `<tr><td colspan="8" style="padding:2px 0"><div class="ov-skeleton" style="height:96px;margin:8px"></div></td></tr>`;
-    showKeysTabSkeleton();
-    showDashboardSkeleton();
   }
 
   // Table-wide skeleton rows so a refresh blanks the tables the same way the trend
