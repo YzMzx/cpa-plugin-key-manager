@@ -1382,65 +1382,6 @@
       </div>
     </div>
 
-    <!-- Filters -->
-    <div class="card">
-      <div class="card-header">
-        <div>
-          <h2 class="card-title">概览筛选</h2>
-        </div>
-        <div class="input-row">
-          <button type="button" class="btn btn-sm" onclick="resetOverviewFilters()">重置</button>
-        </div>
-      </div>
-      <div class="form-grid">
-        <div class="form-group">
-          <label class="form-label">时间范围</label>
-          <select id="ovRange" onchange="onOverviewRangeChange()">
-            <option value="today">今日</option>
-            <option value="yesterday">昨日</option>
-            <option value="7d" selected>近 7 天</option>
-            <option value="30d">近 30 天</option>
-            <option value="custom">自定义范围</option>
-          </select>
-          <div class="input-row" id="ovCustomRange" style="margin-top:6px;display:none">
-            <input type="date" class="input" id="ovFromDate" style="width:150px" onchange="loadOverviewLedger(true)">
-            <span style="color:var(--text-tertiary)">至</span>
-            <input type="date" class="input" id="ovToDate" style="width:150px" onchange="loadOverviewLedger(true)">
-          </div>
-        </div>
-        <div class="form-group">
-          <label class="form-label">密钥搜索（标签 / Key ID）</label>
-          <input type="text" class="input" id="ovKeySearch" placeholder="模糊匹配备注名或 Key" oninput="debouncedOverviewQuery()">
-        </div>
-        <div class="form-group">
-          <label class="form-label">账号搜索（名称 / ID）</label>
-          <input type="text" class="input" id="ovAccountSearch" placeholder="模糊匹配账号或提供商" oninput="debouncedOverviewQuery()">
-        </div>
-      </div>
-      <div class="form-grid" style="margin-bottom:0">
-        <div class="form-group" style="margin-bottom:0">
-          <label class="form-label">模型</label>
-          <select id="ovModelFilter" onchange="loadOverviewLedger(true)">
-            <option value="">全部已使用模型</option>
-          </select>
-        </div>
-        <div class="form-group" style="margin-bottom:0">
-          <label class="form-label">来源渠道</label>
-          <select id="ovSourceFilter" onchange="loadOverviewLedger(true)">
-            <option value="">全部来源</option>
-          </select>
-        </div>
-        <div class="form-group" style="margin-bottom:0">
-          <label class="form-label">快捷时间</label>
-          <div class="input-row">
-            <button type="button" class="btn btn-sm" onclick="quickOverviewRange('today')">今日</button>
-            <button type="button" class="btn btn-sm" onclick="quickOverviewRange('7d')">近 7 天</button>
-            <button type="button" class="btn btn-sm" onclick="quickOverviewRange('30d')">近 30 天</button>
-          </div>
-        </div>
-      </div>
-    </div>
-
     <!-- Metric cards -->
     <div class="kpi-grid" id="ovMetricCards">
       <div class="kpi-card">
@@ -1449,17 +1390,17 @@
         <div class="kpi-sub">总密钥 / 可用密钥</div>
       </div>
       <div class="kpi-card">
-        <div class="kpi-label">筛选请求数</div>
+        <div class="kpi-label">请求数</div>
         <div class="kpi-value" id="ovMetricRequests">-</div>
         <div class="kpi-sub">次</div>
       </div>
       <div class="kpi-card">
-        <div class="kpi-label">筛选 Token</div>
+        <div class="kpi-label">Token 用量</div>
         <div class="kpi-value" id="ovMetricTokens">-</div>
         <div class="kpi-sub" id="ovMetricTokensSub">输入 / 输出 / 缓存</div>
       </div>
       <div class="kpi-card">
-        <div class="kpi-label">筛选费用</div>
+        <div class="kpi-label">费用</div>
         <div class="kpi-value" id="ovMetricCost">-</div>
         <div class="kpi-sub" id="ovMetricCostSub">USD 原币金额</div>
       </div>
@@ -4017,21 +3958,10 @@
     params.set("to", bounds.to.toISOString());
     params.set("granularity", overviewState.granularity);
     params.set("tz", OVERVIEW_TZ);
-    const key = (document.getElementById("ovKeySearch") || {}).value || "";
-    const account = (document.getElementById("ovAccountSearch") || {}).value || "";
-    const model = (document.getElementById("ovModelFilter") || {}).value || "";
-    const source = (document.getElementById("ovSourceFilter") || {}).value || "";
-    if (key.trim()) params.set("key", key.trim());
-    if (account.trim()) params.set("account", account.trim());
-    if (model) params.set("model", model);
-    if (source) params.set("source", source);
+    // The filter card was removed; the only remaining dimension is the model
+    // selected by clicking a row of the distribution list.
+    if (overviewState.activeModel) params.set("model", overviewState.activeModel);
     return params;
-  }
-
-  let overviewDebounce = null;
-  function debouncedOverviewQuery() {
-    if (overviewDebounce) clearTimeout(overviewDebounce);
-    overviewDebounce = setTimeout(() => loadOverviewLedger(false), 320);
   }
 
   function setOverviewTokenUnit(unit) {
@@ -4059,44 +3989,6 @@
     renderModelDistribution();
   }
 
-  function onOverviewRangeChange() {
-    overviewState.range = (document.getElementById("ovRange") || {}).value || "7d";
-    const custom = document.getElementById("ovCustomRange");
-    if (custom) custom.style.display = overviewState.range === "custom" ? "flex" : "none";
-    if (overviewState.range === "custom") {
-      const fromEl = document.getElementById("ovFromDate");
-      const toEl = document.getElementById("ovToDate");
-      const today = new Date();
-      const iso = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-      if (fromEl && !fromEl.value) fromEl.value = iso(new Date(today.getTime() - 6 * 864e5));
-      if (toEl && !toEl.value) toEl.value = iso(today);
-    }
-    loadOverviewLedger(true);
-  }
-
-  function quickOverviewRange(range) {
-    overviewState.range = range;
-    const sel = document.getElementById("ovRange");
-    if (sel) sel.value = range;
-    const custom = document.getElementById("ovCustomRange");
-    if (custom) custom.style.display = "none";
-    loadOverviewLedger(true);
-  }
-
-  function resetOverviewFilters() {
-    overviewState.range = "7d";
-    overviewState.activeModel = "";
-    const sel = document.getElementById("ovRange");
-    if (sel) sel.value = "7d";
-    const custom = document.getElementById("ovCustomRange");
-    if (custom) custom.style.display = "none";
-    ["ovKeySearch", "ovAccountSearch"].forEach(id => { const el = document.getElementById(id); if (el) el.value = ""; });
-    const model = document.getElementById("ovModelFilter");
-    if (model) model.value = "";
-    const source = document.getElementById("ovSourceFilter");
-    if (source) source.value = "";
-    loadOverviewLedger(true);
-  }
 
   async function loadOverviewLedger(showSkeleton) {
     if (!activeManagementKey) return;
@@ -4135,12 +4027,12 @@
   function renderOverviewEmpty(message) {
     const trend = document.getElementById("ovTrendChart");
     if (trend) {
-      trend.innerHTML = `<div class="ov-empty"><div>暂无可用数据</div><div style="font-size:11.5px">${escapeHtml(message || "当前筛选范围内没有调用记录")}</div></div>`;
+      trend.innerHTML = `<div class="ov-empty"><div>暂无可用数据</div><div style="font-size:11.5px">${escapeHtml(message || "最近 7 天没有调用记录")}</div></div>`;
     }
     const donut = document.getElementById("ovDonutChart");
     if (donut) donut.innerHTML = `<div class="ov-empty" style="min-height:200px"><div>无模型调用</div></div>`;
     const list = document.getElementById("ovModelList");
-    if (list) list.innerHTML = `<div class="ov-empty" style="min-height:120px"><div>当前筛选条件下没有模型数据</div></div>`;
+    if (list) list.innerHTML = `<div class="ov-empty" style="min-height:120px"><div>最近 7 天没有模型数据</div></div>`;
     const keyBody = document.getElementById("ovKeyTableBody");
     if (keyBody) keyBody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--text-tertiary)">暂无密钥消耗数据</td></tr>`;
     ["ovMetricKeys", "ovMetricRequests", "ovMetricTokens", "ovMetricCost", "ovMetricModels"].forEach(id => {
@@ -4152,32 +4044,11 @@
   function renderOverviewAll() {
     const data = overviewState.data;
     if (!data) return;
-    syncOverviewFilterOptions(data);
     renderOverviewStatus(data.status || {});
     renderOverviewMetrics(data);
     renderOverviewTrend(data);
     renderModelDistribution();
     renderOverviewKeyTable();
-  }
-
-  // Keeps the model / source dropdowns populated with every value seen in the
-  // ledger query, without clobbering the current selection.
-  function syncOverviewFilterOptions(data) {
-    const fill = (id, values, allLabel) => {
-      const el = document.getElementById(id);
-      if (!el) return;
-      const current = el.value;
-      const list = Array.from(new Set(values || [])).filter(Boolean).sort();
-      el.innerHTML = `<option value="">${allLabel}</option>` +
-        list.map(v => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join("");
-      if (current && list.includes(current)) {
-        el.value = current;
-      } else if (current) {
-        el.value = "";
-      }
-    };
-    fill("ovModelFilter", data.used_models, "全部已使用模型");
-    fill("ovSourceFilter", data.used_sources, "全部来源");
   }
 
   function renderOverviewStatus(status) {
@@ -4223,7 +4094,7 @@
     const series = (data.series || []).filter(s => s.total_tokens > 0 || s.requests > 0);
     if (!series.length) {
       overviewTrendGeom = null;
-      box.innerHTML = `<div class="ov-empty"><div>当前筛选条件下暂无趋势数据</div><div style="font-size:11.5px">调整时间范围或筛选条件后再试</div></div>`;
+      box.innerHTML = `<div class="ov-empty"><div>最近 7 天暂无趋势数据</div><div style="font-size:11.5px">产生调用后会自动显示</div></div>`;
       return;
     }
 
@@ -4388,7 +4259,7 @@
     const rows = ((overviewState.data || {}).models) || [];
     if (!rows.length) {
       donutBox.innerHTML = `<div class="ov-empty" style="min-height:200px"><div>暂无模型调用</div></div>`;
-      listBox.innerHTML = `<div class="ov-empty" style="min-height:120px"><div>当前筛选条件下没有模型数据</div></div>`;
+      listBox.innerHTML = `<div class="ov-empty" style="min-height:120px"><div>最近 7 天没有模型数据</div></div>`;
       return;
     }
 
@@ -4442,8 +4313,6 @@
   function toggleOverviewModel(model) {
     const current = (overviewState.activeModel || "").toLowerCase();
     overviewState.activeModel = current === String(model).toLowerCase() ? "" : String(model);
-    const modelSelect = document.getElementById("ovModelFilter");
-    if (modelSelect) modelSelect.value = overviewState.activeModel;
     renderModelDistribution();
     loadOverviewLedger(true);
   }
@@ -4454,13 +4323,13 @@
     if (!tbody) return;
     const rows = ((overviewState.data || {}).key_rows) || [];
     if (!rows.length) {
-      tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--text-tertiary)">当前筛选条件下没有密钥消耗数据</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--text-tertiary)">最近 7 天没有密钥消耗数据</td></tr>`;
       return;
     }
     const meta = document.getElementById("ovKeyTableMeta");
     if (meta) {
       const totalModels = rows.reduce((sum, r) => sum + ((r.models || []).length), 0);
-      meta.textContent = `${rows.length} 个密钥 · ${totalModels} 条模型消耗记录（当前筛选范围）`;
+      meta.textContent = `${rows.length} 个密钥 · ${totalModels} 条模型消耗记录（近 7 天）`;
     }
 
     tbody.innerHTML = rows.map((row) => {
