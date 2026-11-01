@@ -1460,8 +1460,8 @@
         </div>
         <div class="input-row">
           <div class="seg" id="ovGranularitySeg">
-            <button type="button" class="seg-btn" data-gran="hour" onclick="setOverviewGranularity('hour')">时</button>
-            <button type="button" class="seg-btn active" data-gran="day" onclick="setOverviewGranularity('day')">日</button>
+            <button type="button" class="seg-btn active" data-gran="hour" onclick="setOverviewGranularity('hour')">时</button>
+            <button type="button" class="seg-btn" data-gran="day" onclick="setOverviewGranularity('day')">日</button>
             <button type="button" class="seg-btn" data-gran="month" onclick="setOverviewGranularity('month')">月</button>
           </div>
         </div>
@@ -3927,7 +3927,7 @@
   })();
 
   const overviewState = {
-    granularity: "day",
+    granularity: "hour",
     modelDim: "requests",
     range: "7d",
     activeModel: "",
