@@ -180,10 +180,10 @@ chmod +x install.sh
 # 方式 B：使用本地已下载的 Release 压缩包或本地编译的 .so/.dylib/.dll 手动安装并初始化数据
 ./install.sh --dir /opt/CLIProxyAPI --local ./cpa-plugin-key-manager-linux-amd64.tar.gz
 
-# 方式 C：仅初始化/修复插件数据目录 (data/*.json) 与 config.yaml，不重新下载二进制
+# 方式 C：仅初始化数据目录与 config.yaml（不下载二进制；v0.9 起不再生成 data/*.json）
 ./install.sh --dir /opt/CLIProxyAPI --init-only
 
-# 方式 D：重置所有动态规则与 Token 用量统计数据为初始空白状态
+# 方式 D：重置插件数据（把 key_usage.db 等移到 data/backup-<时间戳>/，下次启动自动新建空库）
 ./install.sh --dir /opt/CLIProxyAPI --init-only --reset-data
 ```
 

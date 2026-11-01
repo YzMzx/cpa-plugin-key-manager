@@ -101,46 +101,40 @@ if (-not $InitOnly) {
 }
 
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
-$NowUtc = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 
-$RulesFile = Join-Path $DataDir "key_guard_rules.json"
-if ((-not (Test-Path $RulesFile)) -or $ResetData) {
-    $RulesJson = @"
-{
-  "version": 1,
-  "updated_at": "$NowUtc",
-  "default_policy": {
-    "allow_unlisted_keys": true,
-    "max_concurrency": 0,
-    "allowed_models": [
-      "*"
-    ],
-    "upstream_binding": {
-      "strategy": "round-robin"
+# v0.9.x keeps everything (rules, usage, ledger) in a single SQLite database.
+# The installer never creates the legacy JSON stores any more; it only adopts
+# existing ones so the plugin can import them once on first start.
+$LegacyJsonNames = @("key_guard_rules.json", "key_usage_stats.json")
+$DbFiles = @("key_usage.db", "key_usage.db-wal", "key_usage.db-shm", "key_usage.db.lock")
+
+if ($ResetData) {
+    $BackupDir = Join-Path $DataDir ("backup-" + (Get-Date).ToUniversalTime().ToString("yyyyMMdd-HHmmss"))
+    New-Item -ItemType Directory -Force -Path $BackupDir | Out-Null
+    $Moved = 0
+    foreach ($name in ($DbFiles + $LegacyJsonNames)) {
+        $path = Join-Path $DataDir $name
+        if (Test-Path $path) {
+            Move-Item -Force -Path $path -Destination $BackupDir
+            $Moved++
+        }
     }
-  },
-  "keys": []
-}
-"@
-    [System.IO.File]::WriteAllText($RulesFile, $RulesJson, (New-Object System.Text.UTF8Encoding($false)))
-    Write-Info "Initialized dynamic rules store: $RulesFile"
+    if ($Moved -gt 0) {
+        Write-Info "Reset plugin data, previous files moved to: $BackupDir"
+        Write-Info "A fresh database will be created on the next start."
+    } else {
+        Write-Info "Nothing to reset in $DataDir"
+    }
 } else {
-    Write-Info "Preserved existing dynamic rules store: $RulesFile"
-}
-
-$UsageFile = Join-Path $DataDir "key_usage_stats.json"
-if ((-not (Test-Path $UsageFile)) -or $ResetData) {
-    $UsageJson = @"
-{
-  "version": 1,
-  "updated_at": "$NowUtc",
-  "keys": {}
-}
-"@
-    [System.IO.File]::WriteAllText($UsageFile, $UsageJson, (New-Object System.Text.UTF8Encoding($false)))
-    Write-Info "Initialized token usage store: $UsageFile"
-} else {
-    Write-Info "Preserved existing token usage store: $UsageFile"
+    foreach ($name in $LegacyJsonNames) {
+        $Target = Join-Path $DataDir $name
+        if (Test-Path $Target) {
+            Write-Info "Found legacy JSON store (imported once into SQLite on next start): $Target"
+        } else {
+            Write-Info "No legacy JSON store present; the plugin will create data\key_usage.db on first start."
+            break
+        }
+    }
 }
 
 $PluginYamlBlock = @"

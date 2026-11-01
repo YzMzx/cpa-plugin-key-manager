@@ -46,8 +46,8 @@ Options:
   --dir <path>         CLIProxyAPI root directory (default: current working directory)
   --version <tag>      Install a specific release tag (e.g. v0.2.0; default: latest)
   --local <file>       Install from a local archive (.tar.gz) or compiled library (.so/.dylib/.dll)
-  --init-only          Only initialize plugin data files and config.yaml (skip binary download)
-  --reset-data         Overwrite existing key_guard_rules.json and key_usage_stats.json with clean defaults
+  --init-only          Only initialize the plugin data directory and config.yaml (skip binary download)
+  --reset-data         Move the SQLite database (and any legacy JSON stores) into data/backup-<timestamp>/
   --skip-models-sync   Skip initial models.dev reference pricing download
   -h, --help           Show this help message
 EOF
@@ -262,65 +262,51 @@ install_binary() {
 
 init_plugin_data() {
   mkdir -p "$data_dir" || fail "failed to create data directory: ${data_dir}"
-  now_utc="$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "2026-01-01T00:00:00Z")"
 
-  rules_file="${data_dir}/key_guard_rules.json"
-  if [ ! -f "$rules_file" ] || [ "$reset_data" -eq 1 ]; then
-    if [ "$reset_data" -eq 0 ]; then
-      for fallback in "/CLIProxyAPI/data/key_guard_rules.json" "$HOME/.cli-proxy-api/key_guard_rules.json" "$HOME/.cli-proxy-api/data/key_guard_rules.json"; do
-        if [ -f "$fallback" ] && [ "$fallback" != "$rules_file" ] && [ -s "$fallback" ]; then
-          cp -f "$fallback" "$rules_file" 2>/dev/null && info "Preserved existing rules from candidate: ${fallback}" && break
-        fi
-      done
+  # v0.9.x keeps everything (rules, usage, ledger) in a single SQLite database.
+  # The installer never creates the legacy JSON stores any more; it only adopts
+  # existing ones so the plugin can import them once on first start.
+  legacy_json_names="key_guard_rules.json key_usage_stats.json"
+
+  if [ "$reset_data" -eq 1 ]; then
+    backup_dir="${data_dir}/backup-$(date -u +%Y%m%d-%H%M%S 2>/dev/null || echo 0)"
+    mkdir -p "$backup_dir" || fail "failed to create backup directory: ${backup_dir}"
+    moved=0
+    for f in "${data_dir}"/key_usage.db "${data_dir}"/key_usage.db-wal "${data_dir}"/key_usage.db-shm "${data_dir}"/key_usage.db.lock; do
+      if [ -f "$f" ]; then
+        mv -f "$f" "$backup_dir/" && moved=1
+      fi
+    done
+    for name in $legacy_json_names; do
+      f="${data_dir}/${name}"
+      if [ -f "$f" ]; then
+        mv -f "$f" "$backup_dir/" && moved=1
+      fi
+    done
+    if [ "$moved" -eq 1 ]; then
+      info "Reset plugin data, previous files moved to: ${backup_dir}"
+      info "A fresh database will be created on the next start."
+    else
+      info "Nothing to reset in ${data_dir}"
     fi
-    if [ ! -f "$rules_file" ] || [ "$reset_data" -eq 1 ]; then
-      cat > "${rules_file}.tmp.$$" <<EOF
-{
-  "version": 1,
-  "updated_at": "${now_utc}",
-  "default_policy": {
-    "allow_unlisted_keys": true,
-    "max_concurrency": 0,
-    "allowed_models": [
-      "*"
-    ],
-    "upstream_binding": {
-      "strategy": "round-robin"
-    }
-  },
-  "keys": []
-}
-EOF
-      mv -f "${rules_file}.tmp.$$" "$rules_file"
-      info "Initialized dynamic rules store: ${rules_file}"
-    fi
-  else
-    info "Preserved existing dynamic rules store: ${rules_file}"
+    return
   fi
 
-  usage_file="${data_dir}/key_usage_stats.json"
-  if [ ! -f "$usage_file" ] || [ "$reset_data" -eq 1 ]; then
-    if [ "$reset_data" -eq 0 ]; then
-      for fallback in "/CLIProxyAPI/data/key_usage_stats.json" "$HOME/.cli-proxy-api/key_usage_stats.json"; do
-        if [ -f "$fallback" ] && [ "$fallback" != "$usage_file" ] && [ -s "$fallback" ]; then
-          cp -f "$fallback" "$usage_file" 2>/dev/null && info "Preserved existing usage stats from candidate: ${fallback}" && break
+  for name in $legacy_json_names; do
+    target="${data_dir}/${name}"
+    if [ -f "$target" ]; then
+      info "Found legacy JSON store (imported once into SQLite on next start): ${target}"
+      continue
+    fi
+    for fallback in "/CLIProxyAPI/data/${name}" "$HOME/.cli-proxy-api/${name}" "$HOME/.cli-proxy-api/data/${name}"; do
+      if [ -f "$fallback" ] && [ -s "$fallback" ]; then
+        if cp -f "$fallback" "$target" 2>/dev/null; then
+          info "Adopted legacy ${name} from ${fallback} (imported once into SQLite on next start)"
+          break
         fi
-      done
-    fi
-    if [ ! -f "$usage_file" ] || [ "$reset_data" -eq 1 ]; then
-      cat > "${usage_file}.tmp.$$" <<EOF
-{
-  "version": 1,
-  "updated_at": "${now_utc}",
-  "keys": {}
-}
-EOF
-      mv -f "${usage_file}.tmp.$$" "$usage_file"
-      info "Initialized token usage store: ${usage_file}"
-    fi
-  else
-    info "Preserved existing token usage store: ${usage_file}"
-  fi
+      fi
+    done
+  done
 }
 
 init_plugin_config() {
