@@ -2461,7 +2461,7 @@
     document.getElementById("kpiTokenSub").textContent =
       `输入: ${fmtTokenValue(s.input_tokens)} · 输出: ${fmtTokenValue(s.output_tokens)} · 推理: ${fmtTokenValue(s.reasoning_tokens)}`;
     const totalCache = (s.cache_read_tokens || 0) + (s.cache_write_tokens || 0);
-    document.getElementById("kpiCacheTokens").textContent = fmtInt(totalCache);
+    document.getElementById("kpiCacheTokens").textContent = fmtTokenValue(totalCache);
     document.getElementById("kpiCacheSub").textContent =
       `缓存读取: ${fmtTokenValue(s.cache_read_tokens)} · 缓存写入: ${fmtTokenValue(s.cache_write_tokens)}`;
     document.getElementById("kpiTotalRequests").textContent = fmtInt(s.total_requests || 0);
@@ -3659,10 +3659,10 @@
         return `<tr>
           <td class="mono" style="font-weight:600">${escapeHtml(m.model)}</td>
           <td class="mono">${fmtInt(m.requests)} (${fmtInt(m.success)}/${fmtInt(m.failed)})</td>
-          <td class="mono">${fmtInt(m.input)}</td>
-          <td class="mono">${fmtInt(m.output)}</td>
-          <td class="mono">${fmtInt(m.reasoning)}</td>
-          <td class="mono">${fmtInt(m.cacheRead)} / ${fmtInt(m.cacheWrite)}</td>
+          <td class="mono">${fmtTokenValue(m.input)}</td>
+          <td class="mono">${fmtTokenValue(m.output)}</td>
+          <td class="mono">${fmtTokenValue(m.reasoning)}</td>
+          <td class="mono">${fmtTokenValue(m.cacheRead)} / ${fmtTokenValue(m.cacheWrite)}</td>
           <td class="token-val">${fmtTokenValue(m.totalTokens)}</td>
           <td style="min-width:130px">
             <div style="font-size:12px" class="mono">${share}%</div>
