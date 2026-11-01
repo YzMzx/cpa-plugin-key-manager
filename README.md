@@ -1,229 +1,171 @@
-# cpa-plugin-key-manager — CLIProxyAPI API Key 精细化管控与 Token 用量统计插件
+# cpa-plugin-key-manager
 
-`cpa-plugin-key-manager` 是基于 [CLIProxyAPI 插件开发规范](https://help.router-for.me/cn/plugin/development.html)（C ABI `c-shared` 动态库架构，`ABIVersion = 1`，`SchemaVersion = 6`）开发的多租户 API Key 治理与实时 Token 用量统计插件。
+CLIProxyAPI 的 API Key 管控与用量统计插件：多 Key 治理、模型白名单、并发与额度限制、Token 用量看板、模型价格管理，全部数据存放在一个 SQLite 数据库里。
 
----
-
-## 核心功能特性
-
-1. **内置可视化管理页（`//go:embed` 零依赖内嵌 SPA，与 [Cli-Proxy-API-Management-Center](https://github.com/router-for-me/Cli-Proxy-API-Management-Center) 深度无缝融合）**
-   - **免密无缝内嵌 & 主题完全同步**：通过 `management.register` 自动在 CLIProxyAPI 管理后台左侧导航栏注入 **「API Key 管控与用量」** 入口（`/v0/resource/plugins/cpa-plugin-key-manager/ui`），进入页面无需再次输入管理密钥，且主题不设独立开关，完全跟随 CPA 管理后台的暖灰浅色、纯白、深色主题实时同步。
-   - **与 CPA 全局 `api-keys` 统一双向同步（绝不分两套 Key）**：插件自动读取并同步 CLIProxyAPI 主配置 `config.yaml` 中的全局 `api-keys`（以及 `/v0/management/api-keys`）；在插件页面新建、修改或删除 API Key 会自动同步回写 CPA 的 `config.yaml` 与内存配置。
-   - **纯复选框（Checkbox）模型白名单与账号凭证绑定**：
-     - **模型白名单复选框**：自动聚合宿主已加载凭证注册的模型（`host.auth.models`）、历史调用模型与主流模型库，支持按 Provider 分类筛选与一键全选/清空，无需手动输入模型规则。
-     - **上游账号凭证复选框**：自动调用 `host.auth.list` 与 `host.auth.models` 列出所有可用账号凭证，全复选框勾选绑定并支持 `round-robin` / `fill-first` / `strict` 策略。
-   - **动态持久化与热生效**：网页端增删改查的所有 API Key 规则自动原子落盘，并**镜像到多个持久位置**（CLIProxyAPI 认证目录下的 `key-manager/*.state`、`config.yaml` 所在目录、`data/` 目录），容器重建或 `data/` 被清空后启动时自动从最新副本恢复；修改后立即热生效。插件规则**不写入 `config.yaml`**（该文件会被 CPA 用内存副本整体重写，写进去必然丢失），`config.yaml` 只同步全局 `api-keys`。
-   - **拖动排序**：API Key 列表支持拖动行首 ⠿ 手柄调整显示顺序，顺序保存在规则文件的 `key_order` 中，重启后保持。
-
-2. **按 API Key 维度的路由与访问控制（Pre-request & Response Filter）**
-   - **模型白名单访问控制**：每个 API Key 可配置独立的 `allowed_models` 列表，支持精确匹配、`*`/`?` 通配符（如 `claude-3-5-*`、`gpt-4o*`）、`!` 排除规则，并自动兼容带思考后缀与带 Provider 前缀的模型名。越权调用直接短路返回兼容 OpenAI 与 Anthropic SDK 的 `403 Forbidden` JSON 错误，不触发任何上游请求。
-   - **模型列表拉取智能过滤（`/v1/models`）**：客户端使用特定 API Key 请求模型列表时，插件自动识别其鉴权身份并拦截过滤响应，**仅向该 Key 返回其白名单所允许的模型**，未授权的模型列表自动脱敏隐匿。
-     - **管理面板始终看到完整目录**：来自 `management.html`（`Referer` 含 `management`）的请求不过滤，避免面板用受限 Key 调 `/models` 时误以为服务器模型缺失。
-     - **脚本可显式取全量**：请求头加 `X-Key-Guard-Catalog: all` 即可跳过过滤。
-   - **上游凭证绑定与租户隔离**：支持将特定 API Key 绑定至指定的上游凭证或凭证池（`auth_ids`、`credentials`、`providers`、`attributes`），支持池内 `round-robin`（轮询）与 `fill-first`（优先级）调度，以及 `strict: true` 严格租户隔离（当绑定凭证不可用时直接拒绝，防止跨租户借用公共凭证）。
-   - **前端鉴权集成**：实现 `frontend_auth_provider` 能力，在插件 `keys` 中配置的 API Key 可直接通过鉴权。
-
-3. **按 API Key 维度的最大并发限制（Pre-request & Post-response）**
-   - 每个 API Key 可配置独立的 `max_concurrency` 最大并发数。
-   - **流式生命周期安全**：基于 `RequestID` 跟踪每个请求槽位，在 `request.intercept_before` 申请槽位，在宿主终态回调 `request.complete`（非流式响应结束，或 SSE 流式传输正常 `[DONE]`、上游中断、客户端断开 `context.Canceled`）时**幂等释放**槽位，绝不在流式响应头返回时提前释放，也绝不会因重复回调导致计数器下溢为负数。
-   - 达到并发上限时立即返回 `429 Too Many Requests`（附带 `Retry-After: 1`）。
-   - **热重载安全**：在触发 `plugin.reconfigure` 热更新配置时，完整保留当前飞行中的并发槽位与已累计的 Token 统计数据。
-
-4. **多协议 Token 用量统计（Post-response & Query）**
-   - **多协议非流式与流式增量合并**：原生支持 **OpenAI Chat Completions**、**OpenAI Responses API (`response.usage`)**、**Anthropic Claude (`message_start` + `message_delta`)**、**Google Gemini (`usageMetadata`)** 四大协议格式。在流式分片拦截中按字段执行**非零增量合并（Merge）**，确保 Input、Output、Reasoning、Cache Read、Cache Write 各项 Token 完整聚合。
-   - **`stream_options` 协议守卫**：仅对 `SourceFormat == "openai"` 且未显式携带 `stream_options.include_usage` 的流式请求自动注入 `"stream_options": {"include_usage": true}`，严禁向 `claude`、`gemini`、`openai-response` 注入，防止上游返回 `400 Bad Request`。
-   - **防重记账与 Windows 安全持久化**：协同 `request.complete` 与宿主 `usage.handle`，确保单次请求绝不重复统计；持久化采用临时文件 `fsync` + 带轻量级重试的原子 `os.Rename`，兼容 Windows 文件锁机制。
-   - **按「请求模型 + 服务端模型」二元组统计**：每次请求只落入一个二元组（例如请求 `gemini-3.8-flash-high` 而服务端实际返回 `gemini-3.8-flash-n`，即计入「请求 = …-high / 落地 = …-n」这一组）。明细表据此精确地按请求模型分组、在组下列出它实际落到过的每个服务端模型，**同一份数据不会被拆到多行、也不再需要模糊标注**；「按模型全局排行」仍按**服务端模型**汇总。费用计算按请求模型的价格查表，避免上游变体名查不到价格导致费用归零。
-
-5. **模型与价格（Models & Pricing）标签页**
-   - **默认价格来自 models.dev**：插件启动后自动从 <https://models.dev/api.json> 拉取全量模型价格（默认每 24 小时刷新一次），并缓存到 `storage.pricing_cache_file`，离线时自动降级使用本地缓存。
-   - **手动覆盖与通配符**：任意模型可手动设置 Input / Output / Cache Read / Cache Write 单价（USD / 1M Tokens），支持 `claude-sonnet-4-*` 这类通配符规则；可一键「恢复默认」回落到 models.dev 价格。
-   - **全局兜底价**：配置 `__default__` 兜底价后，既未命中手动规则、也未在 models.dev 中找到的模型按兜底价计费，避免费用恒为 0。
-   - **价格优先级**：手动精确规则 → 手动通配符 → models.dev 精确 → **models.dev 前缀降级** → 兜底默认价。
-   - **前缀降级匹配**：完整模型名在 models.dev 中查不到时，自动按「去掉末尾段」逐级降级（`gemini-3.8-flash-high` → `gemini-3.8-flash-*` → `gemini-3.8-*`），命中后再取最具体的那个家族价格；分段边界严格按 `-` 对齐，`gemini-3` 不会误匹配 `gemini-30-flash`。命中的价格来源会标记为 `models.dev(prefix:xxx)`，面板上显示为「models.dev 前缀」并可悬停查看实际匹配到的模型。
-
-6. **额度概览（Overview）标签页**
-   - **默认首屏**：位于选项卡首位并作为系统默认视图，Tab 状态与 URL 参数 `?tab=` 同步，刷新后保持；筛选条件在切换标签页时保留。
-   - **本地账本（Ledger）**：插件按「小时 × API Key × 账号 × 计费模型 × 来源渠道」聚合记账，默认保留 90 天（`storage.ledger_retention_days` 可调），随用量快照一起持久化，重启/容器重建后仍可查询。**调用失败的请求不计入账本**（若先按成功记账、随后被标记失败，会自动回滚该请求的条目）。
-   - **计费口径**：账本的模型维度始终取**客户端请求的目录模型**；上游替换（如请求 `gemini-3.8-flash-high` 实际返回 `gemini-4-argon-high`）只在用量看板上标注，不会在账本里生成额外的计费模型行。
-   - **统计范围**：固定统计最近 7 天（含今天），顶部无筛选控件；刷新按钮位于「按密钥统计消耗」卡片右上角。
-   - **指标卡**：密钥状态（总数 / 可用数）、请求数、Token 总量、费用、独立模型数。
-   - **Token 趋势**：时 / 日 / 月粒度，折线图（输入 / 输出 / 缓存三条绝对值曲线 + 右轴虚线缓存命中率曲线，命中率 = `缓存 / (输入 + 缓存)`），鼠标悬停在任意时间点会高亮该点、显示竖向参考线与数值浮层，并统计有使用记录的自然日天数。
-   - **模型分布**：环形图支持按调用次数 / Token / 费用切换维度，中心显示当前维度汇总，右侧明细列表展示每模型的占比、次数、Token 与费用，点击可下钻为筛选条件。
-   - **按密钥统计**：独立表格置于概览首位，按密钥汇总请求数、输入 / 输出 / 缓存 Token、总 Token 与费用，展开后逐行列出该密钥下每个模型单独的次数、Token 与费用。
-
-7. **API Key 额度管理**
-   - 在「API Key 与规则管控」标签页顶部独立列表展示每个 Key 的 `API Key / 密钥限额 / 已用 / 剩余 / 操作`，限额列附消耗进度条（≥80% 转黄、超额转红）。
-   - 额度按费用（USD）计算，`quota_limit_usd = 0` 表示不限额，新建 Key 时默认不限额。
-   - 操作：`复制密钥`、`管理密钥`（打开编辑弹窗，可修改额度）、`重置额度`（把已用计量基线移到当前累计费用，不影响历史用量与费用统计）。
-   - 超额请求会直接短路返回 `429 Too Many Requests`，响应体为 `insufficient_quota` 错误（OpenAI / Anthropic SDK 兼容格式），消息中带有已用与限额数值。
-   - **单位换算**：所有 Token 数值自动按 K / M / B 换算显示（如 12.3 M、1.02 B），无需手动切换；费用统一以 USD 展示。
+基于 [CLIProxyAPI 插件规范](https://help.router-for.me/cn/plugin/development.html)（C ABI `c-shared`，`ABIVersion = 1`，`SchemaVersion = 6`）开发。
 
 ---
 
-## SQLite 持久化（v0.9.0 起为默认）
+## 功能
 
-> 参考 [yuluo688/credit-manager](https://github.com/yuluo688/credit-manager) 的存储设计：**SQLite 是唯一后端**，不再写 JSON 快照、不再写 JSON 镜像。从 v0.8.x 升级时首次启动会自动导入旧的 JSON 规则与用量。
+### API Key 管理
+- 与 CPA 全局 `api-keys` 双向同步：插件里增删改 Key 会自动回写 `config.yaml` 的 `api-keys`。
+- 每个 Key 可独立设置：启用状态、最大并发、模型白名单、上游凭证绑定、费用额度。
+- 列表支持拖动调整显示顺序，顺序随库保存。
+- 额度按费用（USD）计，`0` 表示不限额；超额请求直接返回 `429 insufficient_quota`（OpenAI / Anthropic SDK 兼容格式）。
+- `重置额度` 只重置计量基线，不清历史用量与费用。
 
-### 选型
+### 访问控制
+- **模型白名单**：支持精确名、`*` / `?` 通配符、`!` 排除，命中失败返回 `403`（OpenAI / Anthropic 兼容 JSON），不触发上游请求。
+- **模型列表过滤**：用受限 Key 请求 `/v1/models` 时只返回白名单内的模型；面板请求不加过滤，`X-Key-Guard-Catalog: all` 可显式取全量。
+- **上游凭证绑定**：支持 `round-robin` / `fill-first` 调度与 `strict` 严格隔离。
+- **并发限制**：按 Key 独立计数，流式请求在宿主终态回调时释放，超限返回 `429` + `Retry-After`。
 
-| 项 | 方案 |
+### 用量统计
+- 支持 OpenAI Chat Completions、OpenAI Responses、Anthropic Claude、Google Gemini 四种 usage 格式，流式分片按字段增量合并。
+- 按「请求模型 + 服务端模型」二元组记账：上游替换只在明细里标注，不会拆成重复行。
+- 请求去重：`request.complete` 与 `usage.handle` 协同，单次请求只统计一次。
+- 全部 Token 数值自动按 K / M / B 显示（如 `12.3 M`、`1.02 B`）。
+
+### 面板
+- **概览**：按密钥统计消耗、5 张指标卡、Token 趋势（时 / 日 / 月，含缓存命中率曲线，悬停出数值浮层）、模型分布环形图（按次数 / Token / 费用切换）。
+- **用量看板**：API Key、账号、模型三个维度的排行。
+- **模型与价格**：价格默认从 [models.dev](https://models.dev/) 拉取（每 24 小时刷新），可手动覆盖任意模型或通配符规则，支持 `__default__` 兜底价与前缀降级匹配。
+- 面板自动注入 CPA 管理后台菜单「API Key 管控与用量」，主题跟随 CPA，无需二次输入管理密钥。
+
+---
+
+## 数据持久化
+
+v0.9.0 起 **SQLite 是唯一存储后端**，规则、用量、账本全部存在一个文件里。
+
+| 项 | 说明 |
 |---|---|
-| 驱动 | `modernc.org/sqlite`（纯 Go，无 CGO，五平台可交叉编译） |
-| 连接 | `MaxOpenConns(1)`，WAL 模式 |
-| DSN pragma | `journal_mode(WAL)`、`busy_timeout(5000)`、`foreign_keys(ON)`、`synchronous(NORMAL)` |
-| 迁移 | `schema_migrations` 表 + 逐版本事务执行，重复启动幂等 |
-| 跨进程写锁 | `<db>.lock` + `flock`(Unix) / `LockFileEx`(Windows)，进程退出自动释放，第二个写入者直接报错 |
+| 默认路径 | `<CLIProxyAPI 根目录>/data/key_usage.db` |
+| 覆盖方式 | 配置 `storage.usage_db_file`，或环境变量 `CPA_KEY_MANAGER_USAGE_DB` |
+| 引擎 | `modernc.org/sqlite`（纯 Go、无需 CGO） |
+| 模式 | WAL、`busy_timeout=5000`、单连接 |
+| 写锁 | `<db>.lock`（`flock` / `LockFileEx`），同一数据库只允许一个写入者 |
+| 迁移 | `schema_migrations` 表，按版本事务执行，重复启动幂等 |
+| 写入 | 增量 upsert，只写自上次落盘以来变动的行 |
 
-### 表
+主要表：`rules_state`（Key 规则 / 排序 / 默认策略 / 价格覆盖）、`key_usage`、`key_model_usage`、`account_usage`、`account_model_usage`、`usage_ledger`（概览账本，默认保留 90 天）。
 
-| 表 | 内容 |
-|---|---|
-| `rules_state` | 整份动态规则（Key 规则、排序、默认策略、价格覆盖）一个 JSON 行，写入是单条 UPSERT，天然原子 |
-| `key_usage` | 每个 API Key 的累计请求 / Token / 费用 |
-| `key_model_usage` | Key 维度的「请求模型 + 服务端模型」二元组明细与单价快照 |
-| `account_usage` / `account_model_usage` | 上游账号维度的聚合与明细 |
-| `usage_ledger` | 概览账本 `hour × key × account × model × source`，附 `hour` / `model` 索引 |
+### ⚠️ Docker 必须挂载数据目录
 
-### 增量写入
+容器重建会删除镜像层里的数据。请确保 `data` 目录挂载到宿主机：
 
-每次 flush 只写「自上次 flush 以来变动的行」：
+```yaml
+services:
+  cli-proxy-api:
+    volumes:
+      - ./data:/CLIProxyAPI/data
+```
 
-- 变更时标记脏 Key / 脏账号 / 脏账本行；
-- 脏 Key：UPSERT `key_usage`，再原子替换该 Key 的二元组集合（每个 Key 的模型数很少）；
-- 脏账本行：按主键 UPSERT；
-- 删除（清零、失败回滚）：显式 DELETE 对应行；
-- 账本保留期裁剪：`DELETE FROM usage_ledger WHERE hour < cutoff`。
+自定义了 `usage_db_file` 时挂载它所在的目录；**不能只读挂载**，SQLite 需要写 `-wal` / `-shm` / `.lock`。
 
-### 配置
+> 数据库必须放在本地文件系统，不要用 NFS / SMB，否则文件锁不可靠。
+
+---
+
+## 安装
+
+### 一键安装（推荐）
+
+在 CLIProxyAPI 运行根目录执行：
+
+```bash
+# Linux / macOS / Git Bash
+curl -fsSL https://raw.githubusercontent.com/YzMzx/cpa-plugin-key-manager/main/install.sh | bash
+```
+
+```powershell
+# Windows PowerShell
+irm https://raw.githubusercontent.com/YzMzx/cpa-plugin-key-manager/main/install.ps1 | iex
+```
+
+脚本会识别架构、下载对应 Release、校验 SHA256、安装到 `./plugins/`，并补齐 `config.yaml` 中的插件配置。
+
+### 常用参数
+
+```bash
+./install.sh --dir /opt/CLIProxyAPI --version v0.9.7   # 指定根目录与版本
+./install.sh --local ./cpa-plugin-key-manager-linux-amd64.tar.gz   # 本地包安装
+./install.sh --init-only                                # 只补配置，不下载二进制
+./install.sh --init-only --reset-data                   # 重置数据：旧库移到 data/backup-<时间戳>/
+```
+
+---
+
+## 配置
+
+`config.yaml` 里只需要两项配置，其余全部由插件在数据库内维护：
 
 ```yaml
 plugins:
+  enabled: true
+  dir: ./plugins
   configs:
     cpa-plugin-key-manager:
+      enabled: true
       storage:
-        usage_db_file: "./data/key_usage.db"   # 默认 <CPA 根目录>/data/key_usage.db
+        # 留空 = <CLIProxyAPI 根目录>/data/key_usage.db
+        usage_db_file: ""
 ```
 
-### 行为
-
-- **唯一后端**：不再生成 `key_usage_stats.json` 与任何 `.state` 镜像；`usage_file` 仅用于推导默认数据库路径。
-- **升级迁移**：数据库为空时，会把旧的 `key_guard_rules.json` 读入 `rules_state`（一次性）。
-- **单写者**：同一数据库文件同时只允许一个插件实例写入，锁被占用时启动日志给出明确告警。
-- **诊断**：`overview.diagnostics` 暴露 `usage_db_file / usage_db_exists / usage_db_size`。
-- **清理旧 JSON**：`scripts/cleanup-legacy-json.sh` 可列出并清理 v0.8.*／sqlite.1-3 留下的 JSON 与 `.state` 文件（默认 dry-run，`--apply` 移入备份目录，`--apply --delete` 直接删除；找不到 `key_usage.db` 时拒绝执行）。
-
-## 升级与数据迁移指南（从 cpa-plugin-key 升级至 cpa-plugin-key-manager）
-
-从旧版 `cpa-plugin-key` 升级到 `cpa-plugin-key-manager` 时，**历史数据完全无损、无缝继承**：
-
-1. **动态规则与用量统计文件无缝兼容**：
-   - 规则文件 `./data/key_guard_rules.json` 与用量统计文件 `./data/key_usage_stats.json` 保持完全兼容，升级时**直接保留原有文件**，无需任何格式转换或手工处理。
-2. **替换插件二进制文件**：
-   - 将 `./plugins/cpa-plugin-key.{dll,so,dylib}` 替换为新的 `./plugins/cpa-plugin-key-manager.{dll,so,dylib}`，并删除旧版文件。
-3. **更新配置文件 `config.yaml` 节点名称**：
-   - 将 `config.yaml` 中 `plugins.configs.cpa-plugin-key` 修改为 `plugins.configs.cpa-plugin-key-manager` 即可（使用一键安装脚本 `install.sh` / `install.ps1` 会自动帮您检测并无缝迁移该节点）。
-4. **管理后台路由地址变更**：
-   - UI 资源路径更新为 `/v0/resource/plugins/cpa-plugin-key-manager/ui`。在 CPA 管理后台左侧菜单点击「API Key 管控与用量」会自动进入最新地址。
+Key 规则、默认策略、模型价格覆盖都通过管理页面配置，**不要写进 `config.yaml`**。
 
 ---
 
-## 从 v0.8.x 升级到 v0.9.0（JSON → SQLite）
+## 使用
 
-v0.9.0 起持久化后端换成 SQLite，升级过程**自动完成**：
+打开 CPA 管理后台 → 左侧菜单 **「API Key 管控与用量」**，或直接访问：
 
-1. 首次启动时，若数据库里还没有数据：
-   - 旧的 `key_guard_rules.json`（含认证目录镜像）会被**一次性导入** `rules_state`；
-   - 最新的 `key_usage_stats.json` 快照会被导入用量表与账本。
-2. 数据库默认位于 `<CPA 根目录>/data/key_usage.db`，可用 `storage.usage_db_file` 或环境变量 `CPA_KEY_MANAGER_USAGE_DB` 覆盖。
-3. 导入完成后 **JSON 与 `.state` 文件不再被写入**，可用 `scripts/cleanup-legacy-json.sh` 清理（默认 dry-run，先备份再删除）。
-4. ⚠️ 数据库必须放在**真实本地文件系统**上（不要用 NFS/SMB）；容器部署要确保该目录已挂载到宿主机，否则容器重建会丢数据。
-5. 回退到 v0.8.x 前请保留 JSON 备份：v0.9.0 不会再写回 JSON。
+```
+http://127.0.0.1:8317/v0/resource/plugins/cpa-plugin-key-manager/ui
+```
+
+标签页：`概览` / `API Key 与规则管控` / `Token 用量统计看板` / `全局默认策略与凭证池` / `模型与价格`。
 
 ---
 
-## 快速安装与插件数据初始化
+## 运维
 
-### 1. 一键在线安装并初始化数据（推荐）
-进入您的 `CLIProxyAPI` 运行根目录后执行以下命令，脚本会自动识别系统架构、下载最新 Release 插件、校验 SHA256、安装至 `./plugins/`，并自动初始化或无缝升级 `./data/` 及 `config.yaml`：
-
-- **Linux / macOS / Git Bash**：
-  ```bash
-  curl -LsSf https://raw.githubusercontent.com/YzMzx/cpa-plugin-key-manager/main/install.sh | sh
-  ```
-- **Windows PowerShell**：
-  ```powershell
-  irm https://raw.githubusercontent.com/YzMzx/cpa-plugin-key-manager/main/install.ps1 | iex
-  ```
-
-> ⚠️ **Docker 部署必读**：v0.9.0 起所有数据都在 `<CPA 根目录>/data/key_usage.db` 这个 SQLite 文件里。
-> 请务必把该目录挂载到宿主机，否则 `docker compose up -d --force-recreate` 会把数据库一起删掉：
->
-> ```yaml
-> services:
->   cli-proxy-api:
->     volumes:
->       - ./data:/CLIProxyAPI/data
-> ```
->
-> 自定义了 `usage_db_file` 时，挂载它所在的目录即可（不能用只读挂载，SQLite 需要写 `-wal` / `-shm` / `.lock`）。
-
-### 2. 手动安装与自定义数据初始化参数
 ```bash
-# 下载安装脚本
-curl -LsSfO https://raw.githubusercontent.com/YzMzx/cpa-plugin-key-manager/main/install.sh
-chmod +x install.sh
+# 查看数据库状态
+curl -s -H "Authorization: Bearer <管理密钥>" \
+  http://127.0.0.1:8317/v0/management/key-guard/overview \
+  | jq '.diagnostics | {usage_db_file, usage_db_exists, usage_db_size}'
 
-# 方式 A：指定 CLIProxyAPI 根目录与指定版本安装并初始化数据
-./install.sh --dir /opt/CLIProxyAPI --version v0.5.0
-
-# 方式 B：使用本地已下载的 Release 压缩包或本地编译的 .so/.dylib/.dll 手动安装并初始化数据
-./install.sh --dir /opt/CLIProxyAPI --local ./cpa-plugin-key-manager-linux-amd64.tar.gz
-
-# 方式 C：仅初始化数据目录与 config.yaml（不下载二进制；v0.9 起不再生成 data/*.json）
-./install.sh --dir /opt/CLIProxyAPI --init-only
-
-# 方式 D：重置插件数据（把 key_usage.db 等移到 data/backup-<时间戳>/，下次启动自动新建空库）
-./install.sh --dir /opt/CLIProxyAPI --init-only --reset-data
+# 清理旧版本遗留的 JSON / .state 文件（默认 dry-run）
+curl -fsSL https://raw.githubusercontent.com/YzMzx/cpa-plugin-key-manager/main/scripts/cleanup-legacy-json.sh -o cleanup-legacy-json.sh
+chmod +x cleanup-legacy-json.sh
+./cleanup-legacy-json.sh --root /opt/Docker/CLIProxyAPI               # 预览
+./cleanup-legacy-json.sh --root /opt/Docker/CLIProxyAPI --apply        # 移入备份目录
 ```
+
+`cleanup-legacy-json.sh` 只处理 `key_guard_rules.json`、`key_usage_stats.json`、`.state` 镜像、早期 `key_usage_stats.db` 与 `.bak` 残片，不会碰 `models_dev.json`、`key_usage.db*`、`config.yaml`；找不到有效数据库时拒绝执行。加 `--plugins-leftover` 可一并清理 `plugins/linux` 之类的旧解压残留。
 
 ---
 
 ## 源码编译
 
-### 1. 运行单元测试
 ```bash
-go test -v ./...
+go test ./...
+
+# Linux
+CGO_ENABLED=1 go build -buildmode=c-shared -o cpa-plugin-key-manager.so .
+# macOS
+CGO_ENABLED=1 go build -buildmode=c-shared -o cpa-plugin-key-manager.dylib .
+# Windows
+go build -buildmode=c-shared -o cpa-plugin-key-manager.dll .
 ```
 
-### 2. 编译动态库插件
-- **Windows (`.dll`)**：
-  ```powershell
-  go build -buildmode=c-shared -o cpa-plugin-key-manager.dll .
-  ```
-- **Linux (`.so`)**：
-  ```bash
-  CGO_ENABLED=1 go build -buildmode=c-shared -o cpa-plugin-key-manager.so .
-  ```
-- **macOS (`.dylib`)**：
-  ```bash
-  CGO_ENABLED=1 go build -buildmode=c-shared -o cpa-plugin-key-manager.dylib .
-  ```
+编译需要同级目录存在 `CLIProxyAPI` 源码 checkout（`go.mod` 里有 `replace` 指向 `../CLIProxyAPI`）。
 
 ---
 
-## 管理与用量查询方式
+## 相关链接
 
-1. **CPA 管理后台可视化页面（免输密钥，主题跟随 CPA）**：
-   直接在 CLIProxyAPI 管理后台左侧菜单点击 **「API Key 管控与用量」**，或访问 `http://127.0.0.1:8317/v0/resource/plugins/cpa-plugin-key-manager/ui`。
-2. **CLI 命令行报表**：
-   ```bash
-   # 打印所有 API Key 的 Token 用量统计报表
-   ./cli-proxy-api -key-usage
-
-   # 查看指定 API Key 的 JSON 统计
-   ./cli-proxy-api -key-usage -key-usage-key sk-your-api-key -key-usage-json
-
-   # 重置统计数据
-   ./cli-proxy-api -key-usage-reset
-   ```
+- 发布页：<https://github.com/YzMzx/cpa-plugin-key-manager/releases>
+- 上游项目：<https://github.com/router-for-me/CLIProxyAPI>
