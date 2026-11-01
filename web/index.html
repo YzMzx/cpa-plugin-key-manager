@@ -183,10 +183,37 @@
   .page-tabs-row {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    justify-content: flex-start;
     flex-wrap: wrap;
     gap: 12px;
     margin-bottom: 18px;
+  }
+  .tabs-left {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+  }
+  .refresh-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex: 0 0 auto;
+  }
+  .km-spinner {
+    display: none;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    border: 2px solid rgba(148, 163, 184, 0.45);
+    border-top-color: var(--accent, #38bdf8);
+    animation: km-spin 0.8s linear infinite;
+  }
+  #globalRefreshBtn.is-loading .km-spinner {
+    display: inline-block;
+  }
+  @keyframes km-spin {
+    to { transform: rotate(360deg); }
   }
   .tabs {
     display: inline-flex;
@@ -1295,12 +1322,17 @@
 
   <!-- Navigation Tabs -->
   <div class="page-tabs-row">
-    <div class="tabs" role="tablist">
-      <button type="button" class="tab-btn active" data-tab="tab-overview" onclick="switchAdminTab('tab-overview')">概览</button>
-      <button type="button" class="tab-btn" data-tab="tab-keys" onclick="switchAdminTab('tab-keys')">API Key 与规则管控</button>
-      <button type="button" class="tab-btn" data-tab="tab-dashboard" onclick="switchAdminTab('tab-dashboard')">Token 用量统计看板</button>
-      <button type="button" class="tab-btn" data-tab="tab-routing" onclick="switchAdminTab('tab-routing')">全局默认策略与凭证池</button>
-      <button type="button" class="tab-btn" data-tab="tab-pricing" onclick="switchAdminTab('tab-pricing')">模型与价格</button>
+    <div class="tabs-left">
+      <button type="button" class="btn btn-sm refresh-btn" id="globalRefreshBtn" onclick="refreshAllData()" title="刷新全部数据">
+        <span class="km-spinner" aria-hidden="true"></span>刷新
+      </button>
+      <div class="tabs" role="tablist">
+        <button type="button" class="tab-btn active" data-tab="tab-overview" onclick="switchAdminTab('tab-overview')">概览</button>
+        <button type="button" class="tab-btn" data-tab="tab-keys" onclick="switchAdminTab('tab-keys')">API Key 与规则管控</button>
+        <button type="button" class="tab-btn" data-tab="tab-dashboard" onclick="switchAdminTab('tab-dashboard')">Token 用量统计看板</button>
+        <button type="button" class="tab-btn" data-tab="tab-routing" onclick="switchAdminTab('tab-routing')">全局默认策略与凭证池</button>
+        <button type="button" class="tab-btn" data-tab="tab-pricing" onclick="switchAdminTab('tab-pricing')">模型与价格</button>
+      </div>
     </div>
   </div>
 
@@ -1338,7 +1370,6 @@
           <div style="font-size:12px;color:var(--text-tertiary);margin-top:4px" id="ovKeyTableMeta"></div>
         </div>
         <div class="input-row">
-          <button type="button" class="btn btn-sm" onclick="refreshOverview()">刷新</button>
           <button type="button" class="btn btn-sm" onclick="expandAllOverviewKeys(true)">展开全部</button>
           <button type="button" class="btn btn-sm" onclick="expandAllOverviewKeys(false)">收起全部</button>
         </div>
@@ -1453,7 +1484,6 @@
         </div>
         <div class="input-row">
           <input type="text" class="input" style="width:200px" id="quotaSearch" placeholder="搜索 API Key 或备注..." oninput="renderQuotaTable()">
-          <button type="button" class="btn btn-sm" onclick="refreshKeyManagement()">刷新</button>
           <button type="button" class="btn btn-sm" onclick="openKeyModal(null)">新建 API Key</button>
         </div>
       </div>
@@ -1514,7 +1544,6 @@
         </div>
         <div class="input-row">
           <input type="text" class="input" style="width:210px" id="dashKeySearch" placeholder="搜索 Key 或备注..." oninput="renderDashboardTables()">
-          <button type="button" class="btn btn-sm" onclick="refreshDashboard()">刷新</button>
           <button type="button" class="btn btn-sm btn-danger" onclick="resetUsageStats('')">清空全部用量统计</button>
         </div>
       </div>
@@ -2386,35 +2415,30 @@
 
   // ==================== ADMIN OVERVIEW & UNIFIED KEY SYNC ====================
   // The four cumulative KPI cards come from /key-guard/overview (summary), while the
-  // trend/distribution/per-key blocks come from /key-guard/ledger. Every refresh
-  // button reloads the overview payload, which itself re-queries the ledger, so the
-  // KPI cards and the ledger blocks always update together.
-  async function refreshOverview() {
-    try {
-      await loadAdminOverview();
-      showToast("概览数据已刷新");
-    } catch (err) {
-      showToast(err.message, true);
+  // Single global refresh: reloads the overview payload (KPI cards, key tables,
+  // quota table, usage leaderboards, routing tables, pricing) and the ledger
+  // blocks (trend, distribution, per-key breakdown) in one go.
+  let globalRefreshInFlight = false;
+  async function refreshAllData() {
+    if (globalRefreshInFlight) return;
+    globalRefreshInFlight = true;
+    const btn = document.getElementById("globalRefreshBtn");
+    if (btn) {
+      btn.classList.add("is-loading");
+      btn.disabled = true;
     }
-  }
-
-  // Manual refresh for the usage leaderboards.
-  async function refreshDashboard() {
+    showOverviewSkeleton();
     try {
       await loadAdminOverview();
-      showToast("用量数据已刷新");
-    } catch (err) {
-      showToast(err.message, true);
-    }
-  }
-
-  // Manual refresh for the API Key management card (keys, limits and enable state).
-  async function refreshKeyManagement() {
-    try {
-      await loadAdminOverview();
-      showToast("API Key 数据已刷新");
-    } catch (err) {
-      showToast(err.message, true);
+      showToast("全部数据已刷新");
+    } catch (_) {
+      // loadAdminOverview already surfaced the error via toast / lock screen.
+    } finally {
+      globalRefreshInFlight = false;
+      if (btn) {
+        btn.classList.remove("is-loading");
+        btn.disabled = false;
+      }
     }
   }
 
@@ -2444,7 +2468,7 @@
       initDefaultPolicySelectors();
       renderHostAuthTable();
       renderPricingTab();
-      loadOverviewLedger(true);
+      await loadOverviewLedger(true);
     } catch (err) {
       if (activeManagementKey) {
         showToast(err.message, true);
