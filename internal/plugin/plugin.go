@@ -22,7 +22,7 @@ import (
 
 const (
 	PluginID      = "cpa-plugin-key-manager"
-	PluginVersion = "0.9.15"
+	PluginVersion = "0.9.16"
 	PluginAuthor  = "YzMzx"
 	PluginRepo    = "https://github.com/YzMzx/cpa-plugin-key-manager"
 	PluginLogoSVG = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%238b8680'/><path d='M24 22a10 10 0 1 0 9.5 13H42v5h6v-5h4v-6H33.5A10 10 0 0 0 24 22zm0 6a4 4 0 1 1 0 8 4 4 0 0 1 0-8z' fill='%23fff'/></svg>"
@@ -1103,6 +1103,46 @@ func (m *Manager) SyncHostAPIKeys(keys []string) error {
 	return errSave
 }
 
+// authFilesWithUsage turns the host credential list into JSON objects enriched with
+// the usage counters this plugin recorded for each credential. The host itself does
+// not report success/failed, so without this the admin table would always show 0/0.
+func (m *Manager) authFilesWithUsage(files []pluginapi.HostAuthFileEntry) []map[string]any {
+	out := make([]map[string]any, 0, len(files))
+	for _, f := range files {
+		item := make(map[string]any, 16)
+		if raw, errMarshal := json.Marshal(f); errMarshal == nil {
+			_ = json.Unmarshal(raw, &item)
+		}
+		if item == nil {
+			item = make(map[string]any, 16)
+		}
+		if _, ok := item["name"]; !ok && f.Name != "" {
+			item["name"] = f.Name
+		}
+		if _, ok := item["id"]; !ok && f.ID != "" {
+			item["id"] = f.ID
+		}
+
+		acct := m.usageStore.AccountUsageFor(f.Provider, f.Name, f.ID, f.AuthIndex)
+		if acct != nil {
+			item["requests"] = acct.Requests
+			item["success"] = acct.SuccessRequests
+			item["failed"] = acct.FailedRequests
+			item["input_tokens"] = acct.InputTokens
+			item["output_tokens"] = acct.OutputTokens
+			item["total_tokens"] = acct.TotalTokens
+			item["last_model"] = acct.LastModel
+			item["last_request_at"] = acct.LastRequestAt
+		} else {
+			item["requests"] = 0
+			item["success"] = 0
+			item["failed"] = 0
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
 // BuildAdminOverview returns the complete state needed by the Admin Dashboard in a single call.
 func (m *Manager) BuildAdminOverview(hostCallbackID string) map[string]any {
 	diskKeys := ReadHostConfigAPIKeys("")
@@ -1114,7 +1154,8 @@ func (m *Manager) BuildAdminOverview(hostCallbackID string) map[string]any {
 	}
 
 	snap := m.BuildSnapshot("", "", false)
-	authFiles, _ := m.ListHostAuthFiles(hostCallbackID)
+	rawAuthFiles, _ := m.ListHostAuthFiles(hostCallbackID)
+	authFiles := m.authFilesWithUsage(rawAuthFiles)
 	availableModels := m.ListAvailableModels(hostCallbackID, snap)
 	pStatus := m.PricingStatus()
 

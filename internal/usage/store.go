@@ -1076,6 +1076,41 @@ func looksLikeCredentialHash(segment string) bool {
 	return true
 }
 
+// AccountUsageFor resolves the aggregated usage of one upstream credential. It tries
+// every identifier the host exposes (name, credential id, auth index) so the admin
+// UI can show real success/failed counters instead of zeros.
+func (s *Store) AccountUsageFor(provider string, identifiers ...string) *AccountStats {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, id := range identifiers {
+		if strings.TrimSpace(id) == "" {
+			continue
+		}
+		if key := accountBucketKey(provider, id, ""); key != "" {
+			if acct, ok := s.accounts[key]; ok && acct != nil {
+				return acct
+			}
+		}
+	}
+	// Fall back to a linear scan: the host may report a filename while usage was
+	// reported with the hashed credential id, or vice versa.
+	for _, id := range identifiers {
+		needle := strings.TrimSpace(id)
+		if needle == "" {
+			continue
+		}
+		for _, acct := range s.accounts {
+			if acct == nil {
+				continue
+			}
+			if strings.EqualFold(acct.AuthID, needle) || strings.EqualFold(acct.AuthIndex, needle) {
+				return acct
+			}
+		}
+	}
+	return nil
+}
+
 // accountBucketKey builds the stable identifier for one upstream account. The
 // identity is the normalized credential id, so one configured provider with
 // several hashed credentials produces a single aggregated row; requests without
