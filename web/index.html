@@ -188,29 +188,42 @@
     gap: 12px;
     margin-bottom: 18px;
   }
-  .tabs-left {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    min-width: 0;
+  /* Refresh action lives inside the tab pill, separated by a hairline divider. */
+  .tabs-divider {
+    width: 1px;
+    height: 15px;
+    flex: 0 0 auto;
+    margin: 0 2px 0 4px;
+    background: rgba(148, 163, 184, 0.28);
   }
-  .refresh-btn {
+  .tabs-refresh {
+    appearance: none;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--text-tertiary);
+    width: 28px;
+    height: 28px;
+    border-radius: 7px;
     display: inline-flex;
     align-items: center;
-    gap: 6px;
+    justify-content: center;
     flex: 0 0 auto;
+    cursor: pointer;
+    transition: background 0.16s ease, color 0.16s ease;
   }
-  .km-spinner {
-    display: none;
-    width: 12px;
-    height: 12px;
-    border-radius: 50%;
-    border: 2px solid rgba(148, 163, 184, 0.45);
-    border-top-color: var(--accent, #38bdf8);
-    animation: km-spin 0.8s linear infinite;
+  .tabs-refresh:hover:not(:disabled) {
+    background: rgba(148, 163, 184, 0.14);
+    color: var(--text-primary);
   }
-  #globalRefreshBtn.is-loading .km-spinner {
-    display: inline-block;
+  .tabs-refresh:disabled {
+    cursor: default;
+    pointer-events: none;
+  }
+  .tabs-refresh svg {
+    display: block;
+  }
+  .tabs-refresh.is-loading svg {
+    animation: km-spin 0.9s linear infinite;
   }
   @keyframes km-spin {
     to { transform: rotate(360deg); }
@@ -369,6 +382,18 @@
     font-size: 12px;
     color: var(--text-tertiary);
     margin-top: 6px;
+  }
+  .kpi-skel-value {
+    display: inline-block;
+    width: 72%;
+    height: 22px;
+    vertical-align: middle;
+  }
+  .kpi-skel-sub {
+    display: inline-block;
+    width: 58%;
+    height: 10px;
+    vertical-align: middle;
   }
 
   /* Tables */
@@ -1322,17 +1347,19 @@
 
   <!-- Navigation Tabs -->
   <div class="page-tabs-row">
-    <div class="tabs-left">
-      <button type="button" class="btn btn-sm refresh-btn" id="globalRefreshBtn" onclick="refreshAllData()" title="刷新全部数据">
-        <span class="km-spinner" aria-hidden="true"></span>刷新
+    <div class="tabs" role="tablist">
+      <button type="button" class="tab-btn active" data-tab="tab-overview" onclick="switchAdminTab('tab-overview')">概览</button>
+      <button type="button" class="tab-btn" data-tab="tab-keys" onclick="switchAdminTab('tab-keys')">API Key 与规则管控</button>
+      <button type="button" class="tab-btn" data-tab="tab-dashboard" onclick="switchAdminTab('tab-dashboard')">Token 用量统计看板</button>
+      <button type="button" class="tab-btn" data-tab="tab-routing" onclick="switchAdminTab('tab-routing')">全局默认策略与凭证池</button>
+      <button type="button" class="tab-btn" data-tab="tab-pricing" onclick="switchAdminTab('tab-pricing')">模型与价格</button>
+      <span class="tabs-divider" aria-hidden="true"></span>
+      <button type="button" class="tabs-refresh" id="tabsRefreshBtn" onclick="refreshAllData()" title="刷新数据" aria-label="刷新数据">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 12a9 9 0 1 1-2.64-6.36"/>
+          <polyline points="21 3 21 9 15 9"/>
+        </svg>
       </button>
-      <div class="tabs" role="tablist">
-        <button type="button" class="tab-btn active" data-tab="tab-overview" onclick="switchAdminTab('tab-overview')">概览</button>
-        <button type="button" class="tab-btn" data-tab="tab-keys" onclick="switchAdminTab('tab-keys')">API Key 与规则管控</button>
-        <button type="button" class="tab-btn" data-tab="tab-dashboard" onclick="switchAdminTab('tab-dashboard')">Token 用量统计看板</button>
-        <button type="button" class="tab-btn" data-tab="tab-routing" onclick="switchAdminTab('tab-routing')">全局默认策略与凭证池</button>
-        <button type="button" class="tab-btn" data-tab="tab-pricing" onclick="switchAdminTab('tab-pricing')">模型与价格</button>
-      </div>
     </div>
   </div>
 
@@ -1405,7 +1432,7 @@
       <div class="kpi-card">
         <div class="kpi-label">请求数</div>
         <div class="kpi-value" id="ovMetricRequests">-</div>
-        <div class="kpi-sub">次</div>
+        <div class="kpi-sub">近 7 天 · 不含失败请求</div>
       </div>
       <div class="kpi-card">
         <div class="kpi-label">Token 用量</div>
@@ -2422,11 +2449,12 @@
   async function refreshAllData() {
     if (globalRefreshInFlight) return;
     globalRefreshInFlight = true;
-    const btn = document.getElementById("globalRefreshBtn");
+    const btn = document.getElementById("tabsRefreshBtn");
     if (btn) {
       btn.classList.add("is-loading");
       btn.disabled = true;
     }
+    showKpiSkeleton();
     showOverviewSkeleton();
     showKeysTabSkeleton();
     showDashboardSkeleton();
@@ -4063,6 +4091,26 @@
     if (quotaBody) quotaBody.innerHTML = skeletonRows(4, 3);
     const keysBody = document.getElementById("crudKeysTableBody");
     if (keysBody) keysBody.innerHTML = skeletonRows(9, 4);
+  }
+
+  // Placeholder shimmer for the nine metric cards (four global + five overview ones)
+  // while the refreshed payload is in flight.
+  function showKpiSkeleton() {
+    const valueIds = ["kpiTotalTokens", "kpiCacheTokens", "kpiTotalRequests", "kpiTotalCost"];
+    const subIds = ["kpiTokenSub", "kpiCacheSub", "kpiReqSub", "kpiCostSub"];
+    const metricIds = ["ovMetricKeys", "ovMetricRequests", "ovMetricTokens", "ovMetricCost", "ovMetricModels"];
+    valueIds.forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.innerHTML = `<span class="ov-skeleton kpi-skel-value"></span>`;
+    });
+    subIds.forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.innerHTML = `<span class="ov-skeleton kpi-skel-sub"></span>`;
+    });
+    metricIds.forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.innerHTML = `<span class="ov-skeleton kpi-skel-value"></span>`;
+    });
   }
 
   function showDashboardSkeleton() {
