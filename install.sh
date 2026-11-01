@@ -333,16 +333,9 @@ plugins:
   configs:
     cpa-plugin-key-manager:
       enabled: true
-      priority: 100
       storage:
-        usage_file: "./data/key_usage_stats.json"
-        rules_file: "./data/key_guard_rules.json"
-        flush_interval_seconds: 10
-      default_policy:
-        allow_unlisted_keys: true
-        max_concurrency: 0
-        allowed_models:
-          - "*"
+        # 留空则使用 <CLIProxyAPI 根目录>/data/key_usage.db
+        usage_db_file: ""
 EOF
     info "Created initial config.yaml with cpa-plugin-key-manager enabled: ${config_file}"
     return
@@ -366,22 +359,19 @@ EOF
     cat >> "$config_file" <<'EOF'
 
 # --- Added by cpa-plugin-key-manager installer ---
+# NOTE: all data lives in <CLIProxyAPI>/data/key_usage.db (SQLite).
+# For Docker deployments mount that directory, e.g.
+#   volumes:
+#     - ./data:/CLIProxyAPI/data
 plugins:
   enabled: true
   dir: ./plugins
   configs:
     cpa-plugin-key-manager:
       enabled: true
-      priority: 100
       storage:
-        usage_file: "./data/key_usage_stats.json"
-        rules_file: "./data/key_guard_rules.json"
-        flush_interval_seconds: 10
-      default_policy:
-        allow_unlisted_keys: true
-        max_concurrency: 0
-        allowed_models:
-          - "*"
+        # 留空则使用 <CLIProxyAPI 根目录>/data/key_usage.db
+        usage_db_file: ""
 EOF
     info "Appended plugins.configs.cpa-plugin-key-manager to ${config_file} (backup saved to ${config_file}.bak)"
   else
@@ -389,11 +379,8 @@ EOF
     cat <<'EOF'
     cpa-plugin-key-manager:
       enabled: true
-      priority: 100
       storage:
-        usage_file: "./data/key_usage_stats.json"
-        rules_file: "./data/key_guard_rules.json"
-        flush_interval_seconds: 10
+        usage_db_file: ""
 EOF
   fi
 }
@@ -411,6 +398,12 @@ printf '\n======================================================================
 printf '  cpa-plugin-key-manager installation & data initialization completed!\n'
 printf '  - Plugin directory : %s\n' "$plugin_dir"
 printf '  - Data directory   : %s\n' "$data_dir"
+printf '  - SQLite database  : %s/key_usage.db (rules, usage, ledger)\n' "$data_dir"
 printf '  - Admin Web UI     : http://127.0.0.1:8317/v0/resource/plugins/cpa-plugin-key-manager/ui\n'
 printf '  Restart CLIProxyAPI to load the plugin.\n'
+printf '\n'
+printf '  [Docker] Make sure the data directory is mounted, otherwise the\n'
+printf '  database is lost when the container is recreated:\n'
+printf '      volumes:\n'
+printf '        - ./data:/CLIProxyAPI/data\n'
 printf '==============================================================================\n'

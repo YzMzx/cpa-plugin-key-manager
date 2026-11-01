@@ -146,22 +146,19 @@ if ((-not (Test-Path $UsageFile)) -or $ResetData) {
 $PluginYamlBlock = @"
 
 # --- Added by cpa-plugin-key-manager installer ---
+# NOTE: all data lives in <CLIProxyAPI>/data/key_usage.db (SQLite).
+# For Docker deployments mount that directory, e.g.
+#   volumes:
+#     - ./data:/CLIProxyAPI/data
 plugins:
   enabled: true
   dir: ./plugins
   configs:
     cpa-plugin-key-manager:
       enabled: true
-      priority: 100
       storage:
-        usage_file: "./data/key_usage_stats.json"
-        rules_file: "./data/key_guard_rules.json"
-        flush_interval_seconds: 10
-      default_policy:
-        allow_unlisted_keys: true
-        max_concurrency: 0
-        allowed_models:
-          - "*"
+        # 留空则使用 <CLIProxyAPI 根目录>/data/key_usage.db
+        usage_db_file: ""
 "@
 
 if (-not (Test-Path $ConfigFile)) {

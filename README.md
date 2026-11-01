@@ -156,6 +156,18 @@ v0.9.0 起持久化后端换成 SQLite，升级过程**自动完成**：
   irm https://raw.githubusercontent.com/YzMzx/cpa-plugin-key-manager/main/install.ps1 | iex
   ```
 
+> ⚠️ **Docker 部署必读**：v0.9.0 起所有数据都在 `<CPA 根目录>/data/key_usage.db` 这个 SQLite 文件里。
+> 请务必把该目录挂载到宿主机，否则 `docker compose up -d --force-recreate` 会把数据库一起删掉：
+>
+> ```yaml
+> services:
+>   cli-proxy-api:
+>     volumes:
+>       - ./data:/CLIProxyAPI/data
+> ```
+>
+> 自定义了 `usage_db_file` 时，挂载它所在的目录即可（不能用只读挂载，SQLite 需要写 `-wal` / `-shm` / `.lock`）。
+
 ### 2. 手动安装与自定义数据初始化参数
 ```bash
 # 下载安装脚本
