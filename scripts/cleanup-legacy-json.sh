@@ -5,18 +5,20 @@
 # After the move to SQLite everything lives in key_usage.db:
 #   rules_state / key_usage / key_model_usage / account_usage / account_model_usage / usage_ledger
 #
-# This script only touches the retired JSON stores:
+# This script only touches the retired stores:
 #   key_guard_rules.json  key_guard_rules.state
 #   key_usage_stats.json  key_usage_stats.state
-#   leftovers: <name>.tmp.<digits>
-# It never touches models_dev.json (still the price cache), *.db / -wal / -shm,
-# *.lock or config.yaml.
+#   key_usage_stats.db*   (database an early build derived from usage_file)
+#   leftovers: <name>.tmp.<digits>, <name>.bak
+# It never touches models_dev.json (still the price cache), key_usage.db / -wal /
+# -shm / .lock or config.yaml.
 #
 # Examples:
 #   ./cleanup-legacy-json.sh                    # dry-run, only prints
 #   ./cleanup-legacy-json.sh --apply            # move into a timestamped backup dir
 #   ./cleanup-legacy-json.sh --apply --delete   # delete permanently
 #   ./cleanup-legacy-json.sh --root /srv/cpa --apply
+#   ./cleanup-legacy-json.sh --apply --plugins-leftover   # also drop plugins/linux etc.
 #
 # Safety: refuses to act while no key_usage.db exists, because then the JSON files
 # may still be the only copy of the rules and the usage history. Use --force to
@@ -31,6 +33,7 @@ DELETE="no"
 FORCE="no"
 ROOT=""
 BACKUP_DIR=""
+PLUGINS_LEFTOVER="no"
 
 usage() {
   sed -n '3,23p' "$0" | sed 's/^# \{0,1\}//'
@@ -44,6 +47,7 @@ while [ $# -gt 0 ]; do
     --force)   FORCE="yes"; shift ;;
     --root)    ROOT="${2:-}"; shift 2 ;;
     --backup)  BACKUP_DIR="${2:-}"; shift 2 ;;
+    --plugins-leftover) PLUGINS_LEFTOVER="yes"; shift ;;
     -h|--help) usage 0 ;;
     *) echo "unknown argument: $1" >&2; usage 1 ;;
   esac
@@ -128,6 +132,10 @@ matches() {
     key_guard_rules.state|key_usage_stats.state) return 0 ;;
     key_guard_rules.json.tmp.*|key_usage_stats.json.tmp.*) return 0 ;;
     key_guard_rules.state.tmp.*|key_usage_stats.state.tmp.*) return 0 ;;
+    key_guard_rules.json.bak|key_usage_stats.json.bak) return 0 ;;
+    key_guard_rules.state.bak|key_usage_stats.state.bak) return 0 ;;
+    key_usage_stats.db|key_usage_stats.db-wal|key_usage_stats.db-shm) return 0 ;;
+    key_usage_stats.db.lock) return 0 ;;
   esac
   return 1
 }
@@ -197,6 +205,25 @@ for f in "${TARGETS[@]}"; do
     exit 3
   fi
 done
+
+# Optional: stale plugin extraction directories such as plugins/linux that an
+# older manual "tar -xzf into plugins/" left behind.
+if [ "$PLUGINS_LEFTOVER" = "yes" ]; then
+  for stale in "$ROOT/plugins/linux" "$ROOT/plugins/darwin" "$ROOT/plugins/windows" "$ROOT/plugins/data"; do
+    [ -d "$stale" ] || continue
+    echo "[stale] $stale"
+    find "$stale" -maxdepth 2 -type f 2>/dev/null | sed 's/^/        /'
+    if [ -n "$BACKUP_DIR" ] && [ -d "$BACKUP_DIR" ]; then
+      target="$BACKUP_DIR/$(printf '%s' "$stale" | sed 's#^/##; s#^[A-Za-z]:##; s#[/\\:]#__#g')"
+      if mv -- "$stale" "$target"; then
+        echo "[moved] $stale -> $target"
+      else
+        echo "[error] failed to move $stale" >&2
+        exit 3
+      fi
+    fi
+  done
+fi
 
 echo "[done] moved $MOVED legacy file(s) into $BACKUP_DIR"
 echo "[hint] the plugin now reads and writes only the SQLite database;"
