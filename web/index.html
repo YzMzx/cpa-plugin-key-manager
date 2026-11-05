@@ -579,6 +579,8 @@
   .ov-key-row.is-deleted:hover td { opacity: 1; }
   .ov-key-toggle { color: var(--text-tertiary); text-align: center; }
   .ov-key-cell { display: flex; flex-direction: column; gap: 1px; line-height: 1.25; }
+  /* Name and the 已删除 tag share one line; the masked key stays underneath. */
+  .ov-key-line { display: inline-flex; align-items: center; gap: 6px; }
   .ov-key-model-row td {
     background: var(--bg-quinary);
     font-size: 12px;
@@ -4454,9 +4456,11 @@
         <td class="ov-key-toggle">${expanded ? "▾" : "▸"}</td>
         <td class="cell-nowrap">
           <div class="ov-key-cell">
-            <span class="mono" style="font-weight:600;color:var(--text-primary)">${escapeHtml(label)}</span>
+            <span class="ov-key-line">
+              <span class="mono" style="font-weight:600;color:var(--text-primary)">${escapeHtml(label)}</span>
+              ${deletedTag}
+            </span>
             ${row.key_name ? `<span class="mono" style="font-size:11px;color:var(--text-tertiary)">${escapeHtml(maskKeyStr(apiKey))}</span>` : ""}
-            ${deletedTag}
           </div>
         </td>
         <td class="cell-nowrap mono">${fmtInt(row.requests || 0)}</td>
