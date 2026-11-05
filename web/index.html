@@ -574,6 +574,9 @@
   .ov-key-row { cursor: pointer; }
   .ov-key-row:hover td { background: var(--bg-hover); }
   .ov-key-row.expanded td { background: var(--bg-quaternary, var(--bg-tertiary)); }
+  /* Keys removed from the rules but still present in the ledger history. */
+  .ov-key-row.is-deleted td { opacity: 0.72; }
+  .ov-key-row.is-deleted:hover td { opacity: 1; }
   .ov-key-toggle { color: var(--text-tertiary); text-align: center; }
   .ov-key-cell { display: flex; flex-direction: column; gap: 1px; line-height: 1.25; }
   .ov-key-model-row td {
@@ -4421,21 +4424,39 @@
       return;
     }
     const meta = document.getElementById("ovKeyTableMeta");
+    // Configured keys (still present in the rules) vs. keys that only exist in the
+    // ledger because they were deleted after producing traffic.
+    const configured = new Set(((overviewData && overviewData.keys) || []).map(k => String(k.api_key || "")));
+    rows.forEach(row => {
+      row.__deleted = !configured.has(String(row.api_key || ""));
+    });
+    // Highest cost first; ties fall back to the token volume.
+    rows.sort((a, b) => {
+      const costDiff = Number(b.cost_nano_usd || 0) - Number(a.cost_nano_usd || 0);
+      if (costDiff !== 0) return costDiff;
+      return Number(b.total_tokens || 0) - Number(a.total_tokens || 0);
+    });
     if (meta) {
       const totalModels = rows.reduce((sum, r) => sum + ((r.models || []).length), 0);
-      meta.textContent = `${rows.length} 个密钥 · ${totalModels} 条模型消耗记录（近 7 天）`;
+      const deletedCount = rows.filter(r => r.__deleted).length;
+      meta.textContent = `${rows.length} 个密钥 · ${totalModels} 条模型消耗记录（近 7 天）` +
+        (deletedCount ? ` · 含 ${deletedCount} 个已删除密钥` : "");
     }
 
     tbody.innerHTML = rows.map((row) => {
       const apiKey = String(row.api_key || "");
       const expanded = !!overviewState.expandedKeys[apiKey];
       const label = row.key_name || maskKeyStr(apiKey);
-      const head = `<tr class="ov-key-row${expanded ? " expanded" : ""}" onclick="toggleOverviewKey('${escapeHtml(apiKey.replace(/'/g, "\\'"))}')">
+      const deletedTag = row.__deleted
+        ? `<span class="tag bad" style="font-size:10.5px;padding:1px 6px" title="该密钥已从规则中删除，这里只保留历史用量">已删除</span>`
+        : "";
+      const head = `<tr class="ov-key-row${expanded ? " expanded" : ""}${row.__deleted ? " is-deleted" : ""}" onclick="toggleOverviewKey('${escapeHtml(apiKey.replace(/'/g, "\\'"))}')">
         <td class="ov-key-toggle">${expanded ? "▾" : "▸"}</td>
         <td class="cell-nowrap">
           <div class="ov-key-cell">
             <span class="mono" style="font-weight:600;color:var(--text-primary)">${escapeHtml(label)}</span>
             ${row.key_name ? `<span class="mono" style="font-size:11px;color:var(--text-tertiary)">${escapeHtml(maskKeyStr(apiKey))}</span>` : ""}
+            ${deletedTag}
           </div>
         </td>
         <td class="cell-nowrap mono">${fmtInt(row.requests || 0)}</td>

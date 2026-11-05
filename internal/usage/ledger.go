@@ -518,6 +518,9 @@ func (s *Store) QueryLedger(q LedgerQuery) LedgerResult {
 			perModel = append(perModel, *km)
 		}
 		sort.Slice(perModel, func(i, j int) bool {
+			if perModel[i].CostNanoUSD != perModel[j].CostNanoUSD {
+				return perModel[i].CostNanoUSD > perModel[j].CostNanoUSD
+			}
 			if perModel[i].TotalTokens != perModel[j].TotalTokens {
 				return perModel[i].TotalTokens > perModel[j].TotalTokens
 			}
@@ -526,7 +529,11 @@ func (s *Store) QueryLedger(q LedgerQuery) LedgerResult {
 		keyRow.Models = perModel
 		keyRows = append(keyRows, *keyRow)
 	}
+	// Highest cost first: the overview list is read as a spend ranking.
 	sort.Slice(keyRows, func(i, j int) bool {
+		if keyRows[i].CostNanoUSD != keyRows[j].CostNanoUSD {
+			return keyRows[i].CostNanoUSD > keyRows[j].CostNanoUSD
+		}
 		if keyRows[i].TotalTokens != keyRows[j].TotalTokens {
 			return keyRows[i].TotalTokens > keyRows[j].TotalTokens
 		}
