@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	// Embed the IANA timezone database so bucket labels stay correct inside slim
 	// container images that do not ship /usr/share/zoneinfo.
@@ -47,6 +48,65 @@ func ledgerEntryKey(hour int64, apiKey, account, model, source string) string {
 		ledgerKeySeparator, source)
 }
 
+// The ledger is indexed twice: by its full key (s.ledger) and by hour
+// (s.ledgerByHour), so QueryLedger only touches the hours inside its window instead
+// of scanning the whole retention period. Every mutation goes through these helpers
+// to keep both views consistent.
+
+func (s *Store) ledgerPutLocked(key string, entry *LedgerEntry) {
+	if s.ledger == nil {
+		s.ledger = make(map[string]*LedgerEntry)
+	}
+	s.ledger[key] = entry
+	if s.ledgerByHour == nil {
+		s.ledgerByHour = make(map[int64]map[string]*LedgerEntry)
+	}
+	bucket := s.ledgerByHour[entry.Hour]
+	if bucket == nil {
+		bucket = make(map[string]*LedgerEntry)
+		s.ledgerByHour[entry.Hour] = bucket
+	}
+	bucket[key] = entry
+}
+
+func (s *Store) ledgerDeleteLocked(key string) {
+	entry := s.ledger[key]
+	delete(s.ledger, key)
+	if entry == nil || s.ledgerByHour == nil {
+		return
+	}
+	if bucket := s.ledgerByHour[entry.Hour]; bucket != nil {
+		delete(bucket, key)
+		if len(bucket) == 0 {
+			delete(s.ledgerByHour, entry.Hour)
+		}
+	}
+}
+
+func (s *Store) ledgerResetLocked() {
+	s.ledger = make(map[string]*LedgerEntry)
+	s.ledgerByHour = make(map[int64]map[string]*LedgerEntry)
+}
+
+// tzCache memoises time.LoadLocation, which reads the embedded tz database.
+var tzCache sync.Map
+
+func loadLocationCached(name string) *time.Location {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return time.UTC
+	}
+	if cached, ok := tzCache.Load(name); ok {
+		return cached.(*time.Location)
+	}
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		return time.UTC
+	}
+	tzCache.Store(name, loc)
+	return loc
+}
+
 // applyLedgerLocked accumulates one slice of usage into the hourly ledger and returns
 // the applied stamp, so a later failure of the same request can be rolled back.
 func (s *Store) applyLedgerLocked(at time.Time, apiKey, keyName, account, provider, model, served, source string,
@@ -72,7 +132,7 @@ func (s *Store) applyLedgerLocked(at time.Time, apiKey, keyName, account, provid
 			Model:    model,
 			Source:   source,
 		}
-		s.ledger[key] = entry
+		s.ledgerPutLocked(key, entry)
 	}
 	if entry.ServedModel == "" && served != "" && !strings.EqualFold(served, model) {
 		entry.ServedModel = served
@@ -107,7 +167,7 @@ func (s *Store) rollbackLedgerStampsLocked(tr *TrackedRequest) {
 		entry.TotalTokens -= stamp.total
 		entry.CostNanoUSD -= stamp.cost
 		if entry.Requests <= 0 && entry.TotalTokens <= 0 && entry.CostNanoUSD <= 0 {
-			delete(s.ledger, key)
+			s.ledgerDeleteLocked(key)
 			s.deletedLedger[ledgerRef{
 				hour: stamp.hour, apiKey: stamp.apiKey, account: stamp.account,
 				model: stamp.model, source: stamp.source,
@@ -131,7 +191,7 @@ func (s *Store) pruneLedgerLocked(now time.Time) {
 	cutoff := now.UTC().Add(-retention).Truncate(time.Hour).Unix()
 	for key, entry := range s.ledger {
 		if entry == nil || entry.Hour < cutoff {
-			delete(s.ledger, key)
+			s.ledgerDeleteLocked(key)
 		}
 	}
 	if s.ledgerPruneBefore < cutoff {
@@ -301,12 +361,7 @@ func bucketLabel(t time.Time, granularity string, loc *time.Location) (string, s
 
 // QueryLedger aggregates the retained ledger according to the query filters.
 func (s *Store) QueryLedger(q LedgerQuery) LedgerResult {
-	loc := time.UTC
-	if strings.TrimSpace(q.Timezone) != "" {
-		if parsed, err := time.LoadLocation(strings.TrimSpace(q.Timezone)); err == nil {
-			loc = parsed
-		}
-	}
+	loc := loadLocationCached(q.Timezone)
 	granularity := ledgerGranularity(q.Granularity)
 	from := q.From.UTC()
 	to := q.To.UTC()
@@ -316,15 +371,32 @@ func (s *Store) QueryLedger(q LedgerQuery) LedgerResult {
 	}
 
 	s.mu.Lock()
-	entries := make([]LedgerEntry, 0, len(s.ledger))
-	for _, entry := range s.ledger {
-		if entry == nil {
-			continue
+	// Walk only the hours inside the window via the hour index instead of scanning
+	// the whole retention period.
+	fromHour := from.Truncate(time.Hour).Unix()
+	toUnix := to.Unix()
+	entries := make([]LedgerEntry, 0, 256)
+	if span := (toUnix - fromHour) / 3600; span >= 0 && span <= int64(len(s.ledgerByHour)) {
+		for hour := fromHour; hour <= toUnix; hour += 3600 {
+			for _, entry := range s.ledgerByHour[hour] {
+				if entry != nil {
+					entries = append(entries, *entry)
+				}
+			}
 		}
-		if entry.Hour < from.Truncate(time.Hour).Unix() || entry.Hour > to.Unix() {
-			continue
+	} else {
+		// The window is wider than the number of populated hours: iterating the
+		// populated buckets is cheaper than stepping through empty hours.
+		for hour, bucket := range s.ledgerByHour {
+			if hour < fromHour || hour > toUnix {
+				continue
+			}
+			for _, entry := range bucket {
+				if entry != nil {
+					entries = append(entries, *entry)
+				}
+			}
 		}
-		entries = append(entries, *entry)
 	}
 	keysTotal := 0
 	keysAvailable := 0
@@ -564,20 +636,4 @@ func fillModelShare(rows []LedgerModelRow, total int64) []LedgerModelRow {
 		rows[i].Share = float64(rows[i].TotalTokens) / float64(total) * 100
 	}
 	return rows
-}
-
-// ClearLedger drops ledger entries (all, or only those of one api key).
-func (s *Store) ClearLedger(apiKey string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	target := strings.TrimSpace(apiKey)
-	if target == "" {
-		s.ledger = make(map[string]*LedgerEntry)
-		return
-	}
-	for key, entry := range s.ledger {
-		if entry != nil && entry.APIKey == target {
-			delete(s.ledger, key)
-		}
-	}
 }

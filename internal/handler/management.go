@@ -266,8 +266,9 @@ func HandleManagementRequest(ctx context.Context, provider SnapshotProvider, req
 				return jsonError(http.StatusBadRequest, err.Error())
 			}
 			return jsonResponse(http.StatusOK, map[string]any{
-				"ok":   true,
-				"rule": rule,
+				"ok":       true,
+				"rule":     rule,
+				"overview": provider.BuildAdminOverview(hostCallbackID),
 			})
 		case http.MethodDelete:
 			targetKey := queryValue(req, "api_key")
@@ -285,8 +286,9 @@ func HandleManagementRequest(ctx context.Context, provider SnapshotProvider, req
 				return jsonError(http.StatusInternalServerError, err.Error())
 			}
 			return jsonResponse(http.StatusOK, map[string]any{
-				"ok":      true,
-				"deleted": usage.MaskAPIKey(targetKey),
+				"ok":       true,
+				"deleted":  usage.MaskAPIKey(targetKey),
+				"overview": provider.BuildAdminOverview(hostCallbackID),
 			})
 		default:
 			return jsonError(http.StatusMethodNotAllowed, "method not allowed")
@@ -303,6 +305,7 @@ func HandleManagementRequest(ctx context.Context, provider SnapshotProvider, req
 		return jsonResponse(http.StatusOK, map[string]any{
 			"ok":             true,
 			"default_policy": policy,
+			"overview":       provider.BuildAdminOverview(hostCallbackID),
 		})
 
 	case strings.HasSuffix(path, RouteManagementAuthFiles):
@@ -350,9 +353,10 @@ func HandleManagementRequest(ctx context.Context, provider SnapshotProvider, req
 			return jsonError(http.StatusInternalServerError, err.Error())
 		}
 		return jsonResponse(http.StatusOK, map[string]any{
-			"ok":      true,
-			"message": "usage statistics reset successfully",
-			"api_key": usage.MaskAPIKey(targetKey),
+			"ok":       true,
+			"message":  "usage statistics reset successfully",
+			"api_key":  usage.MaskAPIKey(targetKey),
+			"overview": provider.BuildAdminOverview(hostCallbackID),
 		})
 
 	case strings.HasSuffix(path, RouteManagementPriceCustom):
@@ -372,10 +376,11 @@ func HandleManagementRequest(ctx context.Context, provider SnapshotProvider, req
 				return jsonError(http.StatusInternalServerError, err.Error())
 			}
 			return jsonResponse(http.StatusOK, map[string]any{
-				"ok":     true,
-				"model":  strings.ToLower(strings.TrimSpace(body.Model)),
-				"price":  body.Price,
-				"status": provider.PricingStatus(),
+				"ok":       true,
+				"model":    strings.ToLower(strings.TrimSpace(body.Model)),
+				"price":    body.Price,
+				"status":   provider.PricingStatus(),
+				"overview": provider.BuildAdminOverview(hostCallbackID),
 			})
 		case http.MethodDelete:
 			targetModel := queryValue(req, "model")
@@ -393,9 +398,10 @@ func HandleManagementRequest(ctx context.Context, provider SnapshotProvider, req
 				return jsonError(http.StatusInternalServerError, err.Error())
 			}
 			return jsonResponse(http.StatusOK, map[string]any{
-				"ok":      true,
-				"deleted": strings.ToLower(strings.TrimSpace(targetModel)),
-				"status":  provider.PricingStatus(),
+				"ok":       true,
+				"deleted":  strings.ToLower(strings.TrimSpace(targetModel)),
+				"status":   provider.PricingStatus(),
+				"overview": provider.BuildAdminOverview(hostCallbackID),
 			})
 		default:
 			return jsonError(http.StatusMethodNotAllowed, "method not allowed")
@@ -450,6 +456,7 @@ func HandleManagementRequest(ctx context.Context, provider SnapshotProvider, req
 			"ok":            true,
 			"synced_models": count,
 			"status":        provider.PricingStatus(),
+			"overview":      provider.BuildAdminOverview(hostCallbackID),
 		})
 
 	case strings.HasSuffix(path, RouteManagementLedger):

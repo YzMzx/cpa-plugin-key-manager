@@ -254,3 +254,50 @@ func TestLedgerPerKeyBreakdown(t *testing.T) {
 		t.Fatalf("second key wrong: %+v", result.KeyRows[1])
 	}
 }
+
+// TestLedgerHourIndexStaysConsistent guards the hour index used by QueryLedger:
+// it must mirror s.ledger across inserts, per-key resets and global resets.
+func TestLedgerHourIndexStaysConsistent(t *testing.T) {
+	store := NewStore(pricing.NewEngine())
+	feedLedgerRequest(t, store, "idx-1", "sk-idx-a", "A", "glm-5.3", "glm-5.3", "openai", "zhipu", "a.json", 10, 1, 0)
+	feedLedgerRequest(t, store, "idx-2", "sk-idx-b", "B", "kimi-k3", "kimi-k3", "openai", "moonshot", "b.json", 10, 1, 0)
+
+	countIndexed := func() int {
+		store.mu.Lock()
+		defer store.mu.Unlock()
+		n := 0
+		for _, bucket := range store.ledgerByHour {
+			n += len(bucket)
+		}
+		if n != len(store.ledger) {
+			t.Fatalf("hour index (%d) diverged from ledger (%d)", n, len(store.ledger))
+		}
+		return n
+	}
+	if countIndexed() != 2 {
+		t.Fatalf("expected two indexed ledger rows")
+	}
+
+	now := time.Now()
+	window := LedgerQuery{From: now.Add(-time.Hour), To: now.Add(time.Hour)}
+	if res := store.QueryLedger(window); res.Requests != 2 {
+		t.Fatalf("indexed query lost rows: %+v", res)
+	}
+	// A very wide window takes the populated-bucket branch.
+	if res := store.QueryLedger(LedgerQuery{From: now.Add(-80 * 24 * time.Hour), To: now.Add(time.Hour)}); res.Requests != 2 {
+		t.Fatalf("wide-window query lost rows: %+v", res)
+	}
+
+	if err := store.Reset("sk-idx-a"); err != nil {
+		t.Fatalf("reset key: %v", err)
+	}
+	if countIndexed() != 1 {
+		t.Fatalf("per-key reset left stale index rows")
+	}
+	if err := store.Reset(""); err != nil {
+		t.Fatalf("reset all: %v", err)
+	}
+	if countIndexed() != 0 {
+		t.Fatalf("global reset left stale index rows")
+	}
+}

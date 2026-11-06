@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/YzMzx/cpa-plugin-key-manager/internal/authz"
@@ -768,31 +769,6 @@ func readDynamicRulesFile(path string) (*DynamicRulesState, error) {
 	return &state, nil
 }
 
-// DynamicRulesFileReport describes one candidate rules-file location (used for live diagnostics).
-func DynamicRulesFileReport(primary string) []map[string]any {
-	reports := make([]map[string]any, 0, 8)
-	for _, path := range RulesFileCandidates(primary) {
-		entry := map[string]any{"path": path, "exists": false}
-		info, errStat := os.Stat(path)
-		if errStat != nil || info.IsDir() {
-			reports = append(reports, entry)
-			continue
-		}
-		entry["exists"] = true
-		entry["size"] = info.Size()
-		entry["mtime"] = info.ModTime().UTC().Format(time.RFC3339)
-		if state, errRead := readDynamicRulesFile(path); errRead == nil && state != nil {
-			entry["keys"] = len(state.Keys)
-			entry["updated_at"] = state.UpdatedAt
-			entry["has_default_policy"] = state.DefaultPolicy != nil
-		} else if errRead != nil {
-			entry["error"] = errRead.Error()
-		}
-		reports = append(reports, entry)
-	}
-	return reports
-}
-
 // LoadDynamicRulesFile loads the persisted DynamicRulesState from disk.
 // It inspects every candidate location and adopts the most recently written
 // non-empty state, so that an ephemeral `./data` directory (recreated by a
@@ -852,43 +828,6 @@ func LoadDynamicRulesFile(filePath string) (*DynamicRulesState, error) {
 	return best.state, nil
 }
 
-// SaveDynamicRulesFile atomically writes DynamicRulesState to every candidate
-// location (auth dir, config dir, CPA root data dir, ...). The primary path
-// write is authoritative; mirror failures are tolerated.
-func SaveDynamicRulesFile(filePath string, state *DynamicRulesState) error {
-	cleanPath := strings.TrimSpace(filePath)
-	if cleanPath == "" || state == nil {
-		return nil
-	}
-	state.Version = 1
-	state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	raw, errMarshal := json.MarshalIndent(state, "", "  ")
-	if errMarshal != nil {
-		return errMarshal
-	}
-
-	var primaryErr error
-	primaryClean := filepath.Clean(cleanPath)
-	for _, path := range RulesFileCandidates(cleanPath) {
-		if isLegacyAuthMirror(path) {
-			// Legacy mirrors used a `.json` name inside the auth directory, which
-			// CLIProxyAPI exposes as an undeletable credential. Write the new
-			// mirror first, then drop the legacy file.
-			if path == primaryClean {
-				primaryErr = usage.WriteFileAtomically(path, raw)
-				continue
-			}
-			_ = os.Remove(path)
-			continue
-		}
-		errWrite := usage.WriteFileAtomically(path, raw)
-		if path == primaryClean {
-			primaryErr = errWrite
-		}
-	}
-	return primaryErr
-}
-
 // UsageFileCandidates returns where a token-usage snapshot may live: the
 // configured path first, then every durable mirror location.
 func UsageFileCandidates(configured string) []string {
@@ -921,85 +860,54 @@ func UsageFileCandidates(configured string) []string {
 	return out
 }
 
-// UsageMirrorFiles returns the mirror paths that receive a copy of the usage
-// snapshot after every flush (the configured file stays authoritative). Stale
-// `.json` mirrors inside the auth directory are excluded because CLIProxyAPI
-// would treat them as OAuth credential files.
-func UsageMirrorFiles(configured string) []string {
-	configuredClean := filepath.Clean(strings.TrimSpace(configured))
-	out := make([]string, 0, 8)
-	for _, path := range UsageFileCandidates(configured) {
-		if path == configuredClean {
-			continue
-		}
-		if isLegacyAuthMirror(path) {
-			continue
-		}
-		out = append(out, path)
-	}
-	return out
-}
-
-// LegacyUsageMirrorFiles returns read-only usage snapshot locations used by older
-// releases. They are restored from and only removed after a successor snapshot has
-// been written, so a migration can never destroy the only surviving copy.
-func LegacyUsageMirrorFiles(configured string) []string {
-	configuredClean := filepath.Clean(strings.TrimSpace(configured))
-	out := make([]string, 0, 4)
-	for _, path := range UsageFileCandidates(configured) {
-		if path == configuredClean || !isLegacyAuthMirror(path) {
-			continue
-		}
-		out = append(out, path)
-	}
-	return out
-}
-
-// UsageFileReport describes each usage-snapshot location for live diagnostics.
-func UsageFileReport(configured string) []map[string]any {
-	reports := make([]map[string]any, 0, 8)
-	for _, path := range UsageFileCandidates(configured) {
-		entry := map[string]any{"path": path, "exists": false}
-		info, errStat := os.Stat(path)
-		if errStat != nil || info.IsDir() {
-			reports = append(reports, entry)
-			continue
-		}
-		entry["exists"] = true
-		entry["size"] = info.Size()
-		entry["mtime"] = info.ModTime().UTC().Format(time.RFC3339)
-		if raw, errRead := os.ReadFile(path); errRead == nil {
-			var snap struct {
-				UpdatedAt string                     `json:"updated_at"`
-				Keys      map[string]json.RawMessage `json:"keys"`
-			}
-			if errUnmarshal := json.Unmarshal(raw, &snap); errUnmarshal == nil {
-				entry["keys"] = len(snap.Keys)
-				entry["updated_at"] = snap.UpdatedAt
-			}
-		}
-		entry["legacy"] = isLegacyAuthMirror(path)
-		reports = append(reports, entry)
-	}
-	return reports
-}
-
-// CleanupLegacyAuthMirrors removes the rules mirror files that older releases left
-// inside CLIProxyAPI's auth directory as `*.json`. CLIProxyAPI lists them as
-// credentials whose ID contains a path separator, so they cannot be deleted from
-// the dashboard. Usage mirrors are cleaned by the usage store after a successful
-// snapshot write (see Store.SetLegacyMirrorFiles).
-func CleanupLegacyAuthMirrors() {
-	for _, legacy := range legacyAuthMirrorPaths("key_guard_rules.json") {
-		if info, errStat := os.Stat(legacy); errStat == nil && !info.IsDir() {
-			_ = os.Remove(legacy)
-		}
-	}
-}
-
 // ReadHostConfigAPIKeys reads global client `api-keys` (or `access.api-keys`) from CLIProxyAPI's config.yaml on disk.
+// hostConfigCache memoises the parsed api-keys of config.yaml keyed by path,
+// modification time and size, so the admin overview does not re-read and re-parse
+// the YAML on every refresh.
+var hostConfigCache struct {
+	sync.Mutex
+	path  string
+	mtime time.Time
+	size  int64
+	keys  []string
+	valid bool
+}
+
 func ReadHostConfigAPIKeys(configPath string) []string {
 	resolvedPath := FindHostConfigFile(configPath)
+	info, errStat := os.Stat(resolvedPath)
+	if errStat != nil || info.IsDir() {
+		return nil
+	}
+	hostConfigCache.Lock()
+	if hostConfigCache.valid && hostConfigCache.path == resolvedPath &&
+		hostConfigCache.mtime.Equal(info.ModTime()) && hostConfigCache.size == info.Size() {
+		cached := append([]string(nil), hostConfigCache.keys...)
+		hostConfigCache.Unlock()
+		return cached
+	}
+	hostConfigCache.Unlock()
+
+	keys := readHostConfigAPIKeysUncached(resolvedPath)
+	hostConfigCache.Lock()
+	hostConfigCache.path = resolvedPath
+	hostConfigCache.mtime = info.ModTime()
+	hostConfigCache.size = info.Size()
+	hostConfigCache.keys = append([]string(nil), keys...)
+	hostConfigCache.valid = true
+	hostConfigCache.Unlock()
+	return keys
+}
+
+// invalidateHostConfigCache forces the next ReadHostConfigAPIKeys to re-read the
+// file; used right after the plugin itself rewrites config.yaml.
+func invalidateHostConfigCache() {
+	hostConfigCache.Lock()
+	hostConfigCache.valid = false
+	hostConfigCache.Unlock()
+}
+
+func readHostConfigAPIKeysUncached(resolvedPath string) []string {
 	raw, err := os.ReadFile(resolvedPath)
 	if err != nil || len(raw) == 0 {
 		return nil
@@ -1056,6 +964,12 @@ func WriteHostConfigAPIKeys(configPath string, keys []string) error {
 	}
 	rootMap := doc.Content[0]
 
+	// Avoid rewriting CPA's main config (and reflowing its comments/formatting)
+	// when the api-keys list already holds exactly these keys.
+	if keysEqual(apiKeysFromNode(rootMap), dedupeKeys(keys)) {
+		return nil
+	}
+
 	seqNode := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
 	seen := make(map[string]struct{}, len(keys))
 	for _, rawKey := range keys {
@@ -1108,7 +1022,80 @@ func WriteHostConfigAPIKeys(configPath string, keys []string) error {
 		return err
 	}
 	_ = enc.Close()
-	return usage.WriteFileAtomically(resolvedPath, []byte(buf.String()))
+	errWrite := usage.WriteFileAtomically(resolvedPath, []byte(buf.String()))
+	invalidateHostConfigCache()
+	return errWrite
+}
+
+// apiKeysFromNode returns the api-keys currently stored in a parsed config.yaml
+// (either top level or under access:).
+func apiKeysFromNode(rootMap *yaml.Node) []string {
+	collect := func(seq *yaml.Node) []string {
+		if seq == nil || seq.Kind != yaml.SequenceNode {
+			return nil
+		}
+		out := make([]string, 0, len(seq.Content))
+		for _, item := range seq.Content {
+			if item != nil && item.Kind == yaml.ScalarNode {
+				out = append(out, item.Value)
+			}
+		}
+		return dedupeKeys(out)
+	}
+	for i := 0; i+1 < len(rootMap.Content); i += 2 {
+		k, v := rootMap.Content[i], rootMap.Content[i+1]
+		if k.Value == "api-keys" {
+			return collect(v)
+		}
+		if k.Value == "access" && v.Kind == yaml.MappingNode {
+			for j := 0; j+1 < len(v.Content); j += 2 {
+				if v.Content[j].Value == "api-keys" {
+					return collect(v.Content[j+1])
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// dedupeKeys trims, drops empties and removes duplicates while keeping order.
+func dedupeKeys(keys []string) []string {
+	out := make([]string, 0, len(keys))
+	seen := make(map[string]struct{}, len(keys))
+	for _, raw := range keys {
+		k := strings.TrimSpace(raw)
+		if k == "" {
+			continue
+		}
+		if _, ok := seen[k]; ok {
+			continue
+		}
+		seen[k] = struct{}{}
+		out = append(out, k)
+	}
+	return out
+}
+
+// keysEqual compares two key lists as ordered sequences.
+func keysEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// configuredKeyList extracts the API key strings of the merged rules in order.
+func configuredKeyList(rules []KeyRuleConfig) []string {
+	out := make([]string, 0, len(rules))
+	for _, r := range rules {
+		out = append(out, r.APIKey)
+	}
+	return out
 }
 
 // MergeDynamicState combines CPA's global `api-keys`, the base config.yaml seed, and dynamic Web UI changes from DynamicRulesState.

@@ -1,10 +1,10 @@
 package usage
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
-	"sort"
 	"strings"
 	"time"
 
@@ -157,45 +157,80 @@ func (s *Store) loadSnapshotFromDB() (PersistedSnapshot, error) {
 	return snap, nil
 }
 
-// flushToDB writes only the rows touched since the previous flush: dirty keys and
-// accounts are rewritten together with their model tuples, dirty ledger slices are
-// upserted, and removed slices are deleted.
-func (s *Store) flushToDB() error {
-	s.mu.Lock()
-	db := s.db
-	if db == nil {
-		s.mu.Unlock()
-		return nil
+// flushBatch is a value snapshot of everything one flush must persist. It is
+// captured under s.mu so request goroutines can keep mutating the live maps while
+// the database transaction runs without the lock.
+type flushBatch struct {
+	keys          []KeyStats
+	accounts      map[string]AccountStats
+	ledger        []LedgerEntry
+	deletedLedger []ledgerRef
+	deletedKeys   []string
+	pruneBefore   int64
+	resetAll      bool
+
+	// Raw dirty markers, restored when the transaction fails so nothing is lost.
+	dirtyKeyIDs     []string
+	dirtyAccountIDs []string
+	dirtyLedgerIDs  []string
+}
+
+func (b *flushBatch) empty() bool {
+	return !b.resetAll && len(b.keys) == 0 && len(b.accounts) == 0 && len(b.ledger) == 0 &&
+		len(b.deletedLedger) == 0 && len(b.deletedKeys) == 0 && b.pruneBefore == 0
+}
+
+// cloneModels deep-copies a tuple map so the batch never shares pointers with the
+// live statistics.
+func cloneModels(src map[string]*ModelStats) map[string]*ModelStats {
+	out := make(map[string]*ModelStats, len(src))
+	for k, ms := range src {
+		if ms == nil {
+			continue
+		}
+		cp := *ms
+		out[k] = &cp
 	}
-	keys := make(map[string]*KeyStats, len(s.dirtyKeys))
+	return out
+}
+
+// takeFlushBatchLocked moves the pending changes into a value batch and clears the
+// dirty markers. Callers must hold s.mu.
+func (s *Store) takeFlushBatchLocked() *flushBatch {
+	b := &flushBatch{
+		accounts:    make(map[string]AccountStats, len(s.dirtyAccounts)),
+		pruneBefore: s.ledgerPruneBefore,
+		resetAll:    s.resetAll,
+	}
 	for apiKey := range s.dirtyKeys {
+		b.dirtyKeyIDs = append(b.dirtyKeyIDs, apiKey)
 		if ks := s.keys[apiKey]; ks != nil {
-			keys[apiKey] = ks
+			cp := *ks
+			cp.APIKey = apiKey
+			cp.Models = cloneModels(ks.Models)
+			b.keys = append(b.keys, cp)
 		}
 	}
-	accounts := make(map[string]*AccountStats, len(s.dirtyAccounts))
 	for accountKey := range s.dirtyAccounts {
+		b.dirtyAccountIDs = append(b.dirtyAccountIDs, accountKey)
 		if acct := s.accounts[accountKey]; acct != nil {
-			accounts[accountKey] = acct
+			cp := *acct
+			cp.Models = cloneModels(acct.Models)
+			b.accounts[accountKey] = cp
 		}
 	}
-	ledger := make([]*LedgerEntry, 0, len(s.dirtyLedger))
 	for key := range s.dirtyLedger {
+		b.dirtyLedgerIDs = append(b.dirtyLedgerIDs, key)
 		if entry := s.ledger[key]; entry != nil {
-			cp := *entry
-			ledger = append(ledger, &cp)
+			b.ledger = append(b.ledger, *entry)
 		}
 	}
-	deletedLedger := make([]ledgerRef, 0, len(s.deletedLedger))
-	for key := range s.deletedLedger {
-		deletedLedger = append(deletedLedger, key)
+	for ref := range s.deletedLedger {
+		b.deletedLedger = append(b.deletedLedger, ref)
 	}
-	deletedKeys := make([]string, 0, len(s.deletedKeys))
 	for key := range s.deletedKeys {
-		deletedKeys = append(deletedKeys, key)
+		b.deletedKeys = append(b.deletedKeys, key)
 	}
-	pruneBefore := s.ledgerPruneBefore
-	resetAll := s.resetAll
 
 	s.dirtyKeys = make(map[string]struct{})
 	s.dirtyAccounts = make(map[string]struct{})
@@ -205,34 +240,152 @@ func (s *Store) flushToDB() error {
 	s.ledgerPruneBefore = 0
 	s.resetAll = false
 	s.dirty = false
-	s.mu.Unlock()
+	return b
+}
 
-	if resetAll {
-		if _, err := db.Conn().Exec(`DELETE FROM key_model_usage`); err != nil {
-			return fmt.Errorf("sqlite: clear key models: %w", err)
-		}
-		if _, err := db.Conn().Exec(`DELETE FROM key_usage`); err != nil {
-			return fmt.Errorf("sqlite: clear keys: %w", err)
-		}
-		if _, err := db.Conn().Exec(`DELETE FROM account_model_usage`); err != nil {
-			return fmt.Errorf("sqlite: clear account models: %w", err)
-		}
-		if _, err := db.Conn().Exec(`DELETE FROM account_usage`); err != nil {
-			return fmt.Errorf("sqlite: clear accounts: %w", err)
-		}
-		if _, err := db.Conn().Exec(`DELETE FROM usage_ledger`); err != nil {
-			return fmt.Errorf("sqlite: clear ledger: %w", err)
-		}
+// restoreFlushBatchLocked re-queues a batch whose transaction failed, so the next
+// flush retries it. Newer markers set in the meantime are preserved.
+func (s *Store) restoreFlushBatchLocked(b *flushBatch) {
+	for _, id := range b.dirtyKeyIDs {
+		s.dirtyKeys[id] = struct{}{}
+	}
+	for _, id := range b.dirtyAccountIDs {
+		s.dirtyAccounts[id] = struct{}{}
+	}
+	for _, id := range b.dirtyLedgerIDs {
+		s.dirtyLedger[id] = struct{}{}
+	}
+	for _, ref := range b.deletedLedger {
+		s.deletedLedger[ref] = struct{}{}
+	}
+	for _, key := range b.deletedKeys {
+		s.deletedKeys[key] = struct{}{}
+	}
+	if b.pruneBefore > s.ledgerPruneBefore {
+		s.ledgerPruneBefore = b.pruneBefore
+	}
+	if b.resetAll {
+		s.resetAll = true
+	}
+	s.dirty = true
+}
+
+const (
+	sqlUpsertKey = `INSERT INTO key_usage (api_key, masked_key, key_name, total_requests, success_requests,
+		failed_requests, input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens,
+		total_tokens, total_cost_nano_usd, last_request_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(api_key) DO UPDATE SET masked_key=excluded.masked_key, key_name=excluded.key_name,
+		total_requests=excluded.total_requests, success_requests=excluded.success_requests,
+		failed_requests=excluded.failed_requests, input_tokens=excluded.input_tokens,
+		output_tokens=excluded.output_tokens, reasoning_tokens=excluded.reasoning_tokens,
+		cache_read_tokens=excluded.cache_read_tokens, cache_write_tokens=excluded.cache_write_tokens,
+		total_tokens=excluded.total_tokens, total_cost_nano_usd=excluded.total_cost_nano_usd,
+		last_request_at=excluded.last_request_at`
+	sqlInsertKeyTuple = `INSERT INTO key_model_usage (api_key, requested_model, served_model, requests,
+		success_requests, failed_requests, input_tokens, output_tokens, reasoning_tokens, cache_read_tokens,
+		cache_write_tokens, total_tokens, cost_nano_usd, unit_input, unit_output, unit_cache_read,
+		unit_cache_write, unit_source, last_used_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	sqlUpsertAccount = `INSERT INTO account_usage (account_key, provider, auth_id, auth_index, auth_type,
+		requests, success_requests, failed_requests, input_tokens, output_tokens, reasoning_tokens,
+		cache_read_tokens, cache_write_tokens, total_tokens, last_model, last_request_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(account_key) DO UPDATE SET provider=excluded.provider, auth_id=excluded.auth_id,
+		auth_index=excluded.auth_index, auth_type=excluded.auth_type, requests=excluded.requests,
+		success_requests=excluded.success_requests, failed_requests=excluded.failed_requests,
+		input_tokens=excluded.input_tokens, output_tokens=excluded.output_tokens,
+		reasoning_tokens=excluded.reasoning_tokens, cache_read_tokens=excluded.cache_read_tokens,
+		cache_write_tokens=excluded.cache_write_tokens, total_tokens=excluded.total_tokens,
+		last_model=excluded.last_model, last_request_at=excluded.last_request_at`
+	sqlInsertAccountTuple = `INSERT INTO account_model_usage (account_key, requested_model, served_model,
+		requests, success_requests, failed_requests, input_tokens, output_tokens, reasoning_tokens,
+		cache_read_tokens, cache_write_tokens, total_tokens, cost_nano_usd, last_used_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	sqlUpsertLedger = `INSERT INTO usage_ledger (hour, api_key, account, model, source, key_name, provider,
+		served_model, requests, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+		total_tokens, cost_nano_usd) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(hour, api_key, account, model, source) DO UPDATE SET key_name=excluded.key_name,
+		provider=excluded.provider, served_model=excluded.served_model, requests=excluded.requests,
+		input_tokens=excluded.input_tokens, output_tokens=excluded.output_tokens,
+		cache_read_tokens=excluded.cache_read_tokens, cache_write_tokens=excluded.cache_write_tokens,
+		total_tokens=excluded.total_tokens, cost_nano_usd=excluded.cost_nano_usd`
+	sqlDeleteLedgerRow = `DELETE FROM usage_ledger WHERE hour = ? AND api_key = ? AND account = ? AND model = ? AND source = ?`
+)
+
+// flushToDB writes only the rows touched since the previous flush. The batch is a
+// value copy taken under the lock, the whole write is one transaction, and a failed
+// transaction re-queues its markers so the next flush retries instead of losing data.
+func (s *Store) flushToDB() error {
+	s.mu.Lock()
+	db := s.db
+	if db == nil {
+		s.mu.Unlock()
 		return nil
 	}
+	batch := s.takeFlushBatchLocked()
+	s.mu.Unlock()
 
-	tx, err := db.Conn().Begin()
+	if batch.empty() {
+		return nil
+	}
+	if err := writeFlushBatch(db.Conn(), batch); err != nil {
+		s.mu.Lock()
+		s.restoreFlushBatchLocked(batch)
+		s.mu.Unlock()
+		return err
+	}
+	return nil
+}
+
+func writeFlushBatch(conn *sql.DB, b *flushBatch) error {
+	tx, err := conn.Begin()
 	if err != nil {
 		return fmt.Errorf("sqlite: begin flush: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	for _, apiKey := range deletedKeys {
+	if b.resetAll {
+		for _, table := range []string{"key_model_usage", "key_usage", "account_model_usage", "account_usage", "usage_ledger"} {
+			if _, err := tx.Exec("DELETE FROM " + table); err != nil {
+				return fmt.Errorf("sqlite: clear %s: %w", table, err)
+			}
+		}
+	}
+
+	prepare := func(query string) (*sql.Stmt, error) { return tx.Prepare(query) }
+	stmtKey, err := prepare(sqlUpsertKey)
+	if err != nil {
+		return fmt.Errorf("sqlite: prepare key upsert: %w", err)
+	}
+	defer stmtKey.Close()
+	stmtKeyTuple, err := prepare(sqlInsertKeyTuple)
+	if err != nil {
+		return fmt.Errorf("sqlite: prepare key tuple: %w", err)
+	}
+	defer stmtKeyTuple.Close()
+	stmtAcct, err := prepare(sqlUpsertAccount)
+	if err != nil {
+		return fmt.Errorf("sqlite: prepare account upsert: %w", err)
+	}
+	defer stmtAcct.Close()
+	stmtAcctTuple, err := prepare(sqlInsertAccountTuple)
+	if err != nil {
+		return fmt.Errorf("sqlite: prepare account tuple: %w", err)
+	}
+	defer stmtAcctTuple.Close()
+	stmtLedger, err := prepare(sqlUpsertLedger)
+	if err != nil {
+		return fmt.Errorf("sqlite: prepare ledger upsert: %w", err)
+	}
+	defer stmtLedger.Close()
+	stmtLedgerDel, err := prepare(sqlDeleteLedgerRow)
+	if err != nil {
+		return fmt.Errorf("sqlite: prepare ledger delete: %w", err)
+	}
+	defer stmtLedgerDel.Close()
+
+	for _, apiKey := range b.deletedKeys {
 		if _, err := tx.Exec(`DELETE FROM key_model_usage WHERE api_key = ?`, apiKey); err != nil {
 			return fmt.Errorf("sqlite: delete key models: %w", err)
 		}
@@ -241,109 +394,63 @@ func (s *Store) flushToDB() error {
 		}
 	}
 
-	for apiKey, ks := range keys {
-		if _, err := tx.Exec(`INSERT INTO key_usage (api_key, masked_key, key_name, total_requests, success_requests,
-			failed_requests, input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens,
-			total_tokens, total_cost_nano_usd, last_request_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			ON CONFLICT(api_key) DO UPDATE SET masked_key=excluded.masked_key, key_name=excluded.key_name,
-			total_requests=excluded.total_requests, success_requests=excluded.success_requests,
-			failed_requests=excluded.failed_requests, input_tokens=excluded.input_tokens,
-			output_tokens=excluded.output_tokens, reasoning_tokens=excluded.reasoning_tokens,
-			cache_read_tokens=excluded.cache_read_tokens, cache_write_tokens=excluded.cache_write_tokens,
-			total_tokens=excluded.total_tokens, total_cost_nano_usd=excluded.total_cost_nano_usd,
-			last_request_at=excluded.last_request_at`,
-			apiKey, ks.MaskedKey, ks.KeyName, ks.TotalRequests, ks.SuccessRequests, ks.FailedRequests,
-			ks.InputTokens, ks.OutputTokens, ks.ReasoningTokens, ks.CacheReadTokens, ks.CacheWriteTokens,
-			ks.TotalTokens, ks.TotalCostNanoUSD, ks.LastRequestAt); err != nil {
-			return fmt.Errorf("sqlite: upsert key %s: %w", apiKey, err)
+	for i := range b.keys {
+		ks := &b.keys[i]
+		if _, err := stmtKey.Exec(ks.APIKey, ks.MaskedKey, ks.KeyName, ks.TotalRequests, ks.SuccessRequests,
+			ks.FailedRequests, ks.InputTokens, ks.OutputTokens, ks.ReasoningTokens, ks.CacheReadTokens,
+			ks.CacheWriteTokens, ks.TotalTokens, ks.TotalCostNanoUSD, ks.LastRequestAt); err != nil {
+			return fmt.Errorf("sqlite: upsert key %s: %w", ks.APIKey, err)
 		}
 		// Tuples are few per key, so replace this key's tuple set atomically.
-		if _, err := tx.Exec(`DELETE FROM key_model_usage WHERE api_key = ?`, apiKey); err != nil {
+		if _, err := tx.Exec(`DELETE FROM key_model_usage WHERE api_key = ?`, ks.APIKey); err != nil {
 			return fmt.Errorf("sqlite: reset key tuples: %w", err)
 		}
 		for _, ms := range ks.Models {
-			if ms == nil {
-				continue
-			}
-			if _, err := tx.Exec(`INSERT INTO key_model_usage (api_key, requested_model, served_model, requests,
-				success_requests, failed_requests, input_tokens, output_tokens, reasoning_tokens, cache_read_tokens,
-				cache_write_tokens, total_tokens, cost_nano_usd, unit_input, unit_output, unit_cache_read,
-				unit_cache_write, unit_source, last_used_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				apiKey, ms.RequestedModel, ms.ServedModel, ms.Requests, ms.SuccessRequests, ms.FailedRequests,
-				ms.InputTokens, ms.OutputTokens, ms.ReasoningTokens, ms.CacheReadTokens, ms.CacheWriteTokens,
-				ms.TotalTokens, ms.CostNanoUSD, ms.UnitPricePer1M.Input, ms.UnitPricePer1M.Output,
-				ms.UnitPricePer1M.CacheRead, ms.UnitPricePer1M.CacheWrite, ms.UnitPricePer1M.Source,
-				ms.LastUsedAt); err != nil {
-				return fmt.Errorf("sqlite: upsert key tuple %s/%s: %w", apiKey, ms.ServedModel, err)
+			if _, err := stmtKeyTuple.Exec(ks.APIKey, ms.RequestedModel, ms.ServedModel, ms.Requests,
+				ms.SuccessRequests, ms.FailedRequests, ms.InputTokens, ms.OutputTokens, ms.ReasoningTokens,
+				ms.CacheReadTokens, ms.CacheWriteTokens, ms.TotalTokens, ms.CostNanoUSD,
+				ms.UnitPricePer1M.Input, ms.UnitPricePer1M.Output, ms.UnitPricePer1M.CacheRead,
+				ms.UnitPricePer1M.CacheWrite, ms.UnitPricePer1M.Source, ms.LastUsedAt); err != nil {
+				return fmt.Errorf("sqlite: upsert key tuple %s/%s: %w", ks.APIKey, ms.ServedModel, err)
 			}
 		}
 	}
 
-	for accountKey, acct := range accounts {
-		if _, err := tx.Exec(`INSERT INTO account_usage (account_key, provider, auth_id, auth_index, auth_type,
-			requests, success_requests, failed_requests, input_tokens, output_tokens, reasoning_tokens,
-			cache_read_tokens, cache_write_tokens, total_tokens, last_model, last_request_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			ON CONFLICT(account_key) DO UPDATE SET provider=excluded.provider, auth_id=excluded.auth_id,
-			auth_index=excluded.auth_index, auth_type=excluded.auth_type, requests=excluded.requests,
-			success_requests=excluded.success_requests, failed_requests=excluded.failed_requests,
-			input_tokens=excluded.input_tokens, output_tokens=excluded.output_tokens,
-			reasoning_tokens=excluded.reasoning_tokens, cache_read_tokens=excluded.cache_read_tokens,
-			cache_write_tokens=excluded.cache_write_tokens, total_tokens=excluded.total_tokens,
-			last_model=excluded.last_model, last_request_at=excluded.last_request_at`,
-			accountKey, acct.Provider, acct.AuthID, acct.AuthIndex, acct.AuthType, acct.Requests,
-			acct.SuccessRequests, acct.FailedRequests, acct.InputTokens, acct.OutputTokens, acct.ReasoningTokens,
-			acct.CacheReadTokens, acct.CacheWriteTokens, acct.TotalTokens, acct.LastModel, acct.LastRequestAt); err != nil {
+	for accountKey, acct := range b.accounts {
+		if _, err := stmtAcct.Exec(accountKey, acct.Provider, acct.AuthID, acct.AuthIndex, acct.AuthType,
+			acct.Requests, acct.SuccessRequests, acct.FailedRequests, acct.InputTokens, acct.OutputTokens,
+			acct.ReasoningTokens, acct.CacheReadTokens, acct.CacheWriteTokens, acct.TotalTokens,
+			acct.LastModel, acct.LastRequestAt); err != nil {
 			return fmt.Errorf("sqlite: upsert account %s: %w", accountKey, err)
 		}
 		if _, err := tx.Exec(`DELETE FROM account_model_usage WHERE account_key = ?`, accountKey); err != nil {
 			return fmt.Errorf("sqlite: reset account tuples: %w", err)
 		}
 		for _, ms := range acct.Models {
-			if ms == nil {
-				continue
-			}
-			if _, err := tx.Exec(`INSERT INTO account_model_usage (account_key, requested_model, served_model,
-				requests, success_requests, failed_requests, input_tokens, output_tokens, reasoning_tokens,
-				cache_read_tokens, cache_write_tokens, total_tokens, cost_nano_usd, last_used_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				accountKey, ms.RequestedModel, ms.ServedModel, ms.Requests, ms.SuccessRequests, ms.FailedRequests,
-				ms.InputTokens, ms.OutputTokens, ms.ReasoningTokens, ms.CacheReadTokens, ms.CacheWriteTokens,
-				ms.TotalTokens, ms.CostNanoUSD, ms.LastUsedAt); err != nil {
+			if _, err := stmtAcctTuple.Exec(accountKey, ms.RequestedModel, ms.ServedModel, ms.Requests,
+				ms.SuccessRequests, ms.FailedRequests, ms.InputTokens, ms.OutputTokens, ms.ReasoningTokens,
+				ms.CacheReadTokens, ms.CacheWriteTokens, ms.TotalTokens, ms.CostNanoUSD, ms.LastUsedAt); err != nil {
 				return fmt.Errorf("sqlite: upsert account tuple %s/%s: %w", accountKey, ms.ServedModel, err)
 			}
 		}
 	}
 
-	for _, ref := range deletedLedger {
-		if _, err := tx.Exec(`DELETE FROM usage_ledger WHERE hour = ? AND api_key = ? AND account = ? AND model = ? AND source = ?`,
-			ref.hour, ref.apiKey, ref.account, ref.model, ref.source); err != nil {
+	for _, ref := range b.deletedLedger {
+		if _, err := stmtLedgerDel.Exec(ref.hour, ref.apiKey, ref.account, ref.model, ref.source); err != nil {
 			return fmt.Errorf("sqlite: delete ledger row: %w", err)
 		}
 	}
-	for _, entry := range ledger {
-		if entry == nil {
-			continue
-		}
-		if _, err := tx.Exec(`INSERT INTO usage_ledger (hour, api_key, account, model, source, key_name, provider,
-			served_model, requests, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-			total_tokens, cost_nano_usd) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			ON CONFLICT(hour, api_key, account, model, source) DO UPDATE SET key_name=excluded.key_name,
-			provider=excluded.provider, served_model=excluded.served_model, requests=excluded.requests,
-			input_tokens=excluded.input_tokens, output_tokens=excluded.output_tokens,
-			cache_read_tokens=excluded.cache_read_tokens, cache_write_tokens=excluded.cache_write_tokens,
-			total_tokens=excluded.total_tokens, cost_nano_usd=excluded.cost_nano_usd`,
-			entry.Hour, entry.APIKey, entry.Account, entry.Model, entry.Source, entry.KeyName, entry.Provider,
-			entry.ServedModel, entry.Requests, entry.InputTokens, entry.OutputTokens, entry.CacheReadTokens,
-			entry.CacheWriteTokens, entry.TotalTokens, entry.CostNanoUSD); err != nil {
-			return fmt.Errorf("sqlite: upsert ledger %d/%s: %w", entry.Hour, entry.Model, err)
+	for i := range b.ledger {
+		e := &b.ledger[i]
+		if _, err := stmtLedger.Exec(e.Hour, e.APIKey, e.Account, e.Model, e.Source, e.KeyName, e.Provider,
+			e.ServedModel, e.Requests, e.InputTokens, e.OutputTokens, e.CacheReadTokens, e.CacheWriteTokens,
+			e.TotalTokens, e.CostNanoUSD); err != nil {
+			return fmt.Errorf("sqlite: upsert ledger %d/%s: %w", e.Hour, e.Model, err)
 		}
 	}
 
-	if pruneBefore > 0 {
-		if _, err := tx.Exec(`DELETE FROM usage_ledger WHERE hour < ?`, pruneBefore); err != nil {
+	if b.pruneBefore > 0 {
+		if _, err := tx.Exec(`DELETE FROM usage_ledger WHERE hour < ?`, b.pruneBefore); err != nil {
 			return fmt.Errorf("sqlite: prune ledger: %w", err)
 		}
 	}
@@ -423,12 +530,12 @@ func (s *Store) EnableSQLite(dbPath string) error {
 	if hasExisting {
 		s.keys = snap.Keys
 		s.accounts = snap.Accounts
-		s.ledger = make(map[string]*LedgerEntry, len(snap.Ledger))
+		s.ledgerResetLocked()
 		for _, entry := range snap.Ledger {
 			if entry == nil {
 				continue
 			}
-			s.ledger[ledgerEntryKey(entry.Hour, entry.APIKey, entry.Account, entry.Model, entry.Source)] = entry
+			s.ledgerPutLocked(ledgerEntryKey(entry.Hour, entry.APIKey, entry.Account, entry.Model, entry.Source), entry)
 		}
 	} else {
 		// Import whatever is currently in memory (e.g. migrated JSON history).
@@ -473,14 +580,4 @@ func (s *Store) SQLiteLockPath() string {
 		return ""
 	}
 	return s.db.LockFilePath()
-}
-
-// sortedKeys is a small helper kept for deterministic diagnostics.
-func sortedKeys(m map[string]struct{}) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
 }

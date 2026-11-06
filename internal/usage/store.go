@@ -178,7 +178,6 @@ type Store struct {
 	byTraceID     map[string]*TrackedRequest
 	seenHostReqID map[string]time.Time
 
-	storageFile   string
 	dirty         bool
 	flushInterval time.Duration
 	stopFlushCh   chan struct{}
@@ -186,6 +185,7 @@ type Store struct {
 
 	// ledger holds hourly aggregated usage slices for the overview dashboard.
 	ledger          map[string]*LedgerEntry
+	ledgerByHour    map[int64]map[string]*LedgerEntry
 	ledgerRetention time.Duration
 
 	// db is the SQLite database; it is the only persistence backend on this branch.
@@ -221,6 +221,7 @@ func NewStore(pricingEngine *pricing.Engine) *Store {
 		keys:            make(map[string]*KeyStats),
 		accounts:        make(map[string]*AccountStats),
 		ledger:          make(map[string]*LedgerEntry),
+		ledgerByHour:    make(map[int64]map[string]*LedgerEntry),
 		ledgerRetention: 90 * 24 * time.Hour,
 		byRequestID:     make(map[string]*TrackedRequest),
 		byTraceID:       make(map[string]*TrackedRequest),
@@ -1076,39 +1077,71 @@ func looksLikeCredentialHash(segment string) bool {
 	return true
 }
 
-// AccountUsageFor resolves the aggregated usage of one upstream credential. It tries
-// every identifier the host exposes (name, credential id, auth index) so the admin
-// UI can show real success/failed counters instead of zeros.
-func (s *Store) AccountUsageFor(provider string, identifiers ...string) *AccountStats {
+// AccountUsageQuery names one upstream credential by every identifier the host
+// exposes (filename, credential id, auth index).
+type AccountUsageQuery struct {
+	Provider    string
+	Identifiers []string
+}
+
+// AccountUsageLookup resolves many credentials in a single locked pass: it builds
+// one case-insensitive identifier index over the accounts and returns value copies,
+// so callers never hold pointers into the live statistics. Results line up with the
+// queries; a nil entry means the credential has no recorded usage.
+func (s *Store) AccountUsageLookup(queries []AccountUsageQuery) []*AccountStats {
+	out := make([]*AccountStats, len(queries))
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, id := range identifiers {
-		if strings.TrimSpace(id) == "" {
+	if len(s.accounts) == 0 {
+		return out
+	}
+	byIdent := make(map[string]*AccountStats, len(s.accounts)*2)
+	for _, acct := range s.accounts {
+		if acct == nil {
 			continue
 		}
-		if key := accountBucketKey(provider, id, ""); key != "" {
-			if acct, ok := s.accounts[key]; ok && acct != nil {
-				return acct
+		for _, id := range []string{acct.AuthID, acct.AuthIndex} {
+			if id = strings.ToLower(strings.TrimSpace(id)); id != "" {
+				if _, exists := byIdent[id]; !exists {
+					byIdent[id] = acct
+				}
 			}
 		}
 	}
-	// Fall back to a linear scan: the host may report a filename while usage was
-	// reported with the hashed credential id, or vice versa.
-	for _, id := range identifiers {
-		needle := strings.TrimSpace(id)
-		if needle == "" {
-			continue
-		}
-		for _, acct := range s.accounts {
-			if acct == nil {
+	for i, q := range queries {
+		var hit *AccountStats
+		for _, id := range q.Identifiers {
+			if strings.TrimSpace(id) == "" {
 				continue
 			}
-			if strings.EqualFold(acct.AuthID, needle) || strings.EqualFold(acct.AuthIndex, needle) {
-				return acct
+			if key := accountBucketKey(q.Provider, id, ""); key != "" {
+				if acct, ok := s.accounts[key]; ok && acct != nil {
+					hit = acct
+					break
+				}
+			}
+			if acct, ok := byIdent[strings.ToLower(normalizeAccountIdentity(id))]; ok {
+				hit = acct
+				break
+			}
+			if acct, ok := byIdent[strings.ToLower(strings.TrimSpace(id))]; ok {
+				hit = acct
+				break
 			}
 		}
+		if hit != nil {
+			cp := *hit
+			cp.Models = nil
+			out[i] = &cp
+		}
 	}
-	return nil
+	return out
+}
+
+// AccountUsageFor resolves the aggregated usage of one upstream credential. It is a
+// convenience wrapper around AccountUsageLookup and returns a value copy.
+func (s *Store) AccountUsageFor(provider string, identifiers ...string) *AccountStats {
+	return s.AccountUsageLookup([]AccountUsageQuery{{Provider: provider, Identifiers: identifiers}})[0]
 }
 
 // accountBucketKey builds the stable identifier for one upstream account. The
@@ -1437,7 +1470,7 @@ func (s *Store) Reset(apiKey string) error {
 	if target == "" {
 		s.keys = make(map[string]*KeyStats)
 		s.accounts = make(map[string]*AccountStats)
-		s.ledger = make(map[string]*LedgerEntry)
+		s.ledgerResetLocked()
 		s.byRequestID = make(map[string]*TrackedRequest)
 		s.byTraceID = make(map[string]*TrackedRequest)
 		s.seenHostReqID = make(map[string]time.Time)
@@ -1456,7 +1489,7 @@ func (s *Store) Reset(apiKey string) error {
 					hour: entry.Hour, apiKey: entry.APIKey, account: entry.Account,
 					model: entry.Model, source: entry.Source,
 				}] = struct{}{}
-				delete(s.ledger, key)
+				s.ledgerDeleteLocked(key)
 				delete(s.dirtyLedger, key)
 			}
 		}
@@ -1503,14 +1536,11 @@ func (s *Store) loadFromDisk(filePath string) error {
 	if s.keys == nil {
 		s.keys = make(map[string]*KeyStats)
 	}
-	if s.ledger == nil {
-		s.ledger = make(map[string]*LedgerEntry)
-	}
 	for _, entry := range snap.Ledger {
 		if entry == nil || entry.Hour <= 0 || strings.TrimSpace(entry.Model) == "" {
 			continue
 		}
-		s.ledger[ledgerEntryKey(entry.Hour, entry.APIKey, entry.Account, entry.Model, entry.Source)] = entry
+		s.ledgerPutLocked(ledgerEntryKey(entry.Hour, entry.APIKey, entry.Account, entry.Model, entry.Source), entry)
 	}
 	s.pruneLedgerLocked(time.Now())
 	cleanedDisk := false
@@ -1768,12 +1798,6 @@ func (s *Store) GetKeyCostUSD(apiKey string) float64 {
 // WriteFileAtomically writes data to a temporary file, syncs it, and renames it over targetPath
 // with a lightweight retry loop (3 retries, 20ms sleep each) to prevent transient Windows file lock errors.
 func WriteFileAtomically(targetPath string, data []byte) error {
-	return writeFileAtomicallyWindowsSafe(targetPath, data)
-}
-
-// writeFileAtomicallyWindowsSafe writes data to a temporary file, syncs it, and renames it over targetPath
-// with a lightweight retry loop (3 retries, 20ms sleep each) to prevent transient Windows file lock errors.
-func writeFileAtomicallyWindowsSafe(targetPath string, data []byte) error {
 	cleanPath := filepath.Clean(targetPath)
 	dir := filepath.Dir(cleanPath)
 	if dir != "" && dir != "." {

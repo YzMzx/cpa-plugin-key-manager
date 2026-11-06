@@ -234,3 +234,65 @@ func TestSQLiteRejectsSecondWriter(t *testing.T) {
 	}
 	_ = second.Close()
 }
+
+// TestSQLiteFlushFailureIsRetried pins that a failed transaction re-queues its
+// dirty markers instead of silently dropping the batch.
+func TestSQLiteFlushFailureIsRetried(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "usage.db")
+	store := NewStore(pricing.NewEngine())
+	if err := store.ConfigureSQLite(dbPath, time.Hour); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+
+	// Break the schema so the next flush fails.
+	if _, err := store.DB().Conn().Exec(`ALTER TABLE key_usage RENAME TO key_usage_broken`); err != nil {
+		t.Fatalf("break schema: %v", err)
+	}
+	feedLedgerRequest(t, store, "retry-1", "sk-retry", "重试", "glm-5.3", "glm-5.3", "openai", "zhipu", "glm-r.json", 7, 3, 0)
+	if err := store.FlushNow(); err == nil {
+		t.Fatalf("flush should fail while the table is missing")
+	}
+
+	// Repair the schema; the pending batch must still be written.
+	if _, err := store.DB().Conn().Exec(`ALTER TABLE key_usage_broken RENAME TO key_usage`); err != nil {
+		t.Fatalf("repair schema: %v", err)
+	}
+	if err := store.FlushNow(); err != nil {
+		t.Fatalf("retry flush: %v", err)
+	}
+	_ = store.Close()
+
+	reopened := NewStore(pricing.NewEngine())
+	if err := reopened.ConfigureSQLite(dbPath, time.Hour); err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer reopened.Close()
+	if ks := reopened.Snapshot("sk-retry", "", nil, nil, nil, false).Keys["sk-retry"]; ks == nil || ks.TotalRequests != 1 {
+		t.Fatalf("failed batch was lost instead of retried: %+v", ks)
+	}
+}
+
+// TestSQLiteFlushSnapshotsValues guards the race fix: mutations made after the
+// batch is taken must not leak into the batch being written.
+func TestSQLiteFlushSnapshotsValues(t *testing.T) {
+	store := NewStore(pricing.NewEngine())
+	feedLedgerRequest(t, store, "snap-1", "sk-snap", "快照", "glm-5.3", "glm-5.3", "openai", "zhipu", "glm-s.json", 4, 1, 0)
+
+	store.mu.Lock()
+	batch := store.takeFlushBatchLocked()
+	store.keys["sk-snap"].TotalRequests = 999
+	for _, ms := range store.keys["sk-snap"].Models {
+		ms.Requests = 999
+	}
+	store.mu.Unlock()
+
+	if len(batch.keys) != 1 || batch.keys[0].TotalRequests != 1 {
+		t.Fatalf("batch shares the live key struct: %+v", batch.keys)
+	}
+	for _, ms := range batch.keys[0].Models {
+		if ms.Requests != 1 {
+			t.Fatalf("batch shares live model tuples: %+v", ms)
+		}
+	}
+}

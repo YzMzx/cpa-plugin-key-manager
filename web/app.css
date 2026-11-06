@@ -1,6 +1,3 @@
-<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><title>模型白名单 + 绑定凭证 · 预览 v0.6.2</title>
-<style>
   /* ==========================================================================
    * CLI-Proxy-API-Management-Center (CPAMC) Unified Design System & Theme Tokens
    * Reference: https://github.com/router-for-me/Cli-Proxy-API-Management-Center
@@ -179,10 +176,50 @@
   .page-tabs-row {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    justify-content: flex-start;
     flex-wrap: wrap;
     gap: 12px;
     margin-bottom: 18px;
+  }
+  /* Refresh action lives inside the tab pill, separated by a hairline divider. */
+  .tabs-divider {
+    width: 1px;
+    height: 15px;
+    flex: 0 0 auto;
+    margin: 0 2px 0 4px;
+    background: rgba(148, 163, 184, 0.28);
+  }
+  .tabs-refresh {
+    appearance: none;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--text-tertiary);
+    width: 28px;
+    height: 28px;
+    border-radius: 7px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    cursor: pointer;
+    transition: background 0.16s ease, color 0.16s ease;
+  }
+  .tabs-refresh:hover:not(:disabled) {
+    background: rgba(148, 163, 184, 0.14);
+    color: var(--text-primary);
+  }
+  .tabs-refresh:disabled {
+    cursor: default;
+    pointer-events: none;
+  }
+  .tabs-refresh svg {
+    display: block;
+  }
+  .tabs-refresh.is-loading svg {
+    animation: km-spin 0.9s linear infinite;
+  }
+  @keyframes km-spin {
+    to { transform: rotate(360deg); }
   }
   .tabs {
     display: inline-flex;
@@ -339,6 +376,18 @@
     color: var(--text-tertiary);
     margin-top: 6px;
   }
+  .kpi-skel-value {
+    display: inline-block;
+    width: 72%;
+    height: 22px;
+    vertical-align: middle;
+  }
+  .kpi-skel-sub {
+    display: inline-block;
+    width: 58%;
+    height: 10px;
+    vertical-align: middle;
+  }
 
   /* Tables */
   .table-wrap {
@@ -386,6 +435,184 @@
   .model-group-row td:first-child {
     padding-left: 14px;
   }
+
+  /* ===== Quota overview tab ===== */
+  .seg {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: var(--bg-primary);
+  }
+  .seg-btn {
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 12px;
+    padding: 3px 9px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+  }
+  .seg-btn:hover { color: var(--text-primary); }
+  .seg-btn.active {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+    font-weight: 600;
+  }
+  .ov-legend {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 0 16px 6px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    flex-wrap: wrap;
+  }
+  .ov-legend-item { display: inline-flex; align-items: center; gap: 6px; }
+  .ov-swatch { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+  .ov-chart-box { padding: 0 12px 12px; min-height: 240px; }
+  .ov-chart-box svg { width: 100%; height: auto; display: block; }
+  .ov-hover-zone { cursor: crosshair; }
+  .ov-chart-tip {
+    position: fixed;
+    z-index: 1300;
+    display: none;
+    min-width: 168px;
+    padding: 8px 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: var(--bg-secondary);
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.4);
+    font-size: 12px;
+    color: var(--text-secondary);
+    pointer-events: none;
+  }
+  .ov-chart-tip-title {
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 4px;
+    font-family: var(--font-mono);
+  }
+  .ov-chart-tip-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    line-height: 1.65;
+  }
+  .ov-chart-tip-row i {
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+    flex: 0 0 auto;
+  }
+  .ov-chart-tip-row b {
+    margin-left: auto;
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-weight: 600;
+  }
+  .ov-skeleton {
+    background: linear-gradient(90deg, var(--bg-tertiary) 25%, var(--bg-hover) 37%, var(--bg-tertiary) 63%);
+    background-size: 400% 100%;
+    animation: ov-shimmer 1.3s ease infinite;
+    border-radius: 8px;
+  }
+  @keyframes ov-shimmer {
+    0% { background-position: 100% 50%; }
+    100% { background-position: 0 50%; }
+  }
+  .ov-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-height: 200px;
+    color: var(--text-tertiary);
+    font-size: 13px;
+  }
+  .ov-dist-grid {
+    display: grid;
+    grid-template-columns: 280px 1fr;
+    gap: 18px;
+    padding: 4px 16px 16px;
+    align-items: start;
+  }
+  @media (max-width: 900px) {
+    .ov-dist-grid { grid-template-columns: 1fr; }
+  }
+  .ov-donut-box { display: flex; align-items: center; justify-content: center; min-height: 220px; }
+  .ov-donut-box svg { width: 220px; height: 220px; }
+  .ov-model-list { display: flex; flex-direction: column; gap: 4px; max-height: 320px; overflow-y: auto; }
+  .ov-model-row {
+    display: grid;
+    grid-template-columns: 12px 1fr auto auto auto;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 8px;
+    border-radius: 7px;
+    font-size: 12.5px;
+    cursor: pointer;
+    border: 1px solid transparent;
+  }
+  .ov-model-row:hover { background: var(--bg-hover); }
+  .ov-model-row.active { border-color: var(--border-color); background: var(--bg-hover); }
+  .ov-model-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); }
+  .ov-model-num { color: var(--text-secondary); font-family: var(--font-mono); font-size: 11.5px; white-space: nowrap; }
+  .ov-model-share { color: var(--text-primary); font-family: var(--font-mono); font-weight: 600; font-size: 11.5px; }
+
+  /* Per-key consumption table */
+  .ov-key-row { cursor: pointer; }
+  .ov-key-row:hover td { background: var(--bg-hover); }
+  .ov-key-row.expanded td { background: var(--bg-quaternary, var(--bg-tertiary)); }
+  /* Keys removed from the rules but still present in the ledger history. */
+  .ov-key-row.is-deleted td { opacity: 0.72; }
+  .ov-key-row.is-deleted:hover td { opacity: 1; }
+  .ov-key-toggle { color: var(--text-tertiary); text-align: center; }
+  .ov-key-cell { display: flex; flex-direction: column; gap: 1px; line-height: 1.25; }
+  /* Name and the 已删除 tag share one line; the masked key stays underneath. */
+  .ov-key-line { display: inline-flex; align-items: center; gap: 6px; }
+  .ov-key-model-row td {
+    background: var(--bg-quinary);
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+  .ov-key-model-row td:first-child { padding-left: 8px; }
+  .ov-share-bar {
+    display: inline-block;
+    width: 64px;
+    height: 5px;
+    border-radius: 999px;
+    background: var(--bg-tertiary);
+    overflow: hidden;
+    vertical-align: middle;
+    margin-right: 6px;
+  }
+  .ov-share-bar span { display: block; height: 100%; background: #38bdf8; border-radius: 999px; }
+  .ov-share-text { font-size: 11.5px; color: var(--text-secondary); }
+
+  /* API Key quota bars */
+  .quota-limit-cell { display: flex; align-items: center; gap: 8px; flex-wrap: nowrap; }
+  .quota-bar {
+    width: 110px;
+    height: 6px;
+    border-radius: 999px;
+    background: var(--bg-tertiary);
+    overflow: hidden;
+    flex: 0 0 auto;
+  }
+  .quota-bar-fill {
+    display: block;
+    height: 100%;
+    background: #38bdf8;
+    border-radius: 999px;
+    transition: width 0.2s ease;
+  }
+  .quota-bar-fill.quota-bar-warn { background: #f59e0b; }
+  .quota-bar-fill.quota-bar-critical { background: #f87171; }
+  .quota-bar-text { font-size: 11.5px; color: var(--text-secondary); font-family: var(--font-mono); white-space: nowrap; }
 
   /* Tags & Pills (CPAMC .tag style) */
   .tag {
@@ -455,19 +682,6 @@
     max-width: 320px;
     user-select: all;
   }
-  .icon-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 28px;
-    height: 28px;
-    min-height: 28px;
-    padding: 0;
-    border-radius: 6px;
-    flex-shrink: 0;
-    font-size: 13px;
-    line-height: 1;
-  }
   .tag-group {
     display: flex;
     flex-wrap: wrap;
@@ -517,17 +731,124 @@
   }
   .model-dot { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 auto; }
   .model-pill.cred { max-width: 240px; }
+  /* A single bound credential is displayed directly and truncated. */
+  .single-cred .model-pill { max-width: 160px; }
+  /* Aggregated channel-family badges: Claude 3 · Gemini 5 · Codex 2 */
+  .cred-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 1px 8px;
+    border: 1px solid var(--border-primary);
+    border-radius: 999px;
+    background: var(--count-badge-bg);
+    font-size: 11px;
+    line-height: 1.7;
+    cursor: pointer;
+    flex: 0 0 auto;
+    transition: border-color 0.15s ease, background 0.15s ease;
+  }
+  .cred-badge:hover { background: var(--bg-hover); }
+  .cred-badge.prov-claude { border-color: rgba(245, 158, 11, 0.35); }
+  .cred-badge.prov-gemini { border-color: rgba(56, 189, 248, 0.35); }
+  .cred-badge.prov-openai { border-color: rgba(52, 211, 153, 0.32); }
+  .cred-badge.prov-deepseek { border-color: rgba(129, 140, 248, 0.35); }
+  .cred-badge.prov-kimi { border-color: rgba(167, 139, 250, 0.35); }
+  .cred-badge.prov-xai { border-color: rgba(148, 163, 184, 0.35); }
+  .cred-badge.prov-devin { border-color: rgba(251, 113, 133, 0.35); }
+  .cred-badge.prov-compat { border-color: rgba(45, 212, 191, 0.35); }
+  .cred-badge-label { color: var(--text-secondary); }
+  .cred-badge-count { color: var(--text-primary); font-weight: 700; }
+  /* Grouped credential popover */
+  .cred-group { margin-bottom: 8px; }
+  .cred-group:last-child { margin-bottom: 0; }
+  .cred-group-title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 4px 4px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    position: sticky;
+    top: 0;
+    background: var(--bg-secondary);
+  }
+  .cred-group-count {
+    margin-left: auto;
+    font-size: 10.5px;
+    color: var(--text-tertiary);
+    border: 1px solid var(--border-primary);
+    border-radius: 999px;
+    padding: 0 6px;
+  }
+  .cred-channel-provider {
+    font-weight: 400;
+    font-size: 10px;
+    color: var(--text-tertiary);
+    border: 1px solid var(--border-primary);
+    border-radius: 999px;
+    padding: 0 6px;
+    margin-left: 2px;
+  }
+  .cred-row {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 3px 6px;
+    border-radius: 6px;
+    font-size: 11.5px;
+  }
+  .cred-row:hover { background: var(--bg-hover); }
+  .cred-row-name {
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .cred-subchannel {
+    flex: 0 0 auto;
+    font-size: 10px;
+    padding: 0 6px;
+    border-radius: 999px;
+    border: 1px solid var(--border-primary);
+    color: var(--text-secondary);
+    background: var(--count-badge-bg);
+  }
+  .cred-status {
+    margin-left: auto;
+    flex: 0 0 auto;
+    font-size: 10px;
+    padding: 0 6px;
+    border-radius: 999px;
+    border: 1px solid var(--border-primary);
+    color: var(--text-tertiary);
+  }
+  .cred-status-active { color: #34d399; border-color: rgba(52, 211, 153, 0.35); }
+  .cred-status-limited { color: #f59e0b; border-color: rgba(245, 158, 11, 0.35); }
+  .cred-status-error { color: #f87171; border-color: rgba(248, 113, 113, 0.35); }
+  .cred-status-disabled { color: #9ca3af; border-color: rgba(156, 163, 175, 0.35); }
   .model-core { color: var(--text-primary); }
   .model-tail { color: var(--text-tertiary); }
   .model-pill.prov-claude { border-color: rgba(245, 158, 11, 0.35); }
   .model-pill.prov-gemini { border-color: rgba(56, 189, 248, 0.35); }
   .model-pill.prov-openai { border-color: rgba(52, 211, 153, 0.32); }
   .model-pill.prov-deepseek { border-color: rgba(129, 140, 248, 0.35); }
+  .model-pill.prov-kimi { border-color: rgba(167, 139, 250, 0.35); }
+  .model-pill.prov-meta { border-color: rgba(129, 140, 248, 0.35); }
+  .model-pill.prov-xai { border-color: rgba(148, 163, 184, 0.35); }
+  .model-pill.prov-devin { border-color: rgba(251, 113, 133, 0.35); }
+  .model-pill.prov-compat { border-color: rgba(45, 212, 191, 0.35); }
   .model-pill.prov-other { border-color: var(--border-primary); }
   .dot-claude { background: #f59e0b; }
   .dot-gemini { background: #38bdf8; }
   .dot-openai { background: #34d399; }
   .dot-deepseek { background: #818cf8; }
+  .dot-kimi { background: #a78bfa; }
+  .dot-meta { background: #818cf8; }
+  .dot-xai { background: #94a3b8; }
+  .dot-devin { background: #fb7185; }
+  .dot-compat { background: #2dd4bf; }
   .dot-other { background: #9ca3af; }
   .model-more {
     border: 1px dashed var(--border-primary);
@@ -927,92 +1248,9 @@
     font-size: 12px;
   }
 
-  body { padding: 26px 20px 60px; }
-  .preview-title { font-size: 18px; font-weight: 650; margin: 0 0 4px; }
-  .preview-sub { color: var(--text-tertiary); font-size: 12px; margin-bottom: 20px; }
-  .demo-popover { position: static; display: block; margin-top: 14px; width: 328px; }
-  .demo-label { font-size: 12px; color: var(--text-tertiary); margin: 26px 0 8px; }
-</style></head>
-<body>
-<div class="preview-title">「模型白名单规则」+「绑定账号凭证」两列 · 统一渲染</div>
-<div class="preview-sub">两列都收敛成单行：最多 2 个胶囊 + <code>+N</code>，胶囊上限 210px（凭证 240px），名称按"核心亮 / 后缀暗"拆分</div>
-<div class="table-wrap">
-  <table>
-    <thead><tr><th style="width:34px"></th><th>状态</th><th>API Key</th><th>备注名称</th><th>并发限制</th><th>请求数</th><th>累计总 Tokens</th><th class="col-models">模型白名单规则</th><th>绑定账号凭证</th><th>操作</th></tr></thead>
-    <tbody><tr class="key-row">
-  <td class="drag-cell">⠿</td>
-  <td class="cell-nowrap"><span class="tag ok">● 启用</span></td>
-  <td class="cell-nowrap"><div class="key-cell"><span class="key-code">sk-all</span><button class="btn btn-sm icon-btn">📋</button></div></td>
-  <td class="cell-nowrap" style="font-weight:600">全部放行</td>
-  <td class="cell-nowrap mono">不限</td>
-  <td class="cell-nowrap mono">1,204 <span style="color:var(--text-tertiary)">(1180/24)</span></td>
-  <td class="cell-nowrap"><span class="token-val">12,340,221</span> <span class="mono" style="font-size:12px;color:var(--text-secondary)"> (9,800,000 / 2,540,221)</span></td>
-  <td class="col-models"><span class="tag ok">全部已有模型</span></td>
-  <td><span class="tag ok">全部可用凭证</span></td>
-  <td class="cell-nowrap"><div class="row-actions"><button class="btn btn-sm">编辑规则</button><button class="btn btn-sm">清零用量</button><button class="btn btn-sm">删除</button></div></td>
-</tr>
-<tr class="key-row">
-  <td class="drag-cell">⠿</td>
-  <td class="cell-nowrap"><span class="tag ok">● 启用</span></td>
-  <td class="cell-nowrap"><div class="key-cell"><span class="key-code">sk-claude</span><button class="btn btn-sm icon-btn">📋</button></div></td>
-  <td class="cell-nowrap" style="font-weight:600">Claude 15 个 / 多凭证</td>
-  <td class="cell-nowrap mono">不限</td>
-  <td class="cell-nowrap mono">1,204 <span style="color:var(--text-tertiary)">(1180/24)</span></td>
-  <td class="cell-nowrap"><span class="token-val">12,340,221</span> <span class="mono" style="font-size:12px;color:var(--text-secondary)"> (9,800,000 / 2,540,221)</span></td>
-  <td class="col-models"><div class="model-cell"><span class="model-pill prov-claude" title="claude-opus-4-6-thinking"><span class="model-dot dot-claude"></span><span class="name mono"><span class="model-core">claude-opus</span><span class="model-tail">-4-6-thinking</span></span></span><span class="model-pill prov-claude" title="claude-sonnet-4-6-thinking"><span class="model-dot dot-claude"></span><span class="name mono"><span class="model-core">claude-sonnet</span><span class="model-tail">-4-6-thinking</span></span></span><button type="button" class="model-more" data-key="sk-claude" data-kind="models" onclick="openEntityPopover(event, this)" title="查看全部 15 个模型">+13</button></div></td>
-  <td><div class="model-cell"><span class="tag warn" style="font-size:11px;padding:1px 7px">轮询</span><span class="model-pill cred prov-gemini" title="antigravity-sly538876@gmail.com.json"><span class="model-dot dot-gemini"></span><span class="name mono"><span class="model-core">antigravity</span><span class="model-tail">-sly538876@gmail.com.json</span></span></span><span class="model-pill cred prov-openai" title="openai-compatibility:上海人工智能实验室"><span class="model-dot dot-openai"></span><span class="name mono"><span class="model-core">openai-compatibility</span><span class="model-tail">:上海人工智能实验室</span></span></span><button type="button" class="model-more" data-key="sk-claude" data-kind="creds" onclick="openEntityPopover(event, this)" title="查看全部 4 个凭证">+2</button></div></td>
-  <td class="cell-nowrap"><div class="row-actions"><button class="btn btn-sm">编辑规则</button><button class="btn btn-sm">清零用量</button><button class="btn btn-sm">删除</button></div></td>
-</tr>
-<tr class="key-row">
-  <td class="drag-cell">⠿</td>
-  <td class="cell-nowrap"><span class="tag ok">● 启用</span></td>
-  <td class="cell-nowrap"><div class="key-cell"><span class="key-code">sk-gemini</span><button class="btn btn-sm icon-btn">📋</button></div></td>
-  <td class="cell-nowrap" style="font-weight:600">Gemini 12 个</td>
-  <td class="cell-nowrap mono">不限</td>
-  <td class="cell-nowrap mono">1,204 <span style="color:var(--text-tertiary)">(1180/24)</span></td>
-  <td class="cell-nowrap"><span class="token-val">12,340,221</span> <span class="mono" style="font-size:12px;color:var(--text-secondary)"> (9,800,000 / 2,540,221)</span></td>
-  <td class="col-models"><div class="model-cell"><span class="model-pill prov-gemini" title="gemini-3-flash"><span class="model-dot dot-gemini"></span><span class="name mono"><span class="model-core">gemini-3</span><span class="model-tail">-flash</span></span></span><span class="model-pill prov-gemini" title="gemini-3.1-flash-image"><span class="model-dot dot-gemini"></span><span class="name mono"><span class="model-core">gemini-3.1</span><span class="model-tail">-flash-image</span></span></span><button type="button" class="model-more" data-key="sk-gemini" data-kind="models" onclick="openEntityPopover(event, this)" title="查看全部 12 个模型">+10</button></div></td>
-  <td><div class="model-cell"><span class="tag warn" style="font-size:11px;padding:1px 7px">优先级</span><span class="model-pill cred prov-gemini" title="antigravity-zusiyuan2@gmail.com.json"><span class="model-dot dot-gemini"></span><span class="name mono"><span class="model-core">antigravity</span><span class="model-tail">-zusiyuan2@gmail.com.json</span></span></span></div></td>
-  <td class="cell-nowrap"><div class="row-actions"><button class="btn btn-sm">编辑规则</button><button class="btn btn-sm">清零用量</button><button class="btn btn-sm">删除</button></div></td>
-</tr>
-<tr class="key-row">
-  <td class="drag-cell">⠿</td>
-  <td class="cell-nowrap"><span class="tag ok">● 启用</span></td>
-  <td class="cell-nowrap"><div class="key-cell"><span class="key-code">sk-two</span><button class="btn btn-sm icon-btn">📋</button></div></td>
-  <td class="cell-nowrap" style="font-weight:600">双模型</td>
-  <td class="cell-nowrap mono">不限</td>
-  <td class="cell-nowrap mono">1,204 <span style="color:var(--text-tertiary)">(1180/24)</span></td>
-  <td class="cell-nowrap"><span class="token-val">12,340,221</span> <span class="mono" style="font-size:12px;color:var(--text-secondary)"> (9,800,000 / 2,540,221)</span></td>
-  <td class="col-models"><div class="model-cell"><span class="model-pill prov-claude" title="claude-opus-4-6-thinking"><span class="model-dot dot-claude"></span><span class="name mono"><span class="model-core">claude-opus</span><span class="model-tail">-4-6-thinking</span></span></span><span class="model-pill prov-claude" title="claude-sonnet-4-6-thinking"><span class="model-dot dot-claude"></span><span class="name mono"><span class="model-core">claude-sonnet</span><span class="model-tail">-4-6-thinking</span></span></span></div></td>
-  <td><div class="model-cell"><span class="tag warn" style="font-size:11px;padding:1px 7px">严格</span><span class="model-pill cred prov-gemini" title="antigravity-sly538876@gmail.com.json"><span class="model-dot dot-gemini"></span><span class="name mono"><span class="model-core">antigravity</span><span class="model-tail">-sly538876@gmail.com.json</span></span></span><span class="model-pill cred prov-openai" title="openai-compatibility:上海人工智能实验室"><span class="model-dot dot-openai"></span><span class="name mono"><span class="model-core">openai-compatibility</span><span class="model-tail">:上海人工智能实验室</span></span></span><button type="button" class="model-more" data-key="sk-two" data-kind="creds" onclick="openEntityPopover(event, this)" title="查看全部 4 个凭证">+2</button></div></td>
-  <td class="cell-nowrap"><div class="row-actions"><button class="btn btn-sm">编辑规则</button><button class="btn btn-sm">清零用量</button><button class="btn btn-sm">删除</button></div></td>
-</tr>
-<tr class="key-row">
-  <td class="drag-cell">⠿</td>
-  <td class="cell-nowrap"><span class="tag ok">● 启用</span></td>
-  <td class="cell-nowrap"><div class="key-cell"><span class="key-code">sk-one</span><button class="btn btn-sm icon-btn">📋</button></div></td>
-  <td class="cell-nowrap" style="font-weight:600">单模型 / 单凭证</td>
-  <td class="cell-nowrap mono">不限</td>
-  <td class="cell-nowrap mono">1,204 <span style="color:var(--text-tertiary)">(1180/24)</span></td>
-  <td class="cell-nowrap"><span class="token-val">12,340,221</span> <span class="mono" style="font-size:12px;color:var(--text-secondary)"> (9,800,000 / 2,540,221)</span></td>
-  <td class="col-models"><div class="model-cell"><span class="model-pill prov-gemini" title="gemini-3.8-flash-high"><span class="model-dot dot-gemini"></span><span class="name mono"><span class="model-core">gemini-3.8</span><span class="model-tail">-flash-high</span></span></span></div></td>
-  <td><div class="model-cell"><span class="tag warn" style="font-size:11px;padding:1px 7px">轮询</span><span class="model-pill cred prov-gemini" title="antigravity-zusiyuan2@gmail.com.json"><span class="model-dot dot-gemini"></span><span class="name mono"><span class="model-core">antigravity</span><span class="model-tail">-zusiyuan2@gmail.com.json</span></span></span></div></td>
-  <td class="cell-nowrap"><div class="row-actions"><button class="btn btn-sm">编辑规则</button><button class="btn btn-sm">清零用量</button><button class="btn btn-sm">删除</button></div></td>
-</tr></tbody>
-  </table>
-</div>
-
-<div class="demo-label">点击凭证列的 <code>+1</code> 后弹出的浮层（静态示范）</div>
-<div class="model-popover open demo-popover">
-  <div class="model-popover-head">
-    <span>共绑定 <span class="mono" style="color:var(--text-primary)">4</span> 个凭证</span>
-    <button class="model-popover-close">✕</button>
-  </div>
-  <input class="model-popover-search" placeholder="搜索凭证..." value="">
-  <div class="model-popover-list"><div class="model-popover-item"><span class="model-dot dot-gemini"></span><span>antigravity-sly538876@gmail.com.json</span></div><div class="model-popover-item"><span class="model-dot dot-openai"></span><span>openai-compatibility:上海人工智能实验室</span></div><div class="model-popover-item"><span class="model-dot dot-claude"></span><span>claude-oauth-b@gmail.com.json</span></div><div class="model-popover-item"><span class="model-dot dot-deepseek"></span><span>deepseek-key-1</span></div></div>
-  <div class="model-popover-foot">
-    <button class="btn btn-sm">复制全部</button>
-    <button class="btn btn-sm">编辑规则</button>
-  </div>
-</div>
-</body></html>
+  /* Shared text utilities (replace repeated inline styles) */
+  .cell-empty { text-align: center; color: var(--text-tertiary); }
+  .txt-muted { color: var(--text-tertiary); }
+  .txt-muted-xs { font-size: 11px; color: var(--text-tertiary); }
+  .txt-secondary-sm { font-size: 12px; color: var(--text-secondary); }
+  .card-subtitle { font-size: 12px; color: var(--text-tertiary); margin-top: 4px; }

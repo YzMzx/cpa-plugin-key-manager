@@ -164,6 +164,8 @@ go build -buildmode=c-shared -o cpa-plugin-key-manager.dll .
 
 编译需要同级目录存在 `CLIProxyAPI` 源码 checkout（`go.mod` 里有 `replace` 指向 `../CLIProxyAPI`）。
 
+管理页源码位于 `web/`：`index.html`（结构）、`app.css`、`theme.js`、`app.js`，构建时由 `web/embed.go` 拼装成单个 HTML 内嵌进动态库，运行时不依赖任何外部静态资源。
+
 ---
 
 ## 相关链接
