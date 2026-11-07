@@ -1658,7 +1658,7 @@
               const ms = group.children[0];
               html += `<tr class="model-group-row">
                 <td class="cell-nowrap"><span class="mono" style="color:var(--text-primary);font-weight:600">${escapeHtml(group.requested)}</span> <span class="tag plain" style="font-size:10px">请求模型</span></td>${modelCells(ms)}
-                <td colspan="2" class="txt-muted-xs">最后调用: ${escapeHtml(ms.last_used_at || "-")}</td>
+                <td colspan="2" class="txt-muted-xs">最后调用: ${escapeHtml(fmtDateTime(ms.last_used_at))}</td>
               </tr>`;
               continue;
             }
@@ -1675,7 +1675,7 @@
                 : "";
               html += `<tr class="sub-row">
                 <td class="cell-nowrap">↳ <span class="mono">${escapeHtml(servedLabel)}</span>${hint}</td>${modelCells(ms)}
-                <td colspan="2" class="txt-muted-xs">最后调用: ${escapeHtml(ms.last_used_at || "-")}</td>
+                <td colspan="2" class="txt-muted-xs">最后调用: ${escapeHtml(fmtDateTime(ms.last_used_at))}</td>
               </tr>`;
             }
           }
@@ -1780,7 +1780,7 @@
       const groupCount = buildRequestedModelGroups(modelList).length;
       const isExpanded = !!expandedDashAccounts[bucketKey];
       const lastUsedHint = a.last_request_at
-        ? `<div class="txt-muted-xs">最后: ${escapeHtml(a.last_request_at)}</div>`
+        ? `<div class="txt-muted-xs">最后: ${escapeHtml(fmtDateTime(a.last_request_at))}</div>`
         : "";
       const failed = a.failed_requests || 0;
       const reqCell = `${fmtInt(a.requests)} <span class="txt-muted">(${fmtInt(a.success_requests)}${failed > 0 ? `/<span style="color:var(--danger,#d9534f)">${fmtInt(failed)}</span>` : ""})</span>`;
@@ -1815,7 +1815,7 @@
             const ms = group.children[0];
             html += `<tr class="model-group-row">
               <td class="cell-nowrap" colspan="2"><span class="mono" style="color:var(--text-primary);font-weight:600">${escapeHtml(group.requested)}</span> <span class="tag plain" style="font-size:10px">请求模型</span></td>${acctCells(ms)}
-              <td class="cell-nowrap" style="font-size:11px;color:var(--text-tertiary)">最后调用: ${escapeHtml(ms.last_used_at || "-")}</td>
+              <td class="cell-nowrap" style="font-size:11px;color:var(--text-tertiary)">最后调用: ${escapeHtml(fmtDateTime(ms.last_used_at))}</td>
             </tr>`;
             continue;
           }
@@ -1832,7 +1832,7 @@
               : "";
             html += `<tr class="sub-row">
               <td class="cell-nowrap" colspan="2">　↳ <span class="mono">${escapeHtml(servedLabel)}</span>${hint}</td>${acctCells(ms)}
-              <td class="cell-nowrap" style="font-size:11px;color:var(--text-tertiary)">最后调用: ${escapeHtml(ms.last_used_at || "-")}</td>
+              <td class="cell-nowrap" style="font-size:11px;color:var(--text-tertiary)">最后调用: ${escapeHtml(fmtDateTime(ms.last_used_at))}</td>
             </tr>`;
           }
         }
@@ -2553,7 +2553,7 @@
 
     document.getElementById("pricingSyncedCount").textContent = fmtInt(ps.synced_model_keys || 0);
     document.getElementById("pricingSyncSource").textContent = "来源: " + (ps.sync_source || "未同步 (自动拉取 https://models.dev/api.json)");
-    document.getElementById("pricingLastSyncAt").textContent = ps.last_sync_at || "尚未完成首次同步";
+    document.getElementById("pricingLastSyncAt").textContent = ps.last_sync_at ? fmtDateTime(ps.last_sync_at) : "尚未完成首次同步";
 
     const errEl = document.getElementById("pricingLastSyncErr");
     if (ps.last_sync_error) {
