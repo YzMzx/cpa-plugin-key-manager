@@ -49,6 +49,9 @@ type StorageConfig struct {
 	LegacyUsageDBFile string `yaml:"-" json:"legacy_usage_db_file,omitempty"`
 	// LedgerRetentionDays controls how long the overview ledger keeps hourly slices.
 	LedgerRetentionDays int `yaml:"ledger_retention_days" json:"ledger_retention_days"`
+	// Timezone is the IANA name used for overview bucketing/boundaries.
+	// Defaults to Asia/Shanghai (UTC+8).
+	Timezone string `yaml:"timezone" json:"timezone,omitempty"`
 }
 
 // PricingConfig defines models.dev synchronization and local price overrides.
@@ -444,6 +447,9 @@ func (c *Config) Normalize() {
 	}
 	if c.Storage.LedgerRetentionDays <= 0 {
 		c.Storage.LedgerRetentionDays = 90
+	}
+	if strings.TrimSpace(c.Storage.Timezone) == "" {
+		c.Storage.Timezone = usage.DefaultTimezone
 	}
 	if strings.TrimSpace(c.Storage.PricingCacheFile) == "" {
 		c.Storage.PricingCacheFile = "./data/models_dev.json"

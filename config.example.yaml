@@ -32,3 +32,6 @@ plugins:
         # （容器内即 /CLIProxyAPI/data/key_usage.db，记得按上面的说明挂载出来）
         # 也可用环境变量 CPA_KEY_MANAGER_USAGE_DB 覆盖
         usage_db_file: ""
+        # 时区：总览图表的分桶与“今日/昨日/近7日”边界按此时区计算。
+        # 默认 Asia/Shanghai（UTC+8），与浏览器/服务器时区无关。
+        timezone: "Asia/Shanghai"  # UTC+8；可改为其他 IANA 如 "UTC"、"Asia/Tokyo"

@@ -1452,14 +1452,25 @@
     return { used, limit, remaining, unlimited, percent, lastUsedText, exceeded: !unlimited && used >= limit };
   }
 
-  // Formats an RFC3339 timestamp in the browser's local time; "-" when unknown.
+  // Formats an RFC3339 timestamp in fixed UTC+8 (Asia/Shanghai); "-" when unknown.
   function fmtDateTime(raw) {
     const text = String(raw || "").trim();
     if (!text) return "-";
     const d = new Date(text);
     if (Number.isNaN(d.getTime())) return text;
     const pad = (n) => String(n).padStart(2, "0");
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    try {
+      const parts = new Intl.DateTimeFormat("en-CA", {
+        timeZone: "Asia/Shanghai",
+        year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false
+      }).formatToParts(d);
+      const get = (t) => (parts.find(p => p.type === t) || {}).value || "";
+      return `${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")}:${get("second")}`;
+    } catch (_) {
+      const shifted = new Date(d.getTime() + 8 * 3600 * 1000);
+      return `${shifted.getUTCFullYear()}-${pad(shifted.getUTCMonth() + 1)}-${pad(shifted.getUTCDate())} ${pad(shifted.getUTCHours())}:${pad(shifted.getUTCMinutes())}:${pad(shifted.getUTCSeconds())}`;
+    }
   }
 
   function quotaBarClass(percent, exceeded) {
@@ -1922,9 +1933,9 @@
 
   // ==================== TAB 0: QUOTA OVERVIEW (local ledger) ====================
   const API_LEDGER = "/v0/management/key-guard/ledger";
-  const OVERVIEW_TZ = (() => {
-    try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch (_) { return "UTC"; }
-  })();
+  // Plugin charts/boundaries are pinned to UTC+8 (Asia/Shanghai) regardless
+  // of the browser or server timezone, so "today"/day buckets match every viewer.
+  const OVERVIEW_TZ = "Asia/Shanghai";
 
   const overviewState = {
     granularity: "hour",
@@ -1974,11 +1985,30 @@
     return "$" + usd.toFixed(digits);
   }
 
+  // Day boundaries for the overview are pinned to UTC+8 (Asia/Shanghai) so
+  // "today / yesterday / last 7 days" mean the same calendar day everywhere.
+  function shanghaiDateParts(d) {
+    try {
+      const parts = new Intl.DateTimeFormat("en-CA", {
+        timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit"
+      }).formatToParts(d);
+      const get = (t) => Number((parts.find(p => p.type === t) || {}).value || 0);
+      return { y: get("year"), m: get("month"), d: get("day") };
+    } catch (_) {
+      const shifted = new Date(d.getTime() + 8 * 3600 * 1000);
+      return { y: shifted.getUTCFullYear(), m: shifted.getUTCMonth() + 1, d: shifted.getUTCDate() };
+    }
+  }
+  function shanghaiStartOfDay(y, m, d) {
+    // 00:00 in Asia/Shanghai (UTC+8) == 16:00 UTC previous day.
+    return new Date(Date.UTC(y, m - 1, d, -8, 0, 0, 0));
+  }
   function overviewRangeBounds() {
     const now = new Date();
-    const startOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0);
+    const p = shanghaiDateParts(now);
+    const startOfDay = (d) => { const q = shanghaiDateParts(d); return shanghaiStartOfDay(q.y, q.m, q.d); };
     const today = startOfDay(now);
-    const minusDays = (d, n) => new Date(d.getFullYear(), d.getMonth(), d.getDate() - n);
+    const minusDays = (d, n) => { const q = shanghaiDateParts(d); return shanghaiStartOfDay(q.y, q.m, q.d - n); };
     let from, to;
     switch (overviewState.range) {
       case "today":
@@ -2000,7 +2030,7 @@
           if (!v) return fallback;
           const parts = String(v).split("-").map(Number);
           if (parts.length !== 3 || parts.some(x => !Number.isFinite(x))) return fallback;
-          return new Date(parts[0], parts[1] - 1, parts[2], 0, 0, 0, 0);
+          return shanghaiStartOfDay(parts[0], parts[1], parts[2]);
         };
         from = parse(fromVal, minusDays(today, 6));
         to = parse(toVal, today);
@@ -2163,7 +2193,10 @@
     const denom = Number(data.input_tokens || 0) + Number(data.cache_read_tokens || 0);
     const hit = denom > 0 ? (Number(data.cache_read_tokens || 0) / denom * 100) : 0;
     setText("ovLegendHit", hit.toFixed(1) + "%");
-    setText("ovTrendMeta", `${data.active_days || 0} 个有使用记录的自然日 · ${data.from || ""} ~ ${data.to || ""}`);
+    const zoneName = String(data.timezone || "");
+    const zoneHint = (zoneName === "Asia/Shanghai" || zoneName === "UTC+8") ? `${zoneName} · UTC+8` : zoneName;
+    const fmtRange = (raw) => String(raw || "").replace("T", " ").replace(/\.\d+/, "").replace(/([+-]\d{2}:\d{2}|Z)$/, "");
+    setText("ovTrendMeta", `${data.active_days || 0} 个有使用记录的自然日 · ${fmtRange(data.from)} ~ ${fmtRange(data.to)}${zoneHint ? " · " + zoneHint : ""}`);
   }
 
   // ---- Trend chart (line series + hit-rate line, dual Y axis, hover tooltip) ----

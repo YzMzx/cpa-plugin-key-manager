@@ -88,23 +88,98 @@ func (s *Store) ledgerResetLocked() {
 	s.ledgerByHour = make(map[int64]map[string]*LedgerEntry)
 }
 
+// DefaultTimezone is the plugin default timezone: UTC+8 (China). The ledger
+// storage stays in UTC (unix hour buckets); only bucket labels, day/month
+// boundaries and the from/to echo are rendered in this zone.
+const DefaultTimezone = "Asia/Shanghai"
+
 // tzCache memoises time.LoadLocation, which reads the embedded tz database.
 var tzCache sync.Map
+
+var (
+	defaultLocationOnce sync.Once
+	defaultLocation     *time.Location
+)
+
+// defaultLocationCached resolves the plugin default zone once. Asia/Shanghai
+// (UTC+8, no DST) comes from the embedded tz database; the fixed-offset zone is
+// only a last resort if that database were unavailable.
+func defaultLocationCached() *time.Location {
+	defaultLocationOnce.Do(func() {
+		if loc, err := time.LoadLocation(DefaultTimezone); err == nil {
+			defaultLocation = loc
+			return
+		}
+		defaultLocation = time.FixedZone(DefaultTimezone, 8*60*60)
+	})
+	return defaultLocation
+}
 
 func loadLocationCached(name string) *time.Location {
 	name = strings.TrimSpace(name)
 	if name == "" {
-		return time.UTC
+		return defaultLocationCached()
+	}
+	if name == DefaultTimezone {
+		return defaultLocationCached()
+	}
+	// Handle explicit UTC+8 / fixed-offset forms that time.LoadLocation may
+	// not resolve everywhere (e.g. "UTC+8", "GMT+8", "+08:00").
+	if loc, ok := parseFixedOffset(name); ok {
+		return loc
 	}
 	if cached, ok := tzCache.Load(name); ok {
 		return cached.(*time.Location)
 	}
 	loc, err := time.LoadLocation(name)
 	if err != nil {
-		return time.UTC
+		return defaultLocationCached()
 	}
 	tzCache.Store(name, loc)
 	return loc
+}
+
+// parseFixedOffset parses "UTC+8", "GMT+8", "UTC+08:00" style offsets.
+func parseFixedOffset(name string) (*time.Location, bool) {
+	n := strings.TrimSpace(name)
+	upper := strings.ToUpper(n)
+	for _, prefix := range []string{"UTC", "GMT"} {
+		if !strings.HasPrefix(upper, prefix) {
+			continue
+		}
+		rest := strings.TrimSpace(n[len(prefix):])
+		if rest == "" {
+			return time.UTC, true
+		}
+		sign := 1
+		if strings.HasPrefix(rest, "-") {
+			sign = -1
+			rest = strings.TrimSpace(rest[1:])
+		} else if strings.HasPrefix(rest, "+") {
+			rest = strings.TrimSpace(rest[1:])
+		} else {
+			return nil, false
+		}
+		parts := strings.Split(rest, ":")
+		hour := 0
+		min := 0
+		if len(parts) == 1 {
+			if _, err := fmt.Sscanf(parts[0], "%d", &hour); err != nil {
+				return nil, false
+			}
+		} else if len(parts) >= 2 {
+			if _, err := fmt.Sscanf(parts[0], "%d", &hour); err != nil {
+				return nil, false
+			}
+			if _, err := fmt.Sscanf(parts[1], "%d", &min); err != nil {
+				return nil, false
+			}
+		} else {
+			return nil, false
+		}
+		return time.FixedZone(n, sign*(hour*3600+min*60)), true
+	}
+	return nil, false
 }
 
 // applyLedgerLocked accumulates one slice of usage into the hourly ledger and returns

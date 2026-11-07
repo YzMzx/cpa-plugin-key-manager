@@ -112,7 +112,13 @@ plugins:
       storage:
         # 留空 = <CLIProxyAPI 根目录>/data/key_usage.db
         usage_db_file: ""
+        # 总览图表的分桶与「今日/昨日/近7日」边界所用时区，默认 UTC+8
+        timezone: "Asia/Shanghai"
 ```
+
+> 时区默认固定为 **UTC+8（Asia/Shanghai）**，与浏览器、服务器/容器时区无关：
+> 图表横轴标签、按天/月聚合的边界、「今日」等范围都按北京时间切分。
+> 数据库内部仍以 UTC 存储，只影响展示；如需其他时区可改 `storage.timezone`（IANA 名称，如 `UTC`、`Asia/Tokyo`）。
 
 Key 规则、默认策略、模型价格覆盖都通过管理页面配置，**不要写进 `config.yaml`**。
 

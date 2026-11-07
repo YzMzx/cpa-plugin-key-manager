@@ -365,6 +365,11 @@ func (m *Manager) ListAvailableModels(hostCallbackID string, snap usage.Persiste
 // The key counters come from the configured rules (not from usage buckets), so the
 // overview shows "总密钥 / 可用密钥" immediately instead of only after the first call.
 func (m *Manager) QueryLedger(q usage.LedgerQuery) usage.LedgerResult {
+	if strings.TrimSpace(q.Timezone) == "" {
+		m.mu.RLock()
+		q.Timezone = m.cfg.Storage.Timezone
+		m.mu.RUnlock()
+	}
 	result := m.usageStore.QueryLedger(q)
 
 	m.mu.RLock()

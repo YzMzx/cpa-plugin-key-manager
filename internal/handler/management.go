@@ -150,6 +150,8 @@ type SnapshotProvider interface {
 	UpsertCustomPrice(model string, price pricing.ModelPrice) error
 	DeleteCustomPrice(model string) error
 	ResetKeyQuota(apiKey string) (float64, error)
+	// QueryLedger resolves an empty q.Timezone to the plugin configured zone
+	// (storage.timezone, default Asia/Shanghai = UTC+8).
 	QueryLedger(q usage.LedgerQuery) usage.LedgerResult
 	BuildSelfAccountView(apiKey string) (map[string]any, int, error)
 }
@@ -473,9 +475,8 @@ func HandleManagementRequest(ctx context.Context, provider SnapshotProvider, req
 			Source:      queryValue(req, "source"),
 			Timezone:    queryValue(req, "tz"),
 		}
-		if q.Timezone == "" {
-			q.Timezone = "Local"
-		}
+		// An empty tz is intentional: the provider fills it with the plugin
+		// configured zone (storage.timezone, default Asia/Shanghai = UTC+8).
 		return jsonResponse(http.StatusOK, provider.QueryLedger(q))
 
 	default:
@@ -516,7 +517,13 @@ func parseTimeParam(raw string) time.Time {
 	if parsed, err := time.Parse(time.RFC3339, value); err == nil {
 		return parsed
 	}
-	if parsed, err := time.ParseInLocation("2006-01-02", value, time.Local); err == nil {
+	// Plain dates are plugin-local (UTC+8) calendar days, so a bare
+	// "2026-01-02" means 00:00 in Asia/Shanghai, not in the server zone.
+	loc, errLoc := time.LoadLocation(usage.DefaultTimezone)
+	if errLoc != nil {
+		loc = time.Local
+	}
+	if parsed, err := time.ParseInLocation("2006-01-02", value, loc); err == nil {
 		return parsed
 	}
 	if secs, err := strconv.ParseInt(value, 10, 64); err == nil {
