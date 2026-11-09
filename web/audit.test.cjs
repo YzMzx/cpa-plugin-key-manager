@@ -219,19 +219,39 @@ test("IP metadata and legacy unknown-IP warnings are not rendered",async()=>{
  const html=fs.readFileSync(path.join(__dirname,"index.html"),"utf8");assert.ok(!html.includes("来源 IP"));assert.ok(!html.includes("IP 来源"));assert.match(html,/colspan="8" class="cell-empty">尚未加载审计记录/);
 });
 
-test("raw plaintext JSON preserves exact whitespace escapes credentials and literal markup",async()=>{
+test("raw plaintext JSON formats whitespace while preserving escapes credentials and literal markup",async()=>{
  const raw=' {\n  "api_key": "secretliteral", "escaped": "\\u4f60\\u597d", "content": "<img src=x onerror=evil()>"\n} ' ;
  const value=Audit.bodyView(record("raw",{body_state:"stored_raw",body_truncated:false,request_body:raw,body_sha256:"raw-digest"}));
- assert.equal(value.json,raw);assert.match(value.state,/明文/);assert.match(value.state,/完整留存/);assert.equal(value.retainedBytes,Buffer.byteLength(raw));
+ assert.equal(value.json,Audit.formatJSONText(raw));assert.equal(Audit.bodyView(record("raw",{body_state:"stored_raw",request_body:raw}),"original").json,raw);assert.match(value.state,/明文/);assert.match(value.state,/完整留存/);assert.equal(value.retainedBytes,Buffer.byteLength(raw));
  const f=fixture(async url=>url.includes("/detail?")?{record:record("raw",{body_state:"stored_raw",body_truncated:false,request_body:raw,body_sha256:"raw-digest"}),status:status()}:list([record("raw",{body_state:"stored_raw"})]));
- await f.view.enter();await f.view.showDetail("raw");assert.equal(f.node("auditRequestBody").textContent,raw);assert.match(f.node("auditDetailMessage").textContent,/明文可能含凭据/);assert.equal(f.node("auditBodyHash").textContent,"raw-digest");
+ await f.view.enter();await f.view.showDetail("raw");assert.equal(f.node("auditRequestBody").textContent,Audit.formatJSONText(raw));f.node("auditBodyOriginal").listeners.click();assert.equal(f.node("auditRequestBody").textContent,raw);f.node("auditBodyFormatted").listeners.click();assert.equal(f.node("auditRequestBody").textContent,Audit.formatJSONText(raw));assert.match(f.node("auditDetailMessage").textContent,/明文可能含凭据/);assert.equal(f.node("auditBodyHash").textContent,"raw-digest");
  const html=fs.readFileSync(path.join(__dirname,"index.html"),"utf8");assert.ok(html.includes("请求 JSON 原文（只读）"));assert.ok(html.includes("已保存内容"));assert.ok(!html.includes("脱敏请求 JSON（只读）"));
  const rejected=Audit.bodyView(record("invalid-partial-raw",{body_state:"stored_raw",body_truncated:true,request_body:raw}));assert.notEqual(rejected.json,raw);
 });
 
-test("raw JSON is not reparsed or constrained by old element count and large compact mode remains exact",()=>{
+test("JSON formatting preserves tokens without parsing numeric values or limiting old element counts",()=>{
  const raw='{"many":['+Array.from({length:5000},(_,i)=>String(i)).join(",")+'],"secret":"literal"}';
- const value=Audit.bodyView(record("many",{body_state:"stored_raw",request_body:raw}));assert.equal(value.json,raw);
- const large=JSON.stringify({content:"原文 secretliteral ".repeat(25000)});assert.equal(Audit.bodyView(record("large-raw",{body_state:"stored_raw",request_body:large})).json,large);
+ const value=Audit.bodyView(record("many",{body_state:"stored_raw",request_body:raw}));assert.equal(value.json,Audit.formatJSONText(raw));assert.ok(value.json.includes("\n    4999"));
+ const large=JSON.stringify({content:"原文 secretliteral ".repeat(25000)});assert.equal(Audit.bodyView(record("large-raw",{body_state:"stored_raw",request_body:large})).json,Audit.formatJSONText(large));assert.equal(Audit.bodyView(record("large-raw",{body_state:"stored_raw",request_body:large}),"original").json,large);
  const legacy=Audit.bodyView(record("legacy",{body_state:"stored",request_body:"{}"}));assert.match(legacy.state,/旧版脱敏/);
+});
+
+test("whitespace formatter preserves field order duplicate keys arbitrary precision and escapes",()=>{
+ const raw=' {"z":900719925474099312345678901234567890,"duplicate":1,"duplicate":2,"decimal":1.23000e+99,"negative":-0,"escaped":"\\u4f60\\u597d","punctuation":"a,{[\\\"x\\\"]}:","nested":[true,null,{}],"secret":"plaintext-value"} ';
+ const pretty=Audit.formatJSONText(raw);
+ assert.ok(pretty.includes('\n  "z": 900719925474099312345678901234567890'));
+ assert.ok(pretty.includes('"duplicate": 1,\n  "duplicate": 2'));
+ for(const lexeme of ['1.23000e+99','-0','\\u4f60\\u597d','plaintext-value'])assert.ok(pretty.includes(lexeme));
+ assert.equal(Audit.formatJSONText(pretty),pretty);
+ assert.doesNotThrow(()=>JSON.parse(pretty));
+ assert.equal(Audit.formatJSONText(raw,raw.length),raw,"format expansion must not truncate content");
+});
+
+test("body format mode resets per record and lock clears both saved and formatted representations",async()=>{
+ const raw='{"messages":[{"content":"plain secret"}]}';
+ const f=fixture(async url=>url.includes("/detail?")?{record:record(new URL("http://t"+url).searchParams.get("id"),{body_state:"stored_raw",request_body:raw,body_sha256:"saved-content-hash"}),status:status()}:list([record("a"),record("b")]));
+ await f.view.enter();await f.view.showDetail("a");assert.match(f.node("auditRequestBody").textContent,/\n/);
+ f.node("auditBodyOriginal").listeners.click();assert.equal(f.node("auditRequestBody").textContent,raw);assert.equal(f.node("auditBodyOriginal").getAttribute("aria-pressed"),"true");
+ await f.view.showDetail("b");assert.equal(f.node("auditBodyFormatted").getAttribute("aria-pressed"),"true");assert.match(f.node("auditRequestBody").textContent,/\n/);assert.equal(f.node("auditBodyHash").textContent,"saved-content-hash");
+ f.setAuth(false);f.view.lock();f.node("auditBodyOriginal").listeners.click();assert.equal(f.node("auditRequestBody").textContent,"");assert.equal(f.node("auditBodyHash").textContent,"");
 });

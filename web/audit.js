@@ -45,7 +45,39 @@
     try { return new Intl.DateTimeFormat("zh-CN", { timeZone: zone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }).format(new Date(value)); }
     catch (_) { return value; }
   }
-  function bodyView(record) {
+  // Whitespace-only formatter: no JSON.parse, so duplicate names, field order,
+  // big integers, decimal lexemes and escape sequences survive unchanged.
+  function formatJSONText(source, maxChars = 20 * 1024 * 1024) {
+    if (typeof source !== "string" || source.length > maxChars) return source;
+    const chunks = []; let size = 0, depth = 0;
+    const ws = char => char === " " || char === "\n" || char === "\r" || char === "\t";
+    const add = value => { if (size + value.length > maxChars) return false; chunks.push(value); size += value.length; return true; };
+    const newline = () => { if (1 + depth * 2 > maxChars - size) return false; return add("\n" + "  ".repeat(depth)); };
+    for (let i = 0; i < source.length;) {
+      const char = source[i];
+      if (ws(char)) { i++; continue; }
+      if (char === '"') {
+        const start = i++; let closed = false;
+        while (i < source.length) { if (source[i] === String.fromCharCode(92)) { i += 2; continue; } if (source[i++] === '"') { closed = true; break; } }
+        if (!closed || !add(source.slice(start, i))) return source;
+        continue;
+      }
+      if (char === "{" || char === "[") {
+        if (!add(char)) return source; depth++; i++;
+        let next = i; while (next < source.length && ws(source[next])) next++;
+        if (next < source.length && source[next] !== "}" && source[next] !== "]" && !newline()) return source;
+      } else if (char === "}" || char === "]") {
+        if (--depth < 0) return source;
+        let previous = i - 1; while (previous >= 0 && ws(source[previous])) previous--;
+        if (previous >= 0 && source[previous] !== "{" && source[previous] !== "[" && !newline()) return source;
+        if (!add(char)) return source; i++;
+      } else if (char === ",") { if (!add(",") || !newline()) return source; i++; }
+      else if (char === ":") { if (!add(": ")) return source; i++; }
+      else { const start = i; while (i < source.length && !ws(source[i]) && !",}]".includes(source[i])) i++; if (!add(source.slice(start, i))) return source; }
+    }
+    return depth === 0 ? chunks.join("") : source;
+  }
+  function bodyView(record, mode = "formatted") {
     const partial = record.body_state === "stored_partial";
     const plaintext = record.body_state === "stored_raw" && !record.body_truncated;
     const accepted = partial || ["stored_raw", "stored", "redacted", "captured"].includes(record.body_state) && !record.body_truncated;
@@ -59,7 +91,7 @@
     const state = bodyLabel + " · " + (partial ? "部分留存" : "完整留存") + " · " + bytes(retainedBytes) + "（" + retainedBytes + " 字节）";
     // Plaintext records preserve exact bytes/whitespace/escapes, including small
     // JSON. This is inert text, not markup and not a claim of redaction.
-    if (plaintext) return { state: state + " · 明文可能含凭据、会话和个人信息", json: compact, retainedBytes, completeness: "完整原文" };
+    if (plaintext) return { state: state + (mode === "original" ? " · 保存原文" : " · 两空格格式化显示，哈希对应保存内容") + " · 明文可能含凭据、会话和个人信息", json: mode === "original" ? compact : formatJSONText(compact), retainedBytes, completeness: "完整原文" };
     // Large JSON is validated by the backend. Render inert compact text to avoid
     // a second parsed tree/pretty copy; stored_partial is equally safe to show.
     if (typeof raw === "string" && raw.length > 256 * 1024) return { state: state + " · 大正文按紧凑 JSON 展示", json: raw, retainedBytes, completeness: partial ? "部分留存" : "完整留存" };
@@ -104,6 +136,8 @@
     let returnFocus = null;
     let cleanupPreview = null;
     let cleanupBusy = false;
+    let bodyRecord = null;
+    let bodyMode = "formatted";
     const rowButtons = new Map();
     const rowsById = new Map();
     const element = id => doc.getElementById(id);
@@ -165,7 +199,7 @@
       for (const [id, row] of rowsById) { if (id === selectedId) row.classList.add("audit-row-selected"); else row.classList.remove("audit-row-selected"); }
     }
     function clearDetail(restoreFocus = false) {
-      gate.cancel("audit-detail"); selectedId = "";
+      gate.cancel("audit-detail"); selectedId = ""; bodyRecord = null; bodyMode = "formatted";
       element("auditDetail").classList.add("hidden");
       if (doc.body) doc.body.classList.remove("audit-detail-open");
       for (const id of ["auditDetailMessage", "auditRequestBody", "auditBodyState", "auditBodyHash", "auditDetailPosition"]) set(id, "");
@@ -202,7 +236,16 @@
         ["耗时", typeof record.duration_ms === "number" && Number.isFinite(record.duration_ms) && record.duration_ms >= 0 ? record.duration_ms.toFixed(1) + " ms" : "未知"]
       ];
       for (const [label, value] of rows) { const dt = doc.createElement("dt"); dt.textContent = label; const dd = doc.createElement("dd"); dd.textContent = text(value); metadata.appendChild(dt); metadata.appendChild(dd); }
-      const body = bodyView(record); set("auditBodyState", body.state); set("auditRequestBody", body.json); set("auditBodyHash", body.retainedBytes > 0 ? text(record.body_sha256, "未提供保存内容哈希") : "未保存内容哈希");
+      bodyRecord = record; bodyMode = "formatted"; renderBody();
+    }
+    function renderBody() {
+      if (!bodyRecord) return;
+      const body = bodyView(bodyRecord, bodyMode); set("auditBodyState", body.state); set("auditRequestBody", body.json);
+      set("auditBodyHash", body.retainedBytes > 0 ? text(bodyRecord.body_sha256, "未提供保存内容哈希") : "未保存内容哈希");
+      for (const [id, selected] of [["auditBodyFormatted", bodyMode === "formatted"], ["auditBodyOriginal", bodyMode === "original"]]) {
+        const button = element(id); button.setAttribute("aria-pressed", String(selected));
+        if (selected) button.classList.add("active"); else button.classList.remove("active");
+      }
     }
     function renderStorage(value) {
       if (!object(value) || !integer(value.records) || !integer(value.logical_bytes) || !integer(value.max_total_bytes)) throw new Error("占用统计响应格式无效");
@@ -337,6 +380,8 @@
     function leave() { active = false; gate.cancel("audit-list"); gate.cancel("audit-status"); gate.cancel("audit-storage"); gate.cancel("audit-cleanup"); resetCleanupPreview(); loading = false; clearDetail(); renderPagination(); }
     function lock() { leave(); status = null; items = []; total = 0; set("auditStorageSummary", "需要管理员授权"); set("auditStoragePhysical", ""); element("auditCleanupBefore").value = ""; limit = 50; offset = 0; filters = {}; for (const id of Object.values(FILTERS)) element(id).value = ""; element("auditPageSize").value = "50"; set("auditStatus", "需要管理密钥授权后读取审计状态。"); set("auditListMessage", ""); messageRow("需要管理员授权"); renderPagination(); }
     function bind() {
+      element("auditBodyFormatted").addEventListener("click", () => { bodyMode = "formatted"; renderBody(); });
+      element("auditBodyOriginal").addEventListener("click", () => { bodyMode = "original"; renderBody(); });
       element("auditStorageRefresh").addEventListener("click", loadStorage);
       element("auditCleanupPreview").addEventListener("click", previewCleanup);
       element("auditCleanupConfirm").addEventListener("click", confirmCleanup);
@@ -358,5 +403,5 @@
     bind(); renderPagination();
     return { enter, leave, lock, refresh, applyFilters, resetFilters, page, showDetail, closeDetail: () => clearDetail(true), loadStorage, previewCleanup, confirmCleanup, isActive: () => active };
   }
-  return { create, queryString, timestamp, bodyView, validateStatus, validateList, validateDetail, statusPayload };
+  return { create, queryString, timestamp, bodyView, formatJSONText, validateStatus, validateList, validateDetail, statusPayload };
 });

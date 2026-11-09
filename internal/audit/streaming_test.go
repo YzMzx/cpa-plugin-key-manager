@@ -8,18 +8,18 @@ import (
 	"testing"
 )
 
-func TestCaptureRawJSONPreservesExactWhitespaceEscapesAndBodySecrets(t *testing.T) {
+func TestCaptureRawJSONFormatsWhitespaceWithoutChangingEscapesAndValues(t *testing.T) {
 	raw := []byte(` {
   "api_key": "body-secret", "messages": [{"content":"\u4f60\u597d"}],
   "duplicate": 1, "duplicate": 2
 } `)
 	result := CaptureRawJSON(raw, "application/json", "", MaxRequestBodyBytes)
-	if result.State != "stored_raw" || result.Truncated || result.Redacted || result.Body != string(raw) {
+	if result.State != "stored_raw" || result.Truncated || result.Redacted || result.Body != string(FormatJSON(raw, MaxRequestBodyBytes)) {
 		t.Fatalf("raw JSON changed: %s", result.State)
 	}
-	hash := sha256.Sum256(raw)
+	hash := sha256.Sum256([]byte(result.Body))
 	if result.SHA256 != hex.EncodeToString(hash[:]) {
-		t.Fatal("hash not original bytes")
+		t.Fatal("hash not saved formatted bytes")
 	}
 }
 
@@ -31,13 +31,13 @@ func TestCaptureRawJSONDenseAndDeepStructuresHaveNoAuditElementCap(t *testing.T)
 		}
 		raw, _ := json.Marshal(map[string]any{"messages": messages})
 		result := CaptureRawJSON(raw, "application/json", "", MaxRequestBodyBytes)
-		if result.State != "stored_raw" || result.Body != string(raw) {
+		if result.State != "stored_raw" || result.Body != string(FormatJSON(raw, MaxRequestBodyBytes)) {
 			t.Fatalf("dense %d omitted: %s", count, result.State)
 		}
 	}
 	deep := []byte(`{"payload":` + strings.Repeat("[", 256) + "1" + strings.Repeat("]", 256) + `,"safe":"tail"}`)
 	result := CaptureRawJSON(deep, "application/json", "", MaxRequestBodyBytes)
-	if result.State != "stored_raw" || result.Body != string(deep) {
+	if result.State != "stored_raw" || result.Body != string(FormatJSON(deep, MaxRequestBodyBytes)) {
 		t.Fatalf("deep JSON changed: %s", result.State)
 	}
 }
@@ -45,7 +45,7 @@ func TestCaptureRawJSONDenseAndDeepStructuresHaveNoAuditElementCap(t *testing.T)
 func TestCaptureRawJSONTenMiBAndOnlyHardFormatLimits(t *testing.T) {
 	raw := readableJSONBody(MaxRequestBodyBytes)
 	result := CaptureRawJSON(raw, "application/json; charset=utf-8", "identity", MaxRequestBodyBytes)
-	if result.State != "stored_raw" || result.Body != string(raw) {
+	if result.State != "stored_raw" || result.Body != string(FormatJSON(raw, MaxRequestBodyBytes)) {
 		t.Fatal("ten MiB raw body omitted")
 	}
 	for _, tc := range []struct {

@@ -10,10 +10,10 @@ import (
 	"unicode/utf8"
 )
 
-// CaptureRawJSON deliberately preserves the exact original JSON bytes. The owner
-// opted into plaintext retention: values, credentials inside the body, whitespace,
-// duplicate keys and Unicode escapes are not redacted or rewritten. Headers are
-// never passed to this function. It does not decompress or decode binary data.
+// CaptureRawJSON retains plaintext JSON with readable two-space indentation.
+// Values, credential strings, number lexemes, duplicate keys and escape sequences
+// are unchanged. If formatting exceeds the budget, the complete original is kept.
+// Headers are never passed here; compression and binary data are not decoded.
 func CaptureRawJSON(body []byte, contentType, contentEncoding string, maxBytes int) BodyResult {
 	if len(body) == 0 {
 		return BodyResult{State: "empty"}
@@ -41,6 +41,7 @@ func CaptureRawJSON(body []byte, contentType, contentEncoding string, maxBytes i
 	if len(trimmed) == 0 || (trimmed[0] != '{' && trimmed[0] != '[') {
 		return BodyResult{State: "omitted_non_container"}
 	}
-	hash := sha256.Sum256(body)
-	return BodyResult{Body: string(body), State: "stored_raw", SHA256: hex.EncodeToString(hash[:])}
+	formatted := FormatJSON(body, maxBytes)
+	hash := sha256.Sum256(formatted)
+	return BodyResult{Body: string(formatted), State: "stored_raw", SHA256: hex.EncodeToString(hash[:])}
 }

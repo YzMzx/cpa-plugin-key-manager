@@ -259,7 +259,7 @@ func TestAuditUnknownSchemaAndLateModelsCannotLeakCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rec.RequestBody != string(req.Body) || rec.BodySHA256 == "" || rec.BodyState != "stored_raw" {
+	if rec.RequestBody != string(audit.FormatJSON(req.Body, audit.MaxRequestBodyBytes)) || rec.BodySHA256 == "" || rec.BodyState != "stored_raw" {
 		t.Fatal("valid raw JSON was hidden by an old schema gate")
 	}
 }
@@ -344,7 +344,7 @@ func TestAuditConcurrentLargeRawBodiesAreNotSkippedAsBusy(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if detail.BodyState != "stored_raw" || detail.RequestBody != string(body) {
+		if detail.BodyState != "stored_raw" || detail.RequestBody != string(audit.FormatJSON(body, audit.MaxRequestBodyBytes)) {
 			t.Fatal("large raw body was skipped or rewritten")
 		}
 	}
