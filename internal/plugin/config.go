@@ -24,6 +24,7 @@ type Config struct {
 	Enabled       bool                `yaml:"enabled" json:"enabled"`
 	Priority      int                 `yaml:"priority" json:"priority"`
 	AdminToken    string              `yaml:"admin_token" json:"admin_token,omitempty"`
+	Audit         AuditConfig         `yaml:"audit" json:"audit"`
 	Storage       StorageConfig       `yaml:"storage" json:"storage"`
 	Pricing       PricingConfig       `yaml:"pricing" json:"pricing"`
 	DefaultPolicy DefaultPolicyConfig `yaml:"default_policy" json:"default_policy"`
@@ -435,6 +436,7 @@ func FindHostConfigFile(preferredPath string) string {
 
 // Normalize fills in missing defaults and builds fast lookup maps.
 func (c *Config) Normalize() {
+	c.Audit.normalize()
 	if strings.TrimSpace(c.Storage.UsageFile) == "" {
 		c.Storage.UsageFile = "./data/key_usage_stats.json"
 	}

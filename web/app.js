@@ -23,6 +23,12 @@
   const pendingMutations = new Set();
   let usageGroupsCache = new WeakMap();
   const requestGate = KeyGuardState.createRequestGate();
+  let currentAdminTab = "tab-overview";
+  const auditView = KeyGuardAudit.create({
+    document, request: (...args) => callManagementAPI(...args), gate: requestGate,
+    isAuthenticated: () => !!activeManagementKey,
+    getTimezone: () => currentTimezone()
+  });
   const apiClient = KeyGuardClient.createClient({
     fetchImpl: (...args) => fetch(...args),
     getKey: () => activeManagementKey,
@@ -178,6 +184,7 @@
   }
 
   function lockAdminWorkspace(errMsg) {
+    auditView.lock();
     requestGate.cancelAll(); apiClient.cancelAll();
     overviewState.loading = false;
     clearTimeout(modelsDevSearchTimer);
@@ -253,6 +260,9 @@
 
   function switchAdminTab(tabId, options) {
     const opts = options || {};
+    currentAdminTab = tabId;
+    if (tabId === "tab-audit") { if (activeManagementKey) auditView.enter(); }
+    else auditView.leave();
     document.querySelectorAll(".admin-tab").forEach(s => s.classList.add("hidden"));
     const section = document.getElementById(tabId);
     if (section) section.classList.remove("hidden");
@@ -302,6 +312,7 @@
     if (!overviewState.data) showOverviewSkeleton();
     try {
       await loadAdminOverview();
+      if (currentAdminTab === "tab-audit" && activeManagementKey) await auditView.refresh();
       // Belt and braces: make sure the key/quota/leaderboard tables are painted even
       // if a late ledger refresh replaced them with placeholders.
       if (overviewData) {
@@ -332,8 +343,10 @@
       }
       const data = await callManagementAPI(API_OVERVIEW, { method: "GET", signal: ticket.signal }, keyToUse);
       if (!ticket.current()) return;
+      const wasAuthenticated = !!activeManagementKey;
       unlockAdminWorkspace(keyToUse);
       applyOverviewData(data);
+      if (!wasAuthenticated && currentAdminTab === "tab-audit") await auditView.enter();
       const sync = data.host_sync;
       const healthMessage = overviewHealthMessage(data);
       setRefreshStatus(healthMessage, !!healthMessage);

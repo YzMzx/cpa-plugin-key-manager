@@ -9,6 +9,7 @@ The page remains one self-contained HTML document. Go embeds and concatenates th
 - `formatters.js`: configured IANA timezone formatting and local calendar boundaries, including DST days.
 - `auth.js`: explicit same-origin parent authentication handshake.
 - `events.js`: delegated events for generated data attributes; values are never interpreted as JavaScript.
+- `audit.js`: administrator-only request audit controller, metadata paging/filtering, explicit read-only body fetch and sensitive-state cleanup.
 - `app.js`: page rendering and orchestration. Static HTML handlers remain supported. The default-policy draft behavior (review item 16) is intentionally unchanged.
 
 ## Backend contract
@@ -38,10 +39,24 @@ No parent-side bridge is added by this project. Without saved/shared state or an
 Run from repository root, without npm installation:
 
 ~~~text
-node --test web/runtime.test.cjs
+node --test web/runtime.test.cjs web/audit.test.cjs
 go test ./web
 ~~~
 
 Node tests exercise pure helpers and the actual page functions in a minimal DOM/transport fixture: special characters, static handler availability, checkbox/drag/popover delegation, client errors/timeouts/revisions, late responses, auth cleanup, bridge validation/fallback, DST boundaries and local repaint behavior. This fixture is not a real browser rendering test. Go tests check single-document embedding and module order without opening a database.
 
 Performance changes are structural (snapshot indexes, cached model grouping, account/key-only repaint, cached timezone formatters). They are not a measured production throughput claim; data-scale profiling should precede pagination/virtualization or backend query redesign.
+
+## Request audit contract
+
+The administrator-only audit tab calls only authenticated GET management endpoints:
+
+- `/v0/management/key-guard/audit?limit=50&offset=0&request_id=&trace_id=&key_fingerprint=&model=&ip=&outcome=&from=&to=` returns `{items,total,limit,offset,status}`. List items must not contain `request_body`. Pages default to 50 and offer 25/50/100; expired last pages are bounded and corrected once.
+- `/v0/management/key-guard/audit/detail?id=<opaque-random-id>` returns `{record,status}` only after an explicit detail click. Detail identity is checked before display.
+- `/v0/management/key-guard/audit/status` returns `{status}` (direct status objects are accepted for compatibility). Status includes `enabled,retention_days,max_records,max_body_bytes,max_total_bytes` and optional `warning,last_error`.
+
+Dates use RFC3339 `started_at` and `completed_at` strings; empty dates/numeric 0 display as unknown, not guessed epochs. Display uses the configured overview timezone. Filter inputs require explicit offsets or Z, preserve the chosen offset and reject invalid calendar dates. Outcomes are running/succeeded/failed/rejected/canceled/unknown. Missing client/peer IP remains unknown; source labels are host/peer/trustedproxy/unknown, without inspecting XFF or other request headers.
+
+The tab explicitly warns that redacted request JSON may still contain conversation and personal data; redaction is not a universal PII guarantee. Non-JSON, unsupported-encoding, malformed, ambiguous or resource-limited bodies are shown as omitted. A true `body_truncated` means the entire body was omitted, not a raw partial body. Only decoded sanitized JSON is displayed through textContent, never HTML. The saved body hash is for matching sanitized content, not tamper evidence. No response bodies, export, deletion or audit-setting mutations are provided.
+
+List/status/detail have independent latest-request gates. Tab exit clears decoded details; lock/auth expiration also aborts all audit work and clears lists, filters and metadata. Global refresh updates audit only when that tab is active. Unknown backend states remain visible as inert text. Tests use fixture DOM/network only, not a real browser renderer.

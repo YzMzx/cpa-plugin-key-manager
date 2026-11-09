@@ -27,6 +27,27 @@ CLIProxyAPI 的 API Key 管控与用量统计插件：多 Key 治理、模型白
 - 请求去重：`request.complete` 与 `usage.handle` 协同，单次请求只统计一次。
 - 全部 Token 数值自动按 K / M / B 显示（如 `12.3 M`、`1.02 B`）。
 
+### 请求审计（管理员）
+- 新增「请求审计」标签，按请求 ID、Trace ID、Key 指纹、模型、IP、结果与时间筛选，支持分页和按需详情。
+- 留存请求元数据与已知 JSON 客户端协议的脱敏正文，不记录响应正文、鉴权头、原始 API Key 或完整查询参数。
+- 默认启用，保留 7 天，最多 10,000 条、单正文 32 KiB、逻辑数据 64 MiB；超限优先淘汰旧记录，未知格式或正文安全限制触发时整段略过。
+- SQLite 新增独立审计表并自动迁移；用量清零不会删除审计。摘要只核对脱敏内容，不是防篡改证明；脱敏不保证识别所有个人信息，请保护数据库与备份访问权限。
+- **当前宿主限制：**现有 C ABI 请求元数据未提供已验证的真实连接 IP，记录会显示「未知」，不会把任意 `X-Forwarded-For` 当作真实 IP。必须由宿主提供可信网络元数据后，才能按可信代理链解析真实 IP；仅配置 CIDR 不会凭空补全 IP。
+- 只记录进入插件模型执行生命周期的新请求，不是全站 HTTP 抓包；插件前被宿主拒绝的请求、未经过插件的路由不在覆盖范围，无法回溯此前历史正文。
+- 审计写入采用有限等待并与代理请求隔离；存储失败时模型请求仍可继续，页面显示本次运行累计采集失败次数，可能存在记录或终态缺失，不承诺零丢失。SQLite/WAL 物理文件大小不等于逻辑容量，过期删除不自动缩小文件，也不保证底层磁盘安全擦除。
+
+在 `plugins.configs.cpa-plugin-key-manager` 下可选配置：
+
+```yaml
+audit:
+  enabled: true
+  retention_days: 7
+  max_records: 10000
+  max_body_bytes: 32768
+  max_total_bytes: 67108864
+  trusted_proxies: []  # 宿主可信网络元数据可用后，填明确代理 CIDR；不要无条件信任所有来源
+```
+
 ### 面板
 - **概览**：按密钥统计消耗、5 张指标卡、Token 趋势（时 / 日 / 月，含缓存命中率曲线，悬停出数值浮层）、模型分布环形图（按次数 / Token / 费用切换）。
 - **用量看板**：API Key、账号、模型三个维度的排行。
@@ -159,7 +180,7 @@ chmod +x cleanup-legacy-json.sh
 
 ```bash
 go test ./...
-node --test web/runtime.test.cjs
+node --test web/runtime.test.cjs web/audit.test.cjs
 
 # Linux
 CGO_ENABLED=1 go build -buildmode=c-shared -o cpa-plugin-key-manager.so .

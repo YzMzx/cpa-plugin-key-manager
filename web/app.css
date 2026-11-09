@@ -1254,3 +1254,17 @@
   .txt-muted-xs { font-size: 11px; color: var(--text-tertiary); }
   .txt-secondary-sm { font-size: 12px; color: var(--text-secondary); }
   .card-subtitle { font-size: 12px; color: var(--text-tertiary); margin-top: 4px; }
+  /* Administrator request-audit view. No body content is rendered as markup. */
+  .audit-privacy { padding: 12px 14px; margin: 0 0 14px; border: 1px solid var(--amber-30); border-radius: var(--radius-md); background: var(--amber-10); color: var(--text-secondary); font-size: 12px; line-height: 1.7; }
+  .audit-filters { display: grid; grid-template-columns: repeat(4,minmax(140px,1fr)); gap: 12px; margin: 14px 0; }
+  .audit-filters label { display: flex; flex-direction: column; gap: 5px; color: var(--text-secondary); font-size: 12px; }
+  .audit-filters input,.audit-filters select { width: 100%; min-width: 0; }
+  .audit-filter-actions { display: flex; align-items: end; gap: 8px; }
+  .audit-pagination { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 14px; color: var(--text-secondary); font-size: 12px; }
+  .audit-metadata { display: grid; grid-template-columns: minmax(110px,160px) minmax(0,1fr); gap: 8px 16px; margin: 16px 0; font-size: 12px; }
+  .audit-metadata dt { color: var(--text-secondary); }.audit-metadata dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+  .audit-json { margin: 10px 0; padding: 14px; max-height: 520px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid var(--border-color); border-radius: var(--radius-md); background: var(--bg-primary); color: var(--text-primary); font: 12px/1.7 var(--font-mono); }
+  .audit-body-title { font-size: 13px; margin: 18px 0 8px; }.audit-hash { overflow-wrap: anywhere; font-size: 11px; color: var(--text-secondary); }
+  .audit-cell-secondary { font-size: 11px; color: var(--text-tertiary); margin-top: 3px; }.audit-list-cell { max-width: 260px; overflow-wrap: anywhere; white-space: normal; }
+  @media(max-width:900px) { .audit-filters { grid-template-columns: repeat(2,minmax(130px,1fr)); } }
+  @media(max-width:520px) { .audit-filters { grid-template-columns: 1fr; }.audit-metadata { grid-template-columns: 1fr; gap:4px; }.audit-metadata dd { margin-bottom:8px; } }

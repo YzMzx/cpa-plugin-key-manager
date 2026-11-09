@@ -13,6 +13,9 @@ import (
 )
 
 func validateConfig(cfg Config) error {
+	if err := cfg.Audit.validate(); err != nil {
+		return err
+	}
 	if _, err := time.LoadLocation(cfg.Storage.Timezone); err != nil {
 		return fmt.Errorf("invalid storage.timezone: %w", err)
 	}

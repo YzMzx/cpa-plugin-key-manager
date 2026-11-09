@@ -21,7 +21,7 @@ import (
 
 const (
 	PluginID      = "cpa-plugin-key-manager"
-	PluginVersion = "0.10.4"
+	PluginVersion = "0.11.0-pre.1"
 	PluginAuthor  = "YzMzx"
 	PluginRepo    = "https://github.com/YzMzx/cpa-plugin-key-manager"
 	PluginLogoSVG = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%238b8680'/><path d='M24 22a10 10 0 1 0 9.5 13H42v5h6v-5h4v-6H33.5A10 10 0 0 0 24 22zm0 6a4 4 0 1 1 0 8 4 4 0 0 1 0-8z' fill='%23fff'/></svg>"
@@ -67,6 +67,8 @@ type Manager struct {
 	hostSyncError string
 	hostSyncCode  string
 	hostKeySync   func(context.Context, string, []string) error
+	auditMu       sync.RWMutex
+	auditRuntime  *auditRuntime
 	mu            sync.RWMutex
 	seedCfg       Config
 	dynamicState  *DynamicRulesState
@@ -310,6 +312,7 @@ func (m *Manager) Configure(raw []byte) error {
 	m.lastSyncKey = syncKey
 	m.mu.Unlock()
 
+	m.configureAudit(cfg.Audit)
 	if prevSyncKey != syncKey {
 		m.pricingSyncer.ConfigureAndStart(pricing.SyncConfig{
 			SyncURL:      cfg.Pricing.SyncURL,
@@ -326,6 +329,7 @@ func (m *Manager) Configure(raw []byte) error {
 func (m *Manager) Shutdown() {
 	m.mutationMu.Lock()
 	defer m.mutationMu.Unlock()
+	m.stopAudit()
 	m.pricingSyncer.Stop()
 	if err := m.usageStore.Close(); err != nil {
 		m.host.Log("error", "failed to flush usage on shutdown", map[string]any{"error": err.Error()})

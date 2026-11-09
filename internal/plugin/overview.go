@@ -132,6 +132,7 @@ func (m *Manager) BuildAdminOverview(hostCallbackID string) map[string]any {
 		"pricing_status":   pStatus,
 		"rules_file":       cfg.Storage.RulesFile,
 		"diagnostics":      m.BuildPersistenceDiagnostics(),
+		"audit_status":     m.AuditStatus(),
 	}
 }
 

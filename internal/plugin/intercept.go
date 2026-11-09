@@ -59,9 +59,11 @@ func (m *Manager) handleRequestInterceptBefore(raw []byte) ([]byte, error) {
 
 	apiKey := cfg.ResolveAPIKeyFromContext(req.Headers, nil, req.Metadata)
 	rule, _ := cfg.ResolveKeyRule(apiKey)
+	m.beginAudit(req, apiKey, rule.Name)
 
 	// 1. Check whether API Key is enabled/allowed
 	if !rule.IsEnabled() {
+		m.rejectAudit(req.RequestID, http.StatusForbidden)
 		return okEnvelope(authz.NewForbiddenKeyResponse("API key is not authorized or has been disabled"))
 	}
 
@@ -71,6 +73,7 @@ func (m *Manager) handleRequestInterceptBefore(raw []byte) ([]byte, error) {
 		displayModel = strings.TrimSpace(req.Model)
 	}
 	if !authz.AllowsModel(rule.AllowedModels, req.RequestedModel, req.Model) {
+		m.rejectAudit(req.RequestID, http.StatusForbidden)
 		return okEnvelope(authz.NewForbiddenModelResponse(displayModel))
 	}
 
@@ -82,6 +85,7 @@ func (m *Manager) handleRequestInterceptBefore(raw []byte) ([]byte, error) {
 			usedUSD = 0
 		}
 		if usedUSD >= rule.QuotaLimitUSD {
+			m.rejectAudit(req.RequestID, http.StatusTooManyRequests)
 			return okEnvelope(authz.NewQuotaExceededResponse(usedUSD, rule.QuotaLimitUSD))
 		}
 	}
@@ -97,6 +101,7 @@ func (m *Manager) handleRequestInterceptBefore(raw []byte) ([]byte, error) {
 		AcquiredAt:     time.Now(),
 	}, rule.MaxConcurrency)
 	if !acquired {
+		m.rejectAudit(req.RequestID, http.StatusTooManyRequests)
 		return okEnvelope(authz.NewConcurrencyLimitResponse(rule.MaxConcurrency))
 	}
 
@@ -246,6 +251,7 @@ func (m *Manager) handleRequestComplete(raw []byte) ([]byte, error) {
 	rule, _ := cfg.ResolveKeyRule(apiKey)
 
 	m.usageStore.CompleteRequest(completion, apiKey, rule.Name)
+	m.completeRequestAudit(completion, apiKey)
 	return okEnvelope(struct{}{})
 }
 
@@ -263,6 +269,7 @@ func (m *Manager) handleUsageRecord(raw []byte) ([]byte, error) {
 
 	rule, _ := cfg.ResolveKeyRule(rec.APIKey)
 	m.usageStore.ObserveHostUsageRecord(rec, rule.Name)
+	m.auditUsage(rec)
 	return okEnvelope(struct{}{})
 }
 

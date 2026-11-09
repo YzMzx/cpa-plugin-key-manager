@@ -120,6 +120,11 @@ func RegisterManagementEndpoints() ([]pluginapi.ManagementRoute, []pluginapi.Res
 		},
 	}
 
+	routes = append(routes,
+		pluginapi.ManagementRoute{Method: http.MethodGet, Path: RouteManagementAudit, Description: "List retained redacted client request audit metadata (administrators only)."},
+		pluginapi.ManagementRoute{Method: http.MethodGet, Path: RouteManagementAuditDetail, Description: "Read one retained redacted request body (administrators only)."},
+		pluginapi.ManagementRoute{Method: http.MethodGet, Path: RouteManagementAuditStatus, Description: "Read audit retention limits and safe storage health."},
+	)
 	resources := []pluginapi.ResourceRoute{
 		{
 			Path:        ResourcePathUI,
@@ -176,6 +181,9 @@ func HandleManagementRequest(ctx context.Context, provider SnapshotProvider, req
 		return jsonError(http.StatusUnauthorized, "unauthorized: valid CLIProxyAPI Management Key is required")
 	}
 
+	if path == "/v0/management"+RouteManagementAudit || strings.HasPrefix(path, "/v0/management"+RouteManagementAudit+"/") {
+		return handleAuditRequest(ctx, provider, req)
+	}
 	switch {
 	case strings.HasSuffix(path, RouteManagementOverview):
 		if method != http.MethodGet {

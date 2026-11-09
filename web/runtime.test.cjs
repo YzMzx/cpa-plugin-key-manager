@@ -8,6 +8,7 @@ const State = require("./state.js");
 const Format = require("./formatters.js");
 const Auth = require("./auth.js");
 const Events = require("./events.js");
+const Audit = require("./audit.js");
 const response = (body, status = 200, type = "application/json") => new Response(typeof body === "string" ? body : JSON.stringify(body), { status, headers: { "Content-Type": type } });
 const overview = (extra = {}) => ({ summary: { total_tokens: 12, total_requests: 2, total_cost_nano_usd: 10 }, keys: [], usage: { keys: {}, accounts: {} }, default_policy: {}, available_models: [], auth_files: [], timezone: "UTC", rules_revision: 4, ...extra });
 const ledger = (extra = {}) => ({ series: [], models: [], requests: 2, total_tokens: 12, from: "2026-01-01T00:00:00Z", to: "2026-01-02T00:00:00Z", ...extra });
@@ -19,11 +20,11 @@ function environment(fetchImpl = async () => response(overview())) {
   const listeners = new Map();
   const classes = () => { const set = new Set(); return { add: (...items) => items.forEach(item => set.add(item)), remove: (...items) => items.forEach(item => set.delete(item)), contains: item => set.has(item), toggle: (item, force) => { const add = force === undefined ? !set.has(item) : force; if (add) set.add(item); else set.delete(item); return add; } }; };
   const element = id => {
-    if (!elements.has(id)) elements.set(id, { id, value: "", textContent: "", innerHTML: "", disabled: false, checked: false, style: {}, dataset: {}, classList: classes(), focus() {}, setSelectionRange() {}, getAttribute() { return null; }, addEventListener() {}, remove() {} });
+    if (!elements.has(id)) elements.set(id, { id, value: "", textContent: "", innerHTML: "", disabled: false, checked: false, style: {}, dataset: {}, classList: classes(), focus() {}, setSelectionRange() {}, getAttribute() { return null; }, addEventListener() {}, replaceChildren() { this.textContent = ""; this.children = []; }, appendChild(child) { (this.children ||= []).push(child); return child; }, remove() {} });
     return elements.get(id);
   };
   const doc = { body: { classList: classes() }, getElementById: element,
-    createElement: () => ({ className: "", style: {}, textContent: "", remove() {} }),
+    createElement: () => ({ className: "", style: {}, dataset: {}, textContent: "", children: [], appendChild(child) { this.children.push(child); return child; }, replaceChildren() { this.children = []; this.textContent = ""; }, remove() {} }),
     querySelectorAll: selector => {
       if (selector.includes(".modal-backdrop input")) return [element("kmApiKey"), element("kmOriginalApiKey"), element("pmModelInput")];
       if (selector.includes("#adminWorkspace tbody")) return [element("crudKeysTableBody"), element("dashKeyTableBody"), element("dashAccountTableBody"), element("modelPopover")];
@@ -37,7 +38,7 @@ function environment(fetchImpl = async () => response(overview())) {
   const win = { location: { href: "http://localhost/ui", origin: "http://localhost", host: "localhost" }, history: { replaceState() {} }, addEventListener() {}, localStorage: storage };
   win.parent = win;
   const context = vm.createContext({ window: win, document: doc, location: win.location, navigator: { userAgent: "test", clipboard: { writeText: async () => {} } }, sessionStorage: storage,
-    KeyGuardClient: Client, KeyGuardState: State, KeyGuardFormat: Format, KeyGuardAuth: Auth, KeyGuardEvents: Events,
+    KeyGuardClient: Client, KeyGuardState: State, KeyGuardFormat: Format, KeyGuardAuth: Auth, KeyGuardEvents: Events, KeyGuardAudit: Audit,
     fetch: fetchImpl, Headers, Response, AbortController, URL, URLSearchParams, TextEncoder, TextDecoder, atob, console, confirm: () => true,
     setTimeout: (fn, ms) => { const timer = setTimeout(fn, ms); timer.unref(); return timer; }, clearTimeout });
   // Skip only automatic page boot. All production functions and delegated bindings execute unchanged.
@@ -342,4 +343,34 @@ test("overview exposes persistence and accounting failures instead of hiding the
  env.context.health = overview({diagnostics:{persistence:{last_error:"disk full", accounting_error:"aggregate overflow"}}});
  const message = env.run("overviewHealthMessage(health)");
  assert.match(message,/disk full/); assert.match(message,/aggregate overflow/);
+});
+
+test("audit tab uses administrator endpoints and tab exit cancels its detail", async () => {
+ const status = {enabled:true,retention_days:7,max_records:100,max_body_bytes:1024,max_total_bytes:10000};
+ const detail = deferred(); const calls = [];
+ const env = environment(async (url, opts) => { calls.push({url,opts}); if(url.includes("/audit/detail"))return detail.promise; if(url.endsWith("/audit/status"))return response({status}); if(url.includes("/audit?"))return response({items:[{id:"audit-a",request_id:"req-a",ip_source:"unknown"}],total:1,limit:50,offset:0,status}); if(url.includes("/ledger"))return response(ledger()); return response(overview()); });
+ env.run('switchAdminTab("tab-audit")'); await tick(); await tick();
+ assert.ok(calls.some(call=>call.url.includes("/audit?limit=50&offset=0")));
+ const pending = env.run('auditView.showDetail("audit-a")'); const request = calls.find(call=>call.url.includes("/audit/detail"));
+ env.run('switchAdminTab("tab-pricing")'); assert.ok(request.opts.signal.aborted);
+ detail.resolve(response({record:{id:"audit-a",request_body:{secret:"late"}},status})); await pending;
+ assert.equal(env.element("auditRequestBody").textContent, ""); assert.equal(env.element("auditDetail").classList.contains("hidden"),true);
+ assert.ok(calls.filter(call=>call.url.includes("/audit")).every(call=>call.url.startsWith("/v0/management/")&&call.opts.method==="GET"));
+});
+
+test("global refresh reloads active audit tab and lock clears its detail and filters", async () => {
+ const status = {enabled:true,retention_days:7,max_records:100,max_body_bytes:1024,max_total_bytes:10000}; const calls=[];
+ const env=environment(async(url)=>{calls.push(url);if(url.endsWith("/audit/status"))return response({status});if(url.includes("/audit/detail"))return response({record:{id:"audit-a",body_state:"stored",request_body:{messages:["sensitive"]}},status});if(url.includes("/audit?"))return response({items:[{id:"audit-a"}],total:1,limit:50,offset:0,status});if(url.includes("/ledger"))return response(ledger());return response(overview());});
+ env.run('switchAdminTab("tab-audit")');await tick();await tick();await env.run('auditView.showDetail("audit-a")');
+ env.element("auditTraceId").value="sensitive-trace"; const before=calls.filter(url=>url.includes("/audit?")).length;
+ await env.run("refreshAllData()"); assert.ok(calls.filter(url=>url.includes("/audit?")).length>before);
+ await env.run('auditView.showDetail("audit-a")');assert.match(env.element("auditRequestBody").textContent,/sensitive/);
+ env.run('lockAdminWorkspace("expired")');assert.equal(env.element("auditRequestBody").textContent,"");assert.equal(env.element("auditTraceId").value,"");assert.equal(env.element("auditDetail").classList.contains("hidden"),true);
+});
+
+test("audit 401 clears detail and filters through the production API auth lifecycle", async () => {
+ const status={enabled:true,retention_days:7,max_records:100,max_body_bytes:1024,max_total_bytes:10000};let detailRequests=0;
+ const env=environment(async url=>{if(url.endsWith("/audit/status"))return response({status});if(url.includes("/audit?"))return response({items:[{id:"audit-a"},{id:"audit-b"}],total:2,limit:50,offset:0,status});if(url.includes("/audit/detail")){detailRequests++;return detailRequests===1?response({record:{id:"audit-a",body_state:"stored",request_body:{private:"conversation"}},status}):response("unauthorized",401,"text/plain");}return response(overview());});
+ env.run('switchAdminTab("tab-audit")');await tick();await tick();await env.run('auditView.showDetail("audit-a")');assert.match(env.element("auditRequestBody").textContent,/conversation/);
+ env.element("auditIP").value="sensitive-IP";await env.run('auditView.showDetail("audit-b")');assert.equal(env.run("activeManagementKey"),"");assert.equal(env.element("auditRequestBody").textContent,"");assert.equal(env.element("auditIP").value,"");assert.equal(env.element("auditDetail").classList.contains("hidden"),true);
 });
