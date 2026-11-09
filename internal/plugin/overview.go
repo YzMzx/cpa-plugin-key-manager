@@ -120,19 +120,20 @@ func (m *Manager) BuildAdminOverview(hostCallbackID string) map[string]any {
 	}
 
 	return map[string]any{
-		"timezone":         cfg.Storage.Timezone,
-		"rules_revision":   m.RulesRevision(),
-		"host_sync":        m.HostSyncStatus(),
-		"summary":          summary,
-		"keys":             keysCopy,
-		"default_policy":   dpCopy,
-		"usage":            snap,
-		"auth_files":       authFiles,
-		"available_models": availableModels,
-		"pricing_status":   pStatus,
-		"rules_file":       cfg.Storage.RulesFile,
-		"diagnostics":      m.BuildPersistenceDiagnostics(),
-		"audit_status":     m.AuditStatus(),
+		"timezone":          cfg.Storage.Timezone,
+		"rules_revision":    m.RulesRevision(),
+		"host_sync":         m.HostSyncStatus(),
+		"summary":           summary,
+		"keys":              keysCopy,
+		"default_policy":    dpCopy,
+		"usage":             snap,
+		"auth_files":        authFiles,
+		"available_models":  availableModels,
+		"pricing_status":    pStatus,
+		"rules_file":        cfg.Storage.RulesFile,
+		"diagnostics":       m.BuildPersistenceDiagnostics(),
+		"audit_status":      m.AuditStatus(),
+		"audit_key_options": m.AuditKeyOptions(),
 	}
 }
 

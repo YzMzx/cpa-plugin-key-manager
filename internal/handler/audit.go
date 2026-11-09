@@ -30,6 +30,9 @@ func handleAuditRequest(ctx context.Context, provider any, req pluginapi.Managem
 	if !strings.HasPrefix(req.Path, "/v0/management/key-guard/") || !hasManagementCredential(req) {
 		return jsonError(http.StatusUnauthorized, "management authentication required")
 	}
+	if req.Path == "/v0/management"+RouteManagementAuditStorage || req.Path == "/v0/management"+RouteManagementAuditCleanupPreview || req.Path == "/v0/management"+RouteManagementAuditCleanup {
+		return HandleAuditCleanupRequest(ctx, provider, req)
+	}
 	if strings.ToUpper(req.Method) != http.MethodGet {
 		return jsonError(http.StatusMethodNotAllowed, "method not allowed")
 	}
@@ -53,7 +56,11 @@ func handleAuditRequest(ctx context.Context, provider any, req pluginapi.Managem
 	if path != "/v0/management"+RouteManagementAudit {
 		return jsonError(http.StatusNotFound, "unknown audit endpoint")
 	}
-	q := audit.Query{RequestID: queryValue(req, "request_id"), TraceID: queryValue(req, "trace_id"), KeyFingerprint: queryValue(req, "key_fingerprint"), Model: queryValue(req, "model"), IP: queryValue(req, "ip"), Outcome: queryValue(req, "outcome"), Limit: 50}
+	// The selector sends only an opaque fingerprint, never a raw key in a URL.
+	if queryValue(req, "api_key") != "" {
+		return jsonError(http.StatusBadRequest, "use key_fingerprint instead of api_key")
+	}
+	q := audit.Query{RequestID: queryValue(req, "request_id"), TraceID: queryValue(req, "trace_id"), KeyFingerprint: queryValue(req, "key_fingerprint"), KeyLabel: queryValue(req, "key_label"), Model: queryValue(req, "model"), IP: queryValue(req, "ip"), Outcome: queryValue(req, "outcome"), Limit: 50}
 	var err error
 	if value := queryValue(req, "limit"); value != "" {
 		q.Limit, err = strconv.Atoi(value)

@@ -42,8 +42,8 @@ func NewStore(db *sqlitestore.DB, cfg Config) *Store {
 	if cfg.MaxBodyBytes <= 0 {
 		cfg.MaxBodyBytes = DefaultMaxBodyBytes
 	}
-	if cfg.MaxBodyBytes > 1<<20 {
-		cfg.MaxBodyBytes = 1 << 20
+	if cfg.MaxBodyBytes > MaxRequestBodyBytes {
+		cfg.MaxBodyBytes = MaxRequestBodyBytes
 	}
 	if cfg.MaxTotalBytes <= 0 {
 		cfg.MaxTotalBytes = DefaultMaxTotalBytes
@@ -204,9 +204,10 @@ const listColumns = "id,request_id,trace_id,started_at,completed_at,method,path,
 func recordArgs(r Record) []any {
 	return []any{r.ID, r.RequestID, r.TraceID, r.StartedAt, r.CompletedAt, r.Method, r.Path, r.ClientIP, r.PeerIP, r.IPSource, r.IPNote, r.KeyLabel, r.KeyFingerprint, r.RequestedModel, r.ServedModel, r.Protocol, r.Stream, r.Outcome, r.StatusCode, r.DurationMS, r.BodyState, r.BodyTruncated, r.RequestBody, r.BodySHA256, r.InputTokens, r.OutputTokens, r.TotalTokens}
 }
-func scanRecord(scanner interface{ Scan(...any) error }) (Record, error) {
+func scanRecord(scanner interface{ Scan(...any) error }, extra ...any) (Record, error) {
 	var r Record
-	err := scanner.Scan(&r.ID, &r.RequestID, &r.TraceID, &r.StartedAt, &r.CompletedAt, &r.Method, &r.Path, &r.ClientIP, &r.PeerIP, &r.IPSource, &r.IPNote, &r.KeyLabel, &r.KeyFingerprint, &r.RequestedModel, &r.ServedModel, &r.Protocol, &r.Stream, &r.Outcome, &r.StatusCode, &r.DurationMS, &r.BodyState, &r.BodyTruncated, &r.RequestBody, &r.BodySHA256, &r.InputTokens, &r.OutputTokens, &r.TotalTokens)
+	targets := []any{&r.ID, &r.RequestID, &r.TraceID, &r.StartedAt, &r.CompletedAt, &r.Method, &r.Path, &r.ClientIP, &r.PeerIP, &r.IPSource, &r.IPNote, &r.KeyLabel, &r.KeyFingerprint, &r.RequestedModel, &r.ServedModel, &r.Protocol, &r.Stream, &r.Outcome, &r.StatusCode, &r.DurationMS, &r.BodyState, &r.BodyTruncated, &r.RequestBody, &r.BodySHA256, &r.InputTokens, &r.OutputTokens, &r.TotalTokens}
+	err := scanner.Scan(append(targets, extra...)...)
 	return r, err
 }
 
@@ -272,13 +273,15 @@ func (s *Store) Complete(ctx context.Context, c Completion) error {
 		return s.fail(ErrUnavailable)
 	}
 	defer tx.Rollback()
-	r, err := scanRecord(tx.QueryRowContext(ctx, "SELECT "+columns+" FROM client_request_audit WHERE request_id=? AND started_at>=?", c.RequestID, s.cutoff(now)))
+	var storedLogicalBytes int64
+	r, err := scanRecord(tx.QueryRowContext(ctx, "SELECT "+listColumns+",logical_bytes FROM client_request_audit WHERE request_id=? AND started_at>=?", c.RequestID, s.cutoff(now)), &storedLogicalBytes)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
 	if err != nil {
 		return s.fail(ErrUnavailable)
 	}
+	previousMetadataBytes := logicalBytes(r)
 	if c.Outcome != "" {
 		if r.CompletedAt != 0 || r.Outcome == "rejected" {
 			return nil
@@ -309,7 +312,7 @@ func (s *Store) Complete(ctx context.Context, c Completion) error {
 		r.TotalTokens = c.TotalTokens
 	}
 
-	_, err = tx.ExecContext(ctx, "UPDATE client_request_audit SET trace_id=?,completed_at=?,served_model=?,outcome=?,status_code=?,duration_ms=?,input_tokens=?,output_tokens=?,total_tokens=?,logical_bytes=? WHERE id=?", r.TraceID, r.CompletedAt, r.ServedModel, r.Outcome, r.StatusCode, r.DurationMS, r.InputTokens, r.OutputTokens, r.TotalTokens, logicalBytes(r), r.ID)
+	_, err = tx.ExecContext(ctx, "UPDATE client_request_audit SET trace_id=?,completed_at=?,served_model=?,outcome=?,status_code=?,duration_ms=?,input_tokens=?,output_tokens=?,total_tokens=?,logical_bytes=? WHERE id=?", r.TraceID, r.CompletedAt, r.ServedModel, r.Outcome, r.StatusCode, r.DurationMS, r.InputTokens, r.OutputTokens, r.TotalTokens, storedLogicalBytes+logicalBytes(r)-previousMetadataBytes, r.ID)
 	if err != nil {
 		return s.fail(ErrUnavailable)
 	}
@@ -406,6 +409,12 @@ func (s *Store) List(ctx context.Context, q Query) (ListResult, error) {
 	if q.Offset < 0 || q.Offset > MaxQueryOffset || q.From < 0 || q.To < 0 || (q.From != 0 && q.To != 0 && q.To < q.From) {
 		return result, ErrInvalidQuery
 	}
+	if q.KeyFingerprint != "" {
+		if !validID(q.KeyFingerprint) {
+			return result, ErrInvalidQuery
+		}
+		q.KeyFingerprint = strings.ToLower(q.KeyFingerprint)
+	}
 	where := "started_at>=?"
 	args := []any{s.cutoff(time.Now().UTC())}
 	for _, f := range []struct{ column, value string }{{"request_id", q.RequestID}, {"trace_id", q.TraceID}, {"key_fingerprint", q.KeyFingerprint}, {"client_ip", q.IP}, {"outcome", q.Outcome}} {
@@ -417,11 +426,19 @@ func (s *Store) List(ctx context.Context, q Query) (ListResult, error) {
 			args = append(args, f.value)
 		}
 	}
+	if q.KeyLabel != "" {
+		if !validText(q.KeyLabel, 1024) {
+			return result, ErrInvalidQuery
+		}
+		where += " AND instr(lower(key_label),lower(?))>0"
+		args = append(args, q.KeyLabel)
+	}
 	if q.Model != "" {
 		if !validText(q.Model, 1024) {
 			return result, ErrInvalidQuery
 		}
-		where += " AND (requested_model=? OR served_model=?)"
+		// instr treats %, _ and SQL-looking input as literal text, not patterns.
+		where += " AND (instr(lower(requested_model),lower(?))>0 OR instr(lower(served_model),lower(?))>0)"
 		args = append(args, q.Model, q.Model)
 	}
 	if q.From > 0 {

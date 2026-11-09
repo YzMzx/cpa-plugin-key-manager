@@ -49,6 +49,7 @@ func (m *Manager) configureAudit(cfg AuditConfig) {
 	}()
 }
 func (m *Manager) stopAudit() {
+	m.clearAuditCleanup()
 	m.auditMu.Lock()
 	runtime := m.auditRuntime
 	m.auditRuntime = nil

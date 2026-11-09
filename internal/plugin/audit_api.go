@@ -2,10 +2,14 @@ package plugin
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/YzMzx/cpa-plugin-key-manager/internal/audit"
+	"github.com/YzMzx/cpa-plugin-key-manager/internal/usage"
 )
 
 func auditRecordView(record audit.Record, detail bool) map[string]any {
@@ -52,4 +56,43 @@ func (m *Manager) AuditDetail(ctx context.Context, id string) (map[string]any, e
 		return nil, err
 	}
 	return map[string]any{"record": auditRecordView(record, true), "status": m.AuditStatus()}, nil
+}
+
+// AuditKeyOptions exposes current configured keys only as irreversible selector
+// values and masked labels. Retained deleted-key options can be derived from audit
+// list metadata by the page without reintroducing raw API keys into URLs.
+func (m *Manager) AuditKeyOptions() []map[string]string {
+	type optionKey struct{ key, name string }
+	m.mu.RLock()
+	keys := make([]optionKey, 0, len(m.cfg.Keys))
+	for _, rule := range m.cfg.Keys {
+		keys = append(keys, optionKey{key: rule.APIKey, name: rule.Name})
+	}
+	adminToken := m.cfg.AdminToken
+	m.mu.RUnlock()
+	options := make([]map[string]string, 0, len(keys))
+	seen := make(map[string]struct{}, len(keys))
+	for _, item := range keys {
+		key := strings.TrimSpace(item.key)
+		if key == "" {
+			continue
+		}
+		digest := sha256.Sum256([]byte(key))
+		value := hex.EncodeToString(digest[:])
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		masked := "***"
+		if len(key) > 2 {
+			masked = usage.MaskAPIKey(key)
+		}
+		name := auditSafeLabel(item.name, key, adminToken)
+		label := masked
+		if name != "" {
+			label = name + " · " + masked
+		}
+		options = append(options, map[string]string{"value": value, "label": label})
+	}
+	return options
 }

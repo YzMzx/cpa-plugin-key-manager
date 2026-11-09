@@ -404,7 +404,7 @@ func TestAuditRecordValidationAndDefaultBounds(t *testing.T) {
 	db, _ := openAuditDB(t)
 	s := NewStore(db, Config{Enabled: true})
 	st := s.Status()
-	if st.RetentionDays != 7 || st.MaxRecords != 10000 || st.MaxBodyBytes != 32768 || st.MaxTotalBytes != 64<<20 {
+	if st.RetentionDays != 7 || st.MaxRecords != 10000 || st.MaxBodyBytes != DefaultMaxBodyBytes || st.MaxTotalBytes != 64<<20 {
 		t.Fatalf("default bounds %+v", st)
 	}
 	for _, mutate := range []func(*Record){func(r *Record) { r.RequestID = "" }, func(r *Record) { r.TraceID = strings.Repeat("x", 257) }, func(r *Record) { r.KeyLabel = strings.Repeat("x", 1025) }, func(r *Record) { r.ClientIP = "bad ip" }, func(r *Record) { r.Outcome = "custom-secret-error" }, func(r *Record) { r.StatusCode = 999 }, func(r *Record) { r.InputTokens = -1 }, func(r *Record) { r.StartedAt = time.Now().Add(time.Hour).UnixMilli() }} {
@@ -444,5 +444,47 @@ func TestAuditPruneDoesNotHideCaptureFailureAndStatusHasTimeout(t *testing.T) {
 	}
 	if status.LastError != ErrUnavailable.Error() {
 		t.Fatal("status did not report bounded timeout")
+	}
+}
+
+func TestAuditStoreRetainsTenMiBJSONWithoutOneMiBClamp(t *testing.T) {
+	db, _ := openAuditDB(t)
+	store := NewStore(db, Config{Enabled: true})
+	if store.Status().MaxBodyBytes != MaxRequestBodyBytes {
+		t.Fatal("store still clamps large body")
+	}
+	body := string(readableJSONBody(MaxRequestBodyBytes))
+	hash := sha256.Sum256([]byte(body))
+	rec := auditRecord("ten-mib-store")
+	rec.RequestBody = body
+	rec.BodySHA256 = hex.EncodeToString(hash[:])
+	mustBegin(t, store, rec)
+	meta := oneRecord(t, store, rec.RequestID)
+	if meta.RequestBody != "" {
+		t.Fatal("metadata list exposed large body")
+	}
+	detail, err := store.Detail(context.Background(), meta.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.BodyState != "stored" || len(detail.RequestBody) != MaxRequestBodyBytes || detail.BodySHA256 != rec.BodySHA256 {
+		t.Fatalf("large record lost: %s %d", detail.BodyState, len(detail.RequestBody))
+	}
+	if err := store.Complete(context.Background(), Completion{RequestID: rec.RequestID, Outcome: "succeeded", StatusCode: 200, ServedModel: "served-large-model"}); err != nil {
+		t.Fatal(err)
+	}
+	after, err := store.Detail(context.Background(), meta.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.RequestBody != body || after.BodySHA256 != rec.BodySHA256 || after.Outcome != "succeeded" {
+		t.Fatal("metadata-only completion changed retained body")
+	}
+	var size int64
+	if err := db.Conn().QueryRow("SELECT logical_bytes FROM client_request_audit WHERE id=?", meta.ID).Scan(&size); err != nil {
+		t.Fatal(err)
+	}
+	if size != logicalBytes(after) {
+		t.Fatalf("completion lost body capacity accounting: got %d want %d", size, logicalBytes(after))
 	}
 }

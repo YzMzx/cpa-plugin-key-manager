@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"fmt"
+	"github.com/YzMzx/cpa-plugin-key-manager/internal/audit"
 	"net/netip"
 	"strings"
 )
@@ -28,7 +29,7 @@ func (c *AuditConfig) normalize() {
 		c.MaxRecords = 10000
 	}
 	if c.MaxBodyBytes == 0 {
-		c.MaxBodyBytes = 32768
+		c.MaxBodyBytes = audit.DefaultMaxBodyBytes
 	}
 	if c.MaxTotalBytes == 0 {
 		c.MaxTotalBytes = 64 << 20
@@ -42,8 +43,8 @@ func (c AuditConfig) validate() error {
 	if c.MaxRecords < 1 || c.MaxRecords > 100000 {
 		return fmt.Errorf("audit.max_records must be between 1 and 100000")
 	}
-	if c.MaxBodyBytes < 256 || c.MaxBodyBytes > 32768 {
-		return fmt.Errorf("audit.max_body_bytes must be between 256 and 32768")
+	if c.MaxBodyBytes < 256 || c.MaxBodyBytes > audit.MaxRequestBodyBytes {
+		return fmt.Errorf("audit.max_body_bytes must be between 256 and 10485760 (10 MiB)")
 	}
 	if c.MaxTotalBytes < 1<<20 || c.MaxTotalBytes > 1<<30 {
 		return fmt.Errorf("audit.max_total_bytes must be between 1 MiB and 1 GiB")

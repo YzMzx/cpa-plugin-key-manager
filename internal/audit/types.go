@@ -4,9 +4,11 @@ package audit
 import "errors"
 
 const (
-	DefaultRetentionDays       = 7
-	DefaultMaxRecords          = 10000
-	DefaultMaxBodyBytes        = 32 * 1024
+	DefaultRetentionDays = 7
+	DefaultMaxRecords    = 10000
+	// MaxRequestBodyBytes bounds decoded input, retained JSON and string values.
+	MaxRequestBodyBytes        = 10 * 1024 * 1024
+	DefaultMaxBodyBytes        = MaxRequestBodyBytes
 	DefaultMaxTotalBytes int64 = 64 * 1024 * 1024
 	MaxQueryLimit              = 100
 	MaxQueryOffset             = 100000
@@ -84,6 +86,7 @@ type Query struct {
 	RequestID      string
 	TraceID        string
 	KeyFingerprint string
+	KeyLabel       string
 	Model          string
 	IP             string
 	Outcome        string

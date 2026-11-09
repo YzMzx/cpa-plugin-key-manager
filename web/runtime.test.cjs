@@ -20,11 +20,11 @@ function environment(fetchImpl = async () => response(overview())) {
   const listeners = new Map();
   const classes = () => { const set = new Set(); return { add: (...items) => items.forEach(item => set.add(item)), remove: (...items) => items.forEach(item => set.delete(item)), contains: item => set.has(item), toggle: (item, force) => { const add = force === undefined ? !set.has(item) : force; if (add) set.add(item); else set.delete(item); return add; } }; };
   const element = id => {
-    if (!elements.has(id)) elements.set(id, { id, value: "", textContent: "", innerHTML: "", disabled: false, checked: false, style: {}, dataset: {}, classList: classes(), focus() {}, setSelectionRange() {}, getAttribute() { return null; }, addEventListener() {}, replaceChildren() { this.textContent = ""; this.children = []; }, appendChild(child) { (this.children ||= []).push(child); return child; }, remove() {} });
+    if (!elements.has(id)) elements.set(id, { id, value: "", textContent: "", innerHTML: "", disabled: false, checked: false, style: {}, dataset: {}, classList: classes(), focus() {}, setSelectionRange() {}, getAttribute() { return null; }, setAttribute() {}, addEventListener() {}, replaceChildren() { this.textContent = ""; this.children = []; }, appendChild(child) { (this.children ||= []).push(child); return child; }, remove() {} });
     return elements.get(id);
   };
   const doc = { body: { classList: classes() }, getElementById: element,
-    createElement: () => ({ className: "", style: {}, dataset: {}, textContent: "", children: [], appendChild(child) { this.children.push(child); return child; }, replaceChildren() { this.children = []; this.textContent = ""; }, remove() {} }),
+    createElement: () => ({ className: "", style: {}, dataset: {}, textContent: "", children: [], classList: classes(), setAttribute() {}, focus() {}, appendChild(child) { this.children.push(child); return child; }, replaceChildren() { this.children = []; this.textContent = ""; }, remove() {} }),
     querySelectorAll: selector => {
       if (selector.includes(".modal-backdrop input")) return [element("kmApiKey"), element("kmOriginalApiKey"), element("pmModelInput")];
       if (selector.includes("#adminWorkspace tbody")) return [element("crudKeysTableBody"), element("dashKeyTableBody"), element("dashAccountTableBody"), element("modelPopover")];
@@ -362,10 +362,10 @@ test("global refresh reloads active audit tab and lock clears its detail and fil
  const status = {enabled:true,retention_days:7,max_records:100,max_body_bytes:1024,max_total_bytes:10000}; const calls=[];
  const env=environment(async(url)=>{calls.push(url);if(url.endsWith("/audit/status"))return response({status});if(url.includes("/audit/detail"))return response({record:{id:"audit-a",body_state:"stored",request_body:{messages:["sensitive"]}},status});if(url.includes("/audit?"))return response({items:[{id:"audit-a"}],total:1,limit:50,offset:0,status});if(url.includes("/ledger"))return response(ledger());return response(overview());});
  env.run('switchAdminTab("tab-audit")');await tick();await tick();await env.run('auditView.showDetail("audit-a")');
- env.element("auditTraceId").value="sensitive-trace"; const before=calls.filter(url=>url.includes("/audit?")).length;
+ env.element("auditKeyLabel").value="sensitive-trace"; const before=calls.filter(url=>url.includes("/audit?")).length;
  await env.run("refreshAllData()"); assert.ok(calls.filter(url=>url.includes("/audit?")).length>before);
  await env.run('auditView.showDetail("audit-a")');assert.match(env.element("auditRequestBody").textContent,/sensitive/);
- env.run('lockAdminWorkspace("expired")');assert.equal(env.element("auditRequestBody").textContent,"");assert.equal(env.element("auditTraceId").value,"");assert.equal(env.element("auditDetail").classList.contains("hidden"),true);
+ env.run('lockAdminWorkspace("expired")');assert.equal(env.element("auditRequestBody").textContent,"");assert.equal(env.element("auditKeyLabel").value,"");assert.equal(env.element("auditDetail").classList.contains("hidden"),true);
 });
 
 test("audit 401 clears detail and filters through the production API auth lifecycle", async () => {
@@ -373,4 +373,21 @@ test("audit 401 clears detail and filters through the production API auth lifecy
  const env=environment(async url=>{if(url.endsWith("/audit/status"))return response({status});if(url.includes("/audit?"))return response({items:[{id:"audit-a"},{id:"audit-b"}],total:2,limit:50,offset:0,status});if(url.includes("/audit/detail")){detailRequests++;return detailRequests===1?response({record:{id:"audit-a",body_state:"stored",request_body:{private:"conversation"}},status}):response("unauthorized",401,"text/plain");}return response(overview());});
  env.run('switchAdminTab("tab-audit")');await tick();await tick();await env.run('auditView.showDetail("audit-a")');assert.match(env.element("auditRequestBody").textContent,/conversation/);
  env.element("auditIP").value="sensitive-IP";await env.run('auditView.showDetail("audit-b")');assert.equal(env.run("activeManagementKey"),"");assert.equal(env.element("auditRequestBody").textContent,"");assert.equal(env.element("auditIP").value,"");assert.equal(env.element("auditDetail").classList.contains("hidden"),true);
+});
+
+test("production API client accepts audit cleanup preview then confirmed apply",async()=>{
+ const auditStatus={enabled:true,retention_days:7,max_records:100,max_body_bytes:10485760,max_total_bytes:67108864};
+ const storage={records:2,logical_bytes:2048,request_body_bytes:1024,max_total_bytes:67108864,db_file_bytes:4096,wal_file_bytes:0};
+ let deleted=0;const env=environment(async(url,opts)=>{
+  if(url.endsWith("/audit/status"))return response({status:auditStatus});
+  if(url.endsWith("/audit/storage"))return response({storage});
+  if(url.includes("/audit?"))return response({items:[],total:0,limit:50,offset:0,status:auditStatus});
+  if(url.endsWith("/audit/cleanup/preview"))return response({ok:true,preview:{token:"preview-token",records:2,logical_bytes:2048,request_body_bytes:1024},storage});
+  if(url.endsWith("/audit/cleanup")){deleted++;return response({ok:true,deleted:{records:2,logical_bytes:2048},storage:{...storage,records:0,logical_bytes:0}});}
+  return response(overview());
+ });
+ env.run('switchAdminTab("tab-audit")');await tick();await tick();
+ env.element("auditCleanupScope").value="all";await env.run("auditView.previewCleanup()");
+ assert.match(env.element("auditCleanupMessage").textContent,/2 条/);assert.equal(deleted,0);
+ env.element("auditCleanupAcknowledge").checked=true;await env.run("auditView.confirmCleanup()");assert.equal(deleted,1);assert.match(env.element("auditCleanupMessage").textContent,/已清理 2 条/);
 });

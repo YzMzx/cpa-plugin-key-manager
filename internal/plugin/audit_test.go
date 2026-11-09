@@ -180,10 +180,10 @@ func TestAuditConfigDefaultsAndBounds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.Audit.isEnabled() || cfg.Audit.RetentionDays != 7 || cfg.Audit.MaxBodyBytes != 32768 || cfg.Audit.MaxRecords != 10000 {
+	if !cfg.Audit.isEnabled() || cfg.Audit.RetentionDays != 7 || cfg.Audit.MaxBodyBytes != audit.DefaultMaxBodyBytes || cfg.Audit.MaxRecords != 10000 {
 		t.Fatal("unsafe audit defaults")
 	}
-	for _, raw := range []string{"audit: {retention_days: -1}", "audit: {max_body_bytes: 999999}", "audit: {trusted_proxies: [bad]}", "audit: {max_total_bytes: 10}"} {
+	for _, raw := range []string{"audit: {retention_days: -1}", "audit: {max_body_bytes: 10485761}", "audit: {trusted_proxies: [bad]}", "audit: {max_total_bytes: 10}"} {
 		if _, err := ParseConfigYAML([]byte(raw)); err == nil {
 			t.Fatalf("invalid audit settings accepted: %s", raw)
 		}
@@ -288,5 +288,62 @@ func TestAuditCaptureFailureRemainsVisibleAfterSuccessfulWrite(t *testing.T) {
 	status := m.AuditStatus()
 	if status["capture_failures"].(uint64) != 1 || status["last_capture_failure_at"] == nil {
 		t.Fatal("capture failure hidden by successful write")
+	}
+}
+
+func TestAuditLongPromptFlowsThroughCaptureSchemaAndDetail(t *testing.T) {
+	m := transactionManager(t)
+	if _, err := m.UpsertKeyRuleFromJSON([]byte(`{"api_key":"client-audit-secret"}`)); err != nil {
+		t.Fatal(err)
+	}
+	prompt := strings.Repeat("这是长文本提示词 ", 60000) + " private-marker"
+	body, _ := json.Marshal(map[string]any{"messages": []any{map[string]string{"role": "user", "content": prompt}}})
+	if len(body) <= 1<<20 {
+		t.Fatal("must exceed old store clamp")
+	}
+	req := pluginapi.RequestInterceptRequest{RequestID: "long-prompt", SourceFormat: "openai", Model: "audit-model", RequestedModel: "audit-model", Headers: http.Header{"Authorization": {"Bearer client-audit-secret"}}, Metadata: map[string]any{"request_path": "/v1/chat/completions"}, Body: body}
+	raw, _ := json.Marshal(req)
+	if _, err := m.handleRequestInterceptBefore(raw); err != nil {
+		t.Fatal(err)
+	}
+	records := auditRecords(t, m)
+	if len(records) != 1 {
+		t.Fatal("missing long audit")
+	}
+	detail, err := m.AuditDetail(context.Background(), records[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := detail["record"].(map[string]any)
+	if record["body_state"] != "stored" || len(record["request_body"].(string)) <= 1<<20 {
+		t.Fatal("capture or schema still has hidden limit")
+	}
+}
+
+func TestAuditBusyLargeCaptureKeepsMetadataWithoutWaiting(t *testing.T) {
+	m := transactionManager(t)
+	m.auditLargeCapture <- struct{}{}
+	defer func() { <-m.auditLargeCapture }()
+	body, _ := json.Marshal(map[string]any{"messages": []any{map[string]string{"role": "user", "content": strings.Repeat("长文本 ", 60000)}}})
+	req := pluginapi.RequestInterceptRequest{RequestID: "large-busy", SourceFormat: "openai", Model: "m", Body: body, Metadata: map[string]any{"request_path": "/v1/chat/completions"}}
+	m.beginAudit(req, "", "")
+	records := auditRecords(t, m)
+	if len(records) != 1 || records[0].BodyState != "omitted_busy" {
+		t.Fatal("busy large capture not bounded")
+	}
+}
+
+func TestAuditTenMiBConfigurationAndExplicitSmallerCap(t *testing.T) {
+	for _, tc := range []struct {
+		raw  string
+		want int
+	}{{"audit: {max_body_bytes: 10485760}", audit.MaxRequestBodyBytes}, {"audit: {max_body_bytes: 32768}", 32768}} {
+		cfg, err := ParseConfigYAML([]byte(tc.raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.Audit.MaxBodyBytes != tc.want {
+			t.Fatal("explicit body cap not respected")
+		}
 	}
 }

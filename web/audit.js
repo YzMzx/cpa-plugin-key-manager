@@ -9,10 +9,10 @@
   const object = value => value !== null && typeof value === "object" && !Array.isArray(value);
   const integer = value => Number.isSafeInteger(value) && value >= 0;
   const own = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
-  const FILTERS = { request_id: "auditRequestId", trace_id: "auditTraceId", key_fingerprint: "auditKeyFingerprint", model: "auditModel", ip: "auditIP", outcome: "auditOutcome", from: "auditFrom", to: "auditTo" };
+  const FILTERS = { key_fingerprint: "auditKey", key_label: "auditKeyLabel", model: "auditModel", outcome: "auditOutcome", ip: "auditIP" };
   const OUTCOMES = { unknown: "未知", succeeded: "成功", success: "成功", failed: "失败", cancelled: "取消", canceled: "取消", running: "进行中", in_progress: "进行中", pending: "进行中", rejected: "已拒绝" };
   const SOURCES = { host: "host · 宿主", peer: "peer · 直连", trustedproxy: "trustedproxy · 可信代理", unknown: "unknown · 未知" };
-  const BODY_STATES = { omitted_unknown_schema: "未知请求结构，正文已略过", omitted_secret_collision: "敏感内容无法安全替换，正文已略过", omitted_secret_limit: "敏感内容校验超限，正文已略过", omitted_encoding: "编码不支持，正文已略过", omitted_non_json: "非 JSON 正文，已略过", omitted_invalid_json: "JSON 无效，正文已略过", omitted_input_limit: "输入正文超限，已略过", omitted_non_container: "非对象或数组 JSON，已略过", omitted_depth_limit: "JSON 嵌套深度超限，已略过", omitted_element_limit: "JSON 元素数量超限，已略过", omitted_string_limit: "JSON 字符串超限，已略过", omitted_number_limit: "JSON 数字超限，已略过", omitted_ambiguous_json: "JSON 存在歧义，已略过", omitted_output_limit: "脱敏后正文超限，已略过", redacted: "已保存脱敏 JSON", captured: "已保存脱敏 JSON", stored: "已保存脱敏 JSON", omitted: "正文已略过", non_json: "非 JSON 正文，已略过", too_large: "正文超过限制，已略过", empty: "无正文", disabled: "未保存正文", invalid_json: "无法解码 JSON，已略过", unavailable: "正文不可用" };
+  const BODY_STATES = { omitted_busy: "大正文脱敏繁忙，正文已略过", omitted_unknown_schema: "未知请求结构，正文已略过", omitted_secret_collision: "敏感内容无法安全替换，正文已略过", omitted_secret_limit: "敏感内容校验超限，正文已略过", omitted_encoding: "编码不支持，正文已略过", omitted_non_json: "非 JSON 正文，已略过", omitted_invalid_json: "JSON 无效，正文已略过", omitted_input_limit: "输入正文超限，已略过", omitted_non_container: "非对象或数组 JSON，已略过", omitted_depth_limit: "JSON 嵌套深度超限，已略过", omitted_element_limit: "JSON 元素数量超限，已略过", omitted_string_limit: "JSON 字符串超限，已略过", omitted_number_limit: "JSON 数字超限，已略过", omitted_ambiguous_json: "JSON 存在歧义，已略过", omitted_output_limit: "脱敏后正文超限，已略过", redacted: "已保存脱敏 JSON", captured: "已保存脱敏 JSON", stored: "已保存脱敏 JSON", omitted: "正文已略过", non_json: "非 JSON 正文，已略过", too_large: "正文超过限制，已略过", empty: "无正文", disabled: "未保存正文", invalid_json: "无法解码 JSON，已略过", unavailable: "正文不可用" };
   function validateStatus(value) {
     if (!object(value) || typeof value.enabled !== "boolean" || !["retention_days", "max_records", "max_body_bytes", "max_total_bytes"].every(key => integer(value[key]))) throw new Error("审计状态响应格式无效");
     return value;
@@ -52,6 +52,9 @@
     const raw = record.request_body;
     if (record.body_truncated || !["stored", "redacted", "captured"].includes(record.body_state)) return { state, json: "正文已略过或未确认可展示的脱敏 JSON。" };
     if (raw === undefined || raw === null || raw === "") return { state, json: "无可显示的请求正文（可能为空、非 JSON 或已超过保存限制）。" };
+    // Large retained JSON is already validated by the backend. Keep its compact
+    // representation instead of allocating another parsed tree and pretty copy.
+    if (typeof raw === "string" && raw.length > 256 * 1024) return { state: state + " · 大正文按紧凑 JSON 展示", json: raw };
     try { return { state, json: JSON.stringify(typeof raw === "string" ? JSON.parse(raw) : raw, null, 2) }; }
     catch (_) { return { state: state + " · JSON 解码失败", json: "正文不是可解码的 JSON，已略过展示。" }; }
   }
@@ -64,10 +67,8 @@
     const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
     for (const name of Object.keys(FILTERS)) {
       const value = String(filters[name] || "").trim();
-      if (name === "from" || name === "to") dateFilter(value);
       if (value) params.set(name, value);
     }
-    if (filters.from && filters.to && Date.parse(filters.to) <= Date.parse(filters.from)) throw new Error("审计结束时间必须晚于开始时间");
     return params.toString();
   }
   function bytes(value) {
@@ -76,7 +77,7 @@
     if (value >= 1024) return (value / 1024).toFixed(1) + " KiB";
     return value + " B";
   }
-  function create({ document: doc, request, gate, isAuthenticated, getTimezone = () => "Asia/Shanghai" }) {
+  function create({ document: doc, request, gate, isAuthenticated, getTimezone = () => "Asia/Shanghai", getKeyOptions = () => [] }) {
     let active = false;
     let selectedId = "";
     let status = null;
@@ -86,6 +87,11 @@
     let offset = 0;
     let loading = false;
     let filters = {};
+    let returnFocus = null;
+    let cleanupPreview = null;
+    let cleanupBusy = false;
+    const rowButtons = new Map();
+    const rowsById = new Map();
     const element = id => doc.getElementById(id);
     const set = (id, value) => { const node = element(id); if (node) node.textContent = value; };
     const clear = node => { if (node) node.replaceChildren(); };
@@ -95,6 +101,21 @@
       if (!status) return;
       const description = (status.enabled ? "审计已启用" : "审计未启用，不会生成新记录") + " · 保留 " + status.retention_days + " 天 · 最多 " + status.max_records + " 条 · 单正文 " + bytes(status.max_body_bytes) + " · 总量上限 " + bytes(status.max_total_bytes);
       set("auditStatus", description + (status.warning ? " · " + String(status.warning) : "") + (status.last_error ? " · 审计存储异常：" + String(status.last_error) : "") + (integer(status.capture_failures) && status.capture_failures > 0 ? " · 本次运行采集失败 " + status.capture_failures + " 次（可能有记录或终态缺失）" : ""));
+    }
+    function renderKeyOptions() {
+      const select = element("auditKey");
+      const chosen = filters.key_fingerprint || select.value || "";
+      const options = new Map();
+      const configured = getKeyOptions();
+      if (Array.isArray(configured)) for (const option of configured) {
+        if (option && typeof option.value === "string" && option.value) options.set(option.value, text(option.label, option.value.slice(0, 12)));
+      }
+      for (const record of items) if (record.key_fingerprint && !options.has(record.key_fingerprint)) options.set(record.key_fingerprint, text(record.key_label, "历史密钥") + " · " + record.key_fingerprint.slice(0, 12));
+      if (chosen && !options.has(chosen)) options.set(chosen, "已选密钥 · " + chosen.slice(0, 12));
+      clear(select);
+      const all = doc.createElement("option"); all.value = ""; all.textContent = "全部 API Key"; select.appendChild(all);
+      for (const [value, label] of options) { const option = doc.createElement("option"); option.value = value; option.textContent = label; select.appendChild(option); }
+      select.value = chosen;
     }
     function renderPagination() {
       const page = total ? Math.floor(offset / limit) + 1 : 1;
@@ -106,7 +127,7 @@
     }
     function renderList() {
       if (!items.length) { messageRow(status && !status.enabled ? "暂无记录；审计未启用" : "没有匹配的审计记录"); renderPagination(); return; }
-      const body = element("auditListBody"); clear(body);
+      const body = element("auditListBody"); clear(body); rowButtons.clear(); rowsById.clear();
       for (const record of items) {
         const row = doc.createElement("tr");
         cell(row, timestamp(record.started_at, getTimezone()), "cell-nowrap");
@@ -118,16 +139,44 @@
         cell(row, (label(OUTCOMES, record.outcome, "未知")) + " / " + (integer(record.status_code) && record.status_code > 0 ? record.status_code : "未知"), "cell-nowrap");
         cell(row, typeof record.duration_ms === "number" && Number.isFinite(record.duration_ms) && record.duration_ms >= 0 ? record.duration_ms.toFixed(1) + " ms" : "未知", "cell-nowrap");
         cell(row, (label(BODY_STATES, record.body_state, "未知正文状态")) + (record.body_truncated ? " · 超限略过" : ""), "audit-list-cell");
-        const action = cell(row, ""); const button = doc.createElement("button"); button.type = "button"; button.className = "btn btn-sm"; button.dataset.auditId = record.id; button.textContent = "只读详情"; action.appendChild(button);
+        const action = cell(row, ""); const button = doc.createElement("button"); button.type = "button"; button.className = "btn btn-sm"; button.dataset.auditId = record.id; button.textContent = "只读详情"; button.setAttribute("aria-controls", "auditDetailPanel"); button.setAttribute("aria-expanded", "false"); action.appendChild(button); rowButtons.set(record.id, button); rowsById.set(record.id, row);
         body.appendChild(row);
       }
       renderPagination();
     }
-    function clearDetail() {
+    function drawerState() {
+      const index = items.findIndex(record => record.id === selectedId);
+      set("auditDetailPosition", index < 0 ? "" : "本页第 " + (index + 1) + " / " + items.length + " 条 · Esc 关闭");
+      element("auditDetailPrev").disabled = index <= 0;
+      element("auditDetailNext").disabled = index < 0 || index >= items.length - 1;
+      for (const [id, button] of rowButtons) button.setAttribute("aria-expanded", String(id === selectedId));
+      for (const [id, row] of rowsById) { if (id === selectedId) row.classList.add("audit-row-selected"); else row.classList.remove("audit-row-selected"); }
+    }
+    function clearDetail(restoreFocus = false) {
       gate.cancel("audit-detail"); selectedId = "";
       element("auditDetail").classList.add("hidden");
-      for (const id of ["auditDetailMessage", "auditRequestBody", "auditBodyState", "auditBodyHash"]) set(id, "");
-      clear(element("auditDetailMetadata"));
+      if (doc.body) doc.body.classList.remove("audit-detail-open");
+      for (const id of ["auditDetailMessage", "auditRequestBody", "auditBodyState", "auditBodyHash", "auditDetailPosition"]) set(id, "");
+      clear(element("auditDetailMetadata")); drawerState();
+      const target = returnFocus; returnFocus = null;
+      if (restoreFocus && active && isAuthenticated() && target && target.isConnected !== false && typeof target.focus === "function") target.focus({ preventScroll: true });
+    }
+    function shiftDetail(delta) {
+      const index = items.findIndex(record => record.id === selectedId);
+      const next = index + delta;
+      if (index >= 0 && next >= 0 && next < items.length) return showDetail(items[next].id, null, true);
+      return Promise.resolve();
+    }
+    function handleDrawerKey(event) {
+      if (!selectedId || element("auditDetail").classList.contains("hidden")) return;
+      if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); clearDetail(true); return; }
+      if (event.key !== "Tab") return;
+      const panel = element("auditDetailPanel");
+      const focusable = typeof panel.querySelectorAll === "function" ? Array.from(panel.querySelectorAll('button:not([disabled]),a[href],input:not([disabled]),select:not([disabled]),textarea:not([disabled]),summary,[tabindex="0"]')) : [];
+      if (!focusable.length) { event.preventDefault(); panel.focus({ preventScroll: true }); return; }
+      const first = focusable[0], last = focusable[focusable.length - 1];
+      if (event.shiftKey && (doc.activeElement === first || !panel.contains(doc.activeElement))) { event.preventDefault(); last.focus({ preventScroll: true }); }
+      else if (!event.shiftKey && (doc.activeElement === last || !panel.contains(doc.activeElement))) { event.preventDefault(); first.focus({ preventScroll: true }); }
     }
     function renderDetail(record) {
       const metadata = element("auditDetailMetadata"); clear(metadata);
@@ -143,6 +192,71 @@
       ];
       for (const [label, value] of rows) { const dt = doc.createElement("dt"); dt.textContent = label; const dd = doc.createElement("dd"); dd.textContent = text(value); metadata.appendChild(dt); metadata.appendChild(dd); }
       const body = bodyView(record); set("auditBodyState", body.state); set("auditRequestBody", body.json); set("auditBodyHash", text(record.body_sha256, "未知 / 未保存脱敏内容哈希"));
+    }
+    function renderStorage(value) {
+      if (!object(value) || !integer(value.records) || !integer(value.logical_bytes) || !integer(value.max_total_bytes)) throw new Error("占用统计响应格式无效");
+      const percent = value.max_total_bytes ? Math.min(100, value.logical_bytes / value.max_total_bytes * 100).toFixed(1) : "0.0";
+      set("auditStorageSummary", value.records + " 条 · 审计逻辑占用 " + bytes(value.logical_bytes) + " / " + bytes(value.max_total_bytes) + "（" + percent + "%）· 正文 " + bytes(value.request_body_bytes) + (integer(value.expired_records) ? " · 已过期 " + value.expired_records + " 条" : ""));
+      set("auditStoragePhysical", "共享数据库文件 " + bytes(value.db_file_bytes) + " · WAL " + bytes(value.wal_file_bytes) + "（含规则、用量等；清理审计不保证文件立即缩小）");
+    }
+    async function loadStorage() {
+      if (!active || !isAuthenticated()) return;
+      const ticket = gate.begin("audit-storage"); element("auditStorageRefresh").disabled = true;
+      try {
+        const payload = await request(BASE + "/storage", { method: "GET", signal: ticket.signal });
+        if (ticket.current() && active && isAuthenticated()) renderStorage(payload.storage);
+      } catch (error) { if (ticket.current() && active && isAuthenticated() && error.name !== "AbortError") set("auditStorageSummary", "占用计算失败：" + error.message); }
+      finally { if (ticket.current()) element("auditStorageRefresh").disabled = false; ticket.finish(); }
+    }
+    function resetCleanupPreview(message = "先预览影响范围，再确认执行；只清理审计，不影响密钥规则和用量账本。") {
+      gate.cancel("audit-cleanup-preview"); cleanupPreview = null;
+      if (!cleanupBusy) element("auditCleanupPreview").disabled = false;
+      element("auditCleanupAcknowledge").checked = false; element("auditCleanupConfirm").disabled = true;
+      element("auditCleanupConfirmation").classList.add("hidden"); set("auditCleanupMessage", message);
+    }
+    function cleanupSelection() {
+      const choice = element("auditCleanupScope").value || "expired";
+      if (choice === "expired" || choice === "all") return { scope: choice };
+      if (["1d", "3d", "7d"].includes(choice)) return { scope: "before", before: new Date(Date.now() - Number(choice.slice(0, -1)) * 86400000).toISOString() };
+      if (choice === "custom") {
+        const before = element("auditCleanupBefore").value.trim(); dateFilter(before);
+        if (!before || Date.parse(before) >= Date.now()) throw new Error("请输入含时区且早于当前时间的日期");
+        return { scope: "before", before };
+      }
+      throw new Error("请选择有效的清理范围");
+    }
+    async function previewCleanup() {
+      if (!active || !isAuthenticated() || cleanupBusy) return;
+      resetCleanupPreview();
+      let selection; try { selection = cleanupSelection(); } catch (error) { set("auditCleanupMessage", error.message); return; }
+      const ticket = gate.begin("audit-cleanup-preview"); element("auditCleanupPreview").disabled = true;
+      set("auditCleanupMessage", "正在计算清理范围，尚未删除任何记录…");
+      try {
+        const payload = await request(BASE + "/cleanup/preview", { method: "POST", body: JSON.stringify(selection), signal: ticket.signal });
+        if (!ticket.current() || !active || !isAuthenticated()) return;
+        const value = payload.preview;
+        if (!object(value) || typeof value.token !== "string" || !value.token || !integer(value.records) || !integer(value.logical_bytes)) throw new Error("清理预览响应无效");
+        cleanupPreview = value; if (payload.storage) renderStorage(payload.storage);
+        set("auditCleanupMessage", "将永久删除 " + value.records + " 条审计记录 · 逻辑占用 " + bytes(value.logical_bytes) + " · 正文 " + bytes(value.request_body_bytes) + (value.before ? " · 截止 " + timestamp(value.before, getTimezone()) : "") + "。预览后新增记录不在此次清理范围。");
+        if (value.records > 0) element("auditCleanupConfirmation").classList.remove("hidden");
+      } catch (error) { if (ticket.current() && active && isAuthenticated() && error.name !== "AbortError") resetCleanupPreview("清理预览失败：" + error.message); }
+      finally { if (!cleanupBusy) element("auditCleanupPreview").disabled = false; ticket.finish(); }
+    }
+    async function confirmCleanup() {
+      if (!active || !isAuthenticated() || cleanupBusy || !cleanupPreview || !element("auditCleanupAcknowledge").checked) return;
+      const token = cleanupPreview.token; cleanupPreview = null; cleanupBusy = true;
+      element("auditCleanupConfirm").disabled = true; element("auditCleanupPreview").disabled = true;
+      set("auditCleanupMessage", "正在清理已确认的审计记录…");
+      const ticket = gate.begin("audit-cleanup");
+      try {
+        const payload = await request(BASE + "/cleanup", { method: "POST", body: JSON.stringify({ token, confirm: true }), signal: ticket.signal });
+        if (!ticket.current() || !active || !isAuthenticated()) return;
+        if (payload.ok !== true || !object(payload.deleted) || !integer(payload.deleted.records)) throw new Error("服务器未确认清理结果");
+        const message = "已清理 " + payload.deleted.records + " 条审计记录 · 释放逻辑占用 " + bytes(payload.deleted.logical_bytes) + "；规则和用量账本保持不变。";
+        resetCleanupPreview(message); clearDetail(); if (payload.storage) renderStorage(payload.storage);
+        await loadList();
+      } catch (error) { if (ticket.current() && active && isAuthenticated() && error.name !== "AbortError") resetCleanupPreview("清理结果未确认：" + error.message + "。请重新计算占用并预览，不要直接重复提交。"); }
+      finally { cleanupBusy = false; element("auditCleanupPreview").disabled = false; ticket.finish(); }
     }
     async function loadStatus() {
       if (!active || !isAuthenticated()) return;
@@ -169,7 +283,7 @@
         const maxOffset = total ? Math.floor((total - 1) / limit) * limit : 0;
         if (offset > maxOffset && correctBoundary) { offset = maxOffset; ticket.finish(); loading = false; return loadList(false); }
         if (offset > maxOffset) throw new Error("审计列表分页发生变化，请重试");
-        items = payload.items; renderStatus(); renderList();
+        items = payload.items; renderKeyOptions(); renderStatus(); renderList();
         set("auditListMessage", "列表不包含请求正文；仅供管理员只读查看。");
       } catch (error) {
         if (ticket.current() && active && isAuthenticated() && error.name !== "AbortError") {
@@ -179,9 +293,16 @@
         }
       } finally { if (ticket.current()) { loading = false; renderPagination(); } ticket.finish(); }
     }
-    async function showDetail(id) {
+    async function showDetail(id, trigger = null, preserveDrawer = false) {
       if (!active || !isAuthenticated() || !items.some(record => record.id === id)) return;
-      clearDetail(); selectedId = id; element("auditDetail").classList.remove("hidden");
+      const oldFocus = returnFocus;
+      clearDetail(); selectedId = id; returnFocus = preserveDrawer ? oldFocus : trigger || rowButtons.get(id) || doc.activeElement;
+      element("auditDetail").classList.remove("hidden");
+      if (doc.body) doc.body.classList.add("audit-detail-open");
+      element("auditDetailContent").scrollTop = 0;
+      if (!preserveDrawer) element("auditMetadataSection").open = false;
+      drawerState();
+      if (!preserveDrawer) element("auditDetailClose").focus({ preventScroll: true });
       set("auditDetailMessage", "正在读取所选记录的脱敏请求详情…");
       const ticket = gate.begin("audit-detail");
       try {
@@ -200,20 +321,31 @@
     }
     function resetFilters() { for (const id of Object.values(FILTERS)) element(id).value = ""; filters = {}; offset = 0; return loadList(); }
     function page(delta) { if (loading) return Promise.resolve(); const next = Math.max(0, offset + delta * limit); if (next === offset || (delta > 0 && next >= total)) return Promise.resolve(); offset = next; return loadList(); }
-    async function refresh() { if (!active || !isAuthenticated()) return; await Promise.all([loadStatus(), loadList()]); }
-    function enter() { active = true; return refresh(); }
-    function leave() { active = false; gate.cancel("audit-list"); gate.cancel("audit-status"); loading = false; clearDetail(); renderPagination(); }
-    function lock() { leave(); status = null; items = []; total = 0; limit = 50; offset = 0; filters = {}; for (const id of Object.values(FILTERS)) element(id).value = ""; element("auditPageSize").value = "50"; set("auditStatus", "需要管理密钥授权后读取审计状态。"); set("auditListMessage", ""); messageRow("需要管理员授权"); renderPagination(); }
+    async function refresh() { if (!active || !isAuthenticated()) return; await Promise.all([loadStatus(), loadList(), loadStorage()]); }
+    function enter() { active = true; renderKeyOptions(); return refresh(); }
+    function leave() { active = false; gate.cancel("audit-list"); gate.cancel("audit-status"); gate.cancel("audit-storage"); gate.cancel("audit-cleanup"); resetCleanupPreview(); loading = false; clearDetail(); renderPagination(); }
+    function lock() { leave(); status = null; items = []; total = 0; set("auditStorageSummary", "需要管理员授权"); set("auditStoragePhysical", ""); element("auditCleanupBefore").value = ""; limit = 50; offset = 0; filters = {}; for (const id of Object.values(FILTERS)) element(id).value = ""; element("auditPageSize").value = "50"; set("auditStatus", "需要管理密钥授权后读取审计状态。"); set("auditListMessage", ""); messageRow("需要管理员授权"); renderPagination(); }
     function bind() {
+      element("auditStorageRefresh").addEventListener("click", loadStorage);
+      element("auditCleanupPreview").addEventListener("click", previewCleanup);
+      element("auditCleanupConfirm").addEventListener("click", confirmCleanup);
+      element("auditCleanupCancel").addEventListener("click", () => resetCleanupPreview());
+      element("auditCleanupScope").addEventListener("change", () => { resetCleanupPreview(); const custom = element("auditCleanupScope").value === "custom"; if (custom) element("auditCleanupBeforeLabel").classList.remove("hidden"); else element("auditCleanupBeforeLabel").classList.add("hidden"); });
+      element("auditCleanupBefore").addEventListener("input", () => resetCleanupPreview());
+      element("auditCleanupAcknowledge").addEventListener("change", () => { element("auditCleanupConfirm").disabled = cleanupBusy || !cleanupPreview || !element("auditCleanupAcknowledge").checked; });
       element("auditFilterForm").addEventListener("submit", event => { event.preventDefault(); applyFilters(); });
       element("auditFilterReset").addEventListener("click", resetFilters);
       element("auditPrevPage").addEventListener("click", () => page(-1)); element("auditNextPage").addEventListener("click", () => page(1));
       element("auditPageSize").addEventListener("change", () => { const next = Number(element("auditPageSize").value); limit = [25, 50, 100].includes(next) ? next : 50; offset = 0; loadList(); });
-      element("auditDetailClose").addEventListener("click", clearDetail);
-      element("auditListBody").addEventListener("click", event => { const button = event.target.closest && event.target.closest("button[data-audit-id]"); if (button) showDetail(button.dataset.auditId); });
+      element("auditDetailClose").addEventListener("click", () => clearDetail(true));
+      element("auditDetailPrev").addEventListener("click", () => shiftDetail(-1));
+      element("auditDetailNext").addEventListener("click", () => shiftDetail(1));
+      element("auditDetail").addEventListener("click", event => { if (event.target === element("auditDetail")) clearDetail(true); });
+      element("auditDetail").addEventListener("keydown", handleDrawerKey);
+      element("auditListBody").addEventListener("click", event => { const button = event.target.closest && event.target.closest("button[data-audit-id]"); if (button) showDetail(button.dataset.auditId, button); });
     }
     bind(); renderPagination();
-    return { enter, leave, lock, refresh, applyFilters, resetFilters, page, showDetail, closeDetail: clearDetail, isActive: () => active };
+    return { enter, leave, lock, refresh, applyFilters, resetFilters, page, showDetail, closeDetail: () => clearDetail(true), loadStorage, previewCleanup, confirmCleanup, isActive: () => active };
   }
   return { create, queryString, timestamp, bodyView, validateStatus, validateList, validateDetail, statusPayload };
 });

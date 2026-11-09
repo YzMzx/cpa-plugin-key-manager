@@ -87,8 +87,9 @@ func TestSanitizeHardLimits(t *testing.T) {
 	for _, tc := range []struct {
 		raw   []byte
 		state string
-	}{{longString, "omitted_string_limit"}, {[]byte(lots), "omitted_element_limit"}, {[]byte(depth), "omitted_depth_limit"}, {[]byte(strings.Repeat(" ", auditBodyInputLimit+1)), "omitted_input_limit"}, {output, "omitted_output_limit"}} {
-		got := SanitizeBody(tc.raw, "application/json", "", 1<<25)
+		limit int
+	}{{longString, "omitted_input_limit", MaxRequestBodyBytes}, {[]byte(lots), "omitted_element_limit", MaxRequestBodyBytes}, {[]byte(depth), "omitted_depth_limit", MaxRequestBodyBytes}, {[]byte(strings.Repeat(" ", auditBodyInputLimit+1)), "omitted_input_limit", MaxRequestBodyBytes}, {output, "omitted_output_limit", 32768}} {
+		got := SanitizeBody(tc.raw, "application/json", "", tc.limit)
 		if got.State != tc.state || !got.Truncated || got.Body != "" || got.SHA256 != "" {
 			t.Fatalf("unsafe limit %+v", got)
 		}
@@ -133,7 +134,7 @@ func TestSanitizeTextSafeMetadataAndLimits(t *testing.T) {
 		t.Fatalf("readable metadata lost %q", got)
 	}
 	for _, limit := range []int{0, 1, 8, 32} {
-		got := SanitizeText(strings.Repeat("x", auditBodyStringLimit+1), limit)
+		got := SanitizeText(strings.Repeat("x", auditMetadataLimit+1), limit)
 		if len(got) > limit || strings.Contains(got, "xxxx") {
 			t.Fatal("unsafe truncated metadata")
 		}

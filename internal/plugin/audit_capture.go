@@ -30,7 +30,6 @@ func (m *Manager) beginAudit(req pluginapi.RequestInterceptRequest, apiKey, keyL
 			contentType = "application/json"
 		}
 	}
-	body := audit.SanitizeBody(req.Body, contentType, req.Headers.Get("Content-Encoding"), cfg.MaxBodyBytes, apiKey, adminToken)
 	network := audit.ResolveClientIP(req.Metadata, req.Headers, cfg.TrustedProxies)
 	path := ""
 	if value, ok := req.Metadata["request_path"].(string); ok {
@@ -41,6 +40,24 @@ func (m *Manager) beginAudit(req pluginapi.RequestInterceptRequest, apiKey, keyL
 	if !strings.HasPrefix(path, "/") || strings.HasPrefix(path, "//") {
 		path = ""
 	}
+	body := audit.BodyResult{State: "omitted_busy"}
+	// Large JSON sanitization allocates multiple working representations. Do not
+	// let a burst of requests multiply that cost or queue raw sensitive payloads.
+	allowed := auditRequestSchemaField(req.SourceFormat, path) != ""
+	if !allowed {
+		body = audit.BodyResult{State: "omitted_unknown_schema"}
+	}
+	if allowed && len(req.Body) > 256<<10 && len(req.Body) <= audit.MaxRequestBodyBytes {
+		select {
+		case m.auditLargeCapture <- struct{}{}:
+			defer func() { <-m.auditLargeCapture }()
+		default:
+			allowed = false
+		}
+	}
+	if allowed {
+		body = audit.SanitizeBody(req.Body, contentType, req.Headers.Get("Content-Encoding"), cfg.MaxBodyBytes, apiKey, adminToken)
+	}
 	method := ""
 	if value, ok := req.Metadata["request_method"].(string); ok {
 		switch strings.ToUpper(value) {
@@ -48,7 +65,7 @@ func (m *Manager) beginAudit(req pluginapi.RequestInterceptRequest, apiKey, keyL
 			method = strings.ToUpper(value)
 		}
 	}
-	if body.State == "stored" && !auditKnownRequestSchema(req.SourceFormat, path, req.Body) {
+	if body.State == "stored" && !auditKnownRequestSchema(req.SourceFormat, path, body.Body) {
 		body = audit.BodyResult{State: "omitted_unknown_schema"}
 	}
 	fingerprint := ""

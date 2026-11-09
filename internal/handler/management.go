@@ -124,6 +124,9 @@ func RegisterManagementEndpoints() ([]pluginapi.ManagementRoute, []pluginapi.Res
 		pluginapi.ManagementRoute{Method: http.MethodGet, Path: RouteManagementAudit, Description: "List retained redacted client request audit metadata (administrators only)."},
 		pluginapi.ManagementRoute{Method: http.MethodGet, Path: RouteManagementAuditDetail, Description: "Read one retained redacted request body (administrators only)."},
 		pluginapi.ManagementRoute{Method: http.MethodGet, Path: RouteManagementAuditStatus, Description: "Read audit retention limits and safe storage health."},
+		pluginapi.ManagementRoute{Method: http.MethodGet, Path: RouteManagementAuditStorage, Description: "Calculate audit logical occupation and shared database file sizes."},
+		pluginapi.ManagementRoute{Method: http.MethodPost, Path: RouteManagementAuditCleanupPreview, Description: "Preview selected audit-only cleanup with an expiring confirmation token."},
+		pluginapi.ManagementRoute{Method: http.MethodPost, Path: RouteManagementAuditCleanup, Description: "Apply a confirmed audit-only cleanup snapshot."},
 	)
 	resources := []pluginapi.ResourceRoute{
 		{

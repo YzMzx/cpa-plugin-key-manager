@@ -1256,7 +1256,7 @@
   .card-subtitle { font-size: 12px; color: var(--text-tertiary); margin-top: 4px; }
   /* Administrator request-audit view. No body content is rendered as markup. */
   .audit-privacy { padding: 12px 14px; margin: 0 0 14px; border: 1px solid var(--amber-30); border-radius: var(--radius-md); background: var(--amber-10); color: var(--text-secondary); font-size: 12px; line-height: 1.7; }
-  .audit-filters { display: grid; grid-template-columns: repeat(4,minmax(140px,1fr)); gap: 12px; margin: 14px 0; }
+  .audit-filters { display: grid; grid-template-columns: repeat(5,minmax(120px,1fr)); gap: 12px; margin: 14px 0; }
   .audit-filters label { display: flex; flex-direction: column; gap: 5px; color: var(--text-secondary); font-size: 12px; }
   .audit-filters input,.audit-filters select { width: 100%; min-width: 0; }
   .audit-filter-actions { display: flex; align-items: end; gap: 8px; }
@@ -1268,3 +1268,22 @@
   .audit-cell-secondary { font-size: 11px; color: var(--text-tertiary); margin-top: 3px; }.audit-list-cell { max-width: 260px; overflow-wrap: anywhere; white-space: normal; }
   @media(max-width:900px) { .audit-filters { grid-template-columns: repeat(2,minmax(130px,1fr)); } }
   @media(max-width:520px) { .audit-filters { grid-template-columns: 1fr; }.audit-metadata { grid-template-columns: 1fr; gap:4px; }.audit-metadata dd { margin-bottom:8px; } }
+
+  /* Audit details stay in the viewport; closing never scrolls the result list. */
+  body.audit-detail-open { overflow: hidden; }
+  .audit-drawer-overlay { position: fixed; inset: 0; z-index: 1500; display: flex; justify-content: flex-end; background: rgba(0,0,0,.34); }
+  .audit-drawer-overlay.hidden { display: none; }
+  .audit-drawer { display: flex; flex-direction: column; width: min(960px,90vw); height: 100%; max-height: 100dvh; background: var(--floating-surface); color: var(--text-primary); border-left: 1px solid var(--border-primary); box-shadow: -12px 0 36px rgba(0,0,0,.18); outline: none; }
+  .audit-drawer-header { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding: 18px 22px; border-bottom: 1px solid var(--border-color); background: var(--floating-surface); }
+  .audit-drawer-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .audit-drawer-content { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 18px 22px 26px; }
+  .audit-drawer .audit-json { max-height: none; overflow: visible; white-space: pre-wrap; }
+  .audit-metadata-section { margin: 12px 0; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: var(--radius-md); }
+  .audit-metadata-section summary { cursor: pointer; color: var(--text-secondary); font-size: 12px; font-weight: 600; }
+  #auditListBody tr.audit-row-selected { background: var(--bg-tertiary); }
+  #auditListBody button[aria-expanded="true"] { border-color: var(--primary-color); }
+  @media(max-width:640px) { .audit-drawer { width: 100%; border-left: 0; }.audit-drawer-header { padding: 14px 16px; }.audit-drawer-content { padding: 14px 16px 22px; } }
+  .audit-storage-bar { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:12px 14px; margin:12px 0; border:1px solid var(--border-color); border-radius:var(--radius-md); background:var(--bg-quinary); }
+  .audit-storage-summary { display:flex; flex-direction:column; gap:5px; font-size:12px; }.audit-storage-summary strong { color:var(--text-primary); }
+  .audit-cleanup-section { margin:12px 0; border:1px solid var(--border-color); border-radius:var(--radius-md); padding:12px 14px; }.audit-cleanup-section summary { cursor:pointer; font-size:12px; font-weight:600; color:var(--text-secondary); }
+  .audit-cleanup-controls,.audit-cleanup-confirm { display:flex; align-items:end; gap:10px; flex-wrap:wrap; margin-top:12px; }.audit-cleanup-controls label { display:flex; flex-direction:column; gap:5px; font-size:12px; }.audit-cleanup-controls input { min-width:260px; }.audit-cleanup-confirm { align-items:center; }.audit-cleanup-confirm label { display:flex; gap:6px; align-items:center; font-size:12px; }

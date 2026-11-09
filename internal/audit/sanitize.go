@@ -16,11 +16,15 @@ import (
 )
 
 const (
-	auditBodyHardLimit    = 32 * 1024
-	auditBodyInputLimit   = 256 * 1024
+	auditBodyHardLimit    = MaxRequestBodyBytes
+	auditBodyInputLimit   = MaxRequestBodyBytes
 	auditBodyDepthLimit   = 16
 	auditBodyElementLimit = 4096
-	auditBodyStringLimit  = 4096
+	auditBodyStringLimit  = MaxRequestBodyBytes
+	// Keys, metadata and credentials remain small; only body values grow to 10 MiB.
+	auditMetadataLimit = 4096
+	auditBodyKeyLimit  = 4096
+	auditSecretLimit   = 4096
 )
 
 // BodyResult contains only safely sanitized JSON, never a raw prefix or raw hash.
@@ -86,7 +90,7 @@ func SanitizeBody(body []byte, contentType, contentEncoding string, maxBytes int
 		if secret == "" {
 			continue
 		}
-		if len(secret) > auditBodyStringLimit {
+		if len(secret) > auditSecretLimit {
 			return omitted("omitted_secret_limit", true)
 		}
 		safeSecrets = append(safeSecrets, secret)
@@ -166,7 +170,7 @@ func (p *auditBodyParser) value(depth int) (any, bool) {
 				if !ok {
 					return p.fail("omitted_invalid_json", false)
 				}
-				if len(key) > auditBodyStringLimit {
+				if len(key) > auditBodyKeyLimit {
 					return p.fail("omitted_string_limit", true)
 				}
 				p.elements++
@@ -341,11 +345,11 @@ func SanitizeText(raw string, maxBytes int, secrets ...string) string {
 		}
 		return ""
 	}
-	if len(raw) > auditBodyStringLimit || !utf8.ValidString(raw) || len(secrets) > 128 {
+	if len(raw) > auditMetadataLimit || !utf8.ValidString(raw) || len(secrets) > 128 {
 		return omit()
 	}
 	for _, secret := range secrets {
-		if len(secret) > auditBodyStringLimit {
+		if len(secret) > auditSecretLimit {
 			return omit()
 		}
 	}

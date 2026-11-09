@@ -27,7 +27,8 @@
   const auditView = KeyGuardAudit.create({
     document, request: (...args) => callManagementAPI(...args), gate: requestGate,
     isAuthenticated: () => !!activeManagementKey,
-    getTimezone: () => currentTimezone()
+    getTimezone: () => currentTimezone(),
+    getKeyOptions: () => (overviewData && overviewData.audit_key_options) || []
   });
   const apiClient = KeyGuardClient.createClient({
     fetchImpl: (...args) => fetch(...args),
