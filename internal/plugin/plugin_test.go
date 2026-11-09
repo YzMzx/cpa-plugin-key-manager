@@ -24,6 +24,8 @@ func TestMain(m *testing.M) {
 		os.Exit(m.Run())
 	}
 	_ = os.Setenv("CPA_KEY_MANAGER_STATE_DIRS", dir)
+	_ = os.Setenv("CPA_KEY_MANAGER_USAGE_DB", filepath.Join(dir, "default-test-usage.db"))
+	_ = os.Setenv("CPA_DIR", dir)
 	code := m.Run()
 	_ = os.RemoveAll(dir)
 	os.Exit(code)

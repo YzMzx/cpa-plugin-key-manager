@@ -159,6 +159,7 @@ chmod +x cleanup-legacy-json.sh
 
 ```bash
 go test ./...
+node --test web/runtime.test.cjs
 
 # Linux
 CGO_ENABLED=1 go build -buildmode=c-shared -o cpa-plugin-key-manager.so .
@@ -170,7 +171,11 @@ go build -buildmode=c-shared -o cpa-plugin-key-manager.dll .
 
 编译需要同级目录存在 `CLIProxyAPI` 源码 checkout（`go.mod` 里有 `replace` 指向 `../CLIProxyAPI`）。
 
-管理页源码位于 `web/`：`index.html`（结构）、`app.css`、`theme.js`、`app.js`，构建时由 `web/embed.go` 拼装成单个 HTML 内嵌进动态库，运行时不依赖任何外部静态资源。
+管理页源码位于 `web/`，按 API 客户端、认证桥、异步状态、日期格式化、事件委托与页面渲染拆分；构建时仍由 `web/embed.go` 拼装成单个 HTML 内嵌进动态库，无需 npm 安装或外部静态资源。具体契约和前端测试见 `web/README.md`。
+
+规则变更先提交 SQLite，再通过 CPA 原生逐 Key 操作同步宿主；部分失败会显示“同步待重试”，刷新后重试，不再静默提示全部成功。界面使用 `X-Key-Guard-Revision` 防止旧页面覆盖新规则；未传此头的旧 API 客户端保留无条件写入的兼容模式。删除标记会立即阻止旧 Key 继续请求；改名需等待在途请求结束，历史用量保留，已用额度与晚到费用延续到新 Key。
+
+概览 `diagnostics.persistence` 提供最后成功落盘时间、待写入行数、刷盘错误和记账错误；异常也会在管理页提示。同路径热重载保留数据库句柄，切换数据库路径需重启。无效价格/时区会拒绝生效，不再降级为宽松默认规则。
 
 ---
 

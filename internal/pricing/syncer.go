@@ -33,12 +33,27 @@ type Syncer struct {
 	fetcher HTTPFetcher
 	logger  LoggerFunc
 
+	lifecycleMu sync.Mutex // serializes ConfigureAndStart and Stop
 	mu          sync.Mutex
+	epoch       uint64
+	flight      *syncFlight
 	cfg         SyncConfig
 	cancel      context.CancelFunc
 	initialDone chan struct{}
 	stopped     chan struct{}
 }
+
+// syncFlight coalesces manual/background requests within one configuration epoch.
+// Result fields are published by closing done.
+type syncFlight struct {
+	epoch  uint64
+	done   chan struct{}
+	cancel context.CancelFunc
+	count  int
+	err    error
+}
+
+const maxCatalogBytes = 64 * 1024 * 1024
 
 // NewSyncer creates a new models.dev background Syncer.
 func NewSyncer(engine *Engine, fetcher HTTPFetcher, logger LoggerFunc) *Syncer {
@@ -67,13 +82,21 @@ func (s *Syncer) ConfigureAndStart(cfg SyncConfig) {
 		cfg.HTTPTimeout = 30 * time.Second
 	}
 
-	s.Stop()
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	s.stop()
 
 	s.mu.Lock()
+	// Invalidate manual work started while stop waited for the previous loop.
+	s.epoch++
+	if s.flight != nil {
+		s.flight.cancel()
+		s.flight = nil
+	}
 	s.cfg = cfg
 	// 1. Load local cache file on disk first so pricing is immediately ready even if offline
 	if cfg.CacheFile != "" {
-		if raw, err := os.ReadFile(cfg.CacheFile); err == nil && len(raw) > 0 {
+		if raw, err := readCatalogFile(cfg.CacheFile); err == nil && len(raw) > 0 {
 			if count, errParse := s.engine.ParseAndLoadModelsDevJSON(raw, "models.dev(disk-cache)"); errParse == nil {
 				s.logger("info", "loaded models.dev pricing cache from disk", map[string]any{
 					"cache_file": cfg.CacheFile,
@@ -114,7 +137,18 @@ func (s *Syncer) WaitInitialSync(timeout time.Duration) {
 
 // Stop halts the background sync goroutine cleanly.
 func (s *Syncer) Stop() {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	s.stop()
+}
+
+func (s *Syncer) stop() {
 	s.mu.Lock()
+	s.epoch++
+	if s.flight != nil {
+		s.flight.cancel()
+		s.flight = nil
+	}
 	cancel := s.cancel
 	stopped := s.stopped
 	s.cancel = nil
@@ -150,51 +184,108 @@ func (s *Syncer) loop(ctx context.Context, cfg SyncConfig, initialDone, stopped 
 	}
 }
 
-// SyncOnce fetches the latest models.dev JSON, updates the in-memory pricing table, and writes the local cache file.
-// On network or parse error, it logs a Warn message and keeps existing cached/custom prices intact.
+// SyncOnce joins an existing fetch for the current configuration, or performs one.
+// The initiating caller owns the shared fetch context; a joining caller may stop
+// waiting independently. Stop/reconfigure cancels and invalidates old flights, so
+// even a fetcher ignoring cancellation cannot publish an obsolete catalog/cache.
 func (s *Syncer) SyncOnce(ctx context.Context) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	s.mu.Lock()
+	if flight := s.flight; flight != nil && flight.epoch == s.epoch {
+		s.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case <-flight.done:
+			return flight.count, flight.err
+		}
+	}
 	cfg := s.cfg
+	if cfg.HTTPTimeout <= 0 {
+		cfg.HTTPTimeout = 30 * time.Second
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, cfg.HTTPTimeout)
+	flight := &syncFlight{epoch: s.epoch, done: make(chan struct{}), cancel: cancel}
+	s.flight = flight
 	s.mu.Unlock()
 
+	count, err := s.fetchAndPublish(fetchCtx, cfg, flight.epoch)
+	cancel()
+	s.mu.Lock()
+	flight.count, flight.err = count, err
+	if s.flight == flight {
+		s.flight = nil
+	}
+	close(flight.done)
+	s.mu.Unlock()
+	return count, err
+}
+
+func (s *Syncer) fetchAndPublish(ctx context.Context, cfg SyncConfig, epoch uint64) (int, error) {
 	if strings.TrimSpace(cfg.SyncURL) == "" {
 		return 0, fmt.Errorf("sync URL is empty")
 	}
-
 	raw, err := s.fetcher(ctx, cfg.SyncURL, cfg.HTTPTimeout)
-	if err != nil {
-		s.engine.RecordSyncError(err)
-		s.logger("warn", "failed to fetch models.dev pricing; degrading gracefully to cached/custom prices", map[string]any{
-			"url":   cfg.SyncURL,
-			"error": err.Error(),
-		})
-		return 0, err
+	if err == nil && len(raw) > maxCatalogBytes {
+		err = fmt.Errorf("models.dev catalog exceeds %d bytes", maxCatalogBytes)
 	}
-
-	count, err := s.engine.ParseAndLoadModelsDevJSON(raw, "models.dev")
-	if err != nil {
-		s.engine.RecordSyncError(err)
-		s.logger("warn", "failed to parse models.dev pricing JSON; degrading gracefully to cached/custom prices", map[string]any{
-			"url":   cfg.SyncURL,
-			"error": err.Error(),
-		})
-		return 0, err
+	// Configuration publication and cache replacement share the epoch lock. Old
+	// work cannot modify either after a reconfiguration or Stop has invalidated it.
+	s.mu.Lock()
+	if epoch != s.epoch || ctx.Err() != nil {
+		s.mu.Unlock()
+		if ctx.Err() != nil {
+			return 0, ctx.Err()
+		}
+		return 0, context.Canceled
 	}
-
-	if cfg.CacheFile != "" {
-		if errWrite := writeFileAtomicallyWithRetry(cfg.CacheFile, raw); errWrite != nil {
-			s.logger("warn", "failed to persist models.dev cache file", map[string]any{
-				"cache_file": cfg.CacheFile,
-				"error":      errWrite.Error(),
-			})
+	if err == nil {
+		var count int
+		count, err = s.engine.ParseAndLoadModelsDevJSON(raw, "models.dev")
+		if err == nil {
+			if cfg.CacheFile != "" {
+				if errWrite := writeFileAtomicallyWithRetry(cfg.CacheFile, raw); errWrite != nil {
+					err = fmt.Errorf("prices updated in memory but cache persistence failed: %w", errWrite)
+				}
+			}
+			if err != nil {
+				s.engine.RecordSyncError(err)
+			}
+			s.mu.Unlock()
+			if err != nil {
+				s.logger("warn", "failed to persist models.dev cache", map[string]any{"error": err.Error()})
+				return count, err
+			}
+			s.logger("info", "synchronized models.dev reference pricing", map[string]any{"models": count, "url": cfg.SyncURL})
+			return count, nil
 		}
 	}
+	s.engine.RecordSyncError(err)
+	s.mu.Unlock()
+	s.logger("warn", "failed to synchronize models.dev pricing; keeping existing prices", map[string]any{"url": cfg.SyncURL, "error": err.Error()})
+	return 0, err
+}
 
-	s.logger("info", "synchronized models.dev reference pricing", map[string]any{
-		"models": count,
-		"url":    cfg.SyncURL,
-	})
-	return count, nil
+func readCatalogFile(path string) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	return readCatalog(file)
+}
+
+func readCatalog(reader io.Reader) ([]byte, error) {
+	raw, err := io.ReadAll(io.LimitReader(reader, maxCatalogBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) > maxCatalogBytes {
+		return nil, fmt.Errorf("models.dev catalog exceeds %d bytes", maxCatalogBytes)
+	}
+	return raw, nil
 }
 
 // DefaultHTTPFetcher fetches a URL using standard net/http with timeout.
@@ -222,8 +313,7 @@ func DefaultHTTPFetcher(ctx context.Context, url string, timeout time.Duration) 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("unexpected HTTP status %d from %s", resp.StatusCode, url)
 	}
-	// Limit read to 64MB for safety
-	return io.ReadAll(io.LimitReader(resp.Body, 64*1024*1024))
+	return readCatalog(resp.Body)
 }
 
 // writeFileAtomicallyWithRetry writes data to a temporary file and renames it over path,

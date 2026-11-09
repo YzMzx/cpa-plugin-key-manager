@@ -445,6 +445,22 @@ func (s *Store) QueryLedger(q LedgerQuery) LedgerResult {
 		from = to.Add(-24 * time.Hour)
 	}
 
+	keyFilter := strings.ToLower(strings.TrimSpace(q.Key))
+	accountFilter := strings.ToLower(strings.TrimSpace(q.Account))
+	modelFilter := strings.ToLower(strings.TrimSpace(q.Model))
+	sourceFilter := strings.ToLower(strings.TrimSpace(q.Source))
+	matches := func(entry *LedgerEntry) bool {
+		if entry == nil || entry.Hour < from.Unix() || entry.Hour > to.Unix() {
+			return false
+		}
+		if keyFilter != "" && !strings.Contains(strings.ToLower(entry.APIKey), keyFilter) && !strings.Contains(strings.ToLower(entry.KeyName), keyFilter) {
+			return false
+		}
+		if accountFilter != "" && !strings.Contains(strings.ToLower(entry.Account), accountFilter) && !strings.Contains(strings.ToLower(entry.Provider), accountFilter) {
+			return false
+		}
+		return (modelFilter == "" || strings.EqualFold(entry.Model, modelFilter)) && (sourceFilter == "" || strings.EqualFold(entry.Source, sourceFilter))
+	}
 	s.mu.Lock()
 	// Walk only the hours inside the window via the hour index instead of scanning
 	// the whole retention period.
@@ -454,7 +470,7 @@ func (s *Store) QueryLedger(q LedgerQuery) LedgerResult {
 	if span := (toUnix - fromHour) / 3600; span >= 0 && span <= int64(len(s.ledgerByHour)) {
 		for hour := fromHour; hour <= toUnix; hour += 3600 {
 			for _, entry := range s.ledgerByHour[hour] {
-				if entry != nil {
+				if matches(entry) {
 					entries = append(entries, *entry)
 				}
 			}
@@ -467,7 +483,7 @@ func (s *Store) QueryLedger(q LedgerQuery) LedgerResult {
 				continue
 			}
 			for _, entry := range bucket {
-				if entry != nil {
+				if matches(entry) {
 					entries = append(entries, *entry)
 				}
 			}
@@ -489,11 +505,6 @@ func (s *Store) QueryLedger(q LedgerQuery) LedgerResult {
 		status.RetentionDays = 90
 	}
 	s.mu.Unlock()
-
-	keyFilter := strings.ToLower(strings.TrimSpace(q.Key))
-	accountFilter := strings.ToLower(strings.TrimSpace(q.Account))
-	modelFilter := strings.ToLower(strings.TrimSpace(q.Model))
-	sourceFilter := strings.ToLower(strings.TrimSpace(q.Source))
 
 	result := LedgerResult{
 		From:          from.In(loc).Format(time.RFC3339),
@@ -518,22 +529,6 @@ func (s *Store) QueryLedger(q LedgerQuery) LedgerResult {
 	for _, entry := range entries {
 		at := time.Unix(entry.Hour, 0).UTC()
 		if at.Before(from) || at.After(to) {
-			continue
-		}
-		if keyFilter != "" &&
-			!strings.Contains(strings.ToLower(entry.APIKey), keyFilter) &&
-			!strings.Contains(strings.ToLower(entry.KeyName), keyFilter) {
-			continue
-		}
-		if accountFilter != "" &&
-			!strings.Contains(strings.ToLower(entry.Account), accountFilter) &&
-			!strings.Contains(strings.ToLower(entry.Provider), accountFilter) {
-			continue
-		}
-		if modelFilter != "" && !strings.EqualFold(entry.Model, modelFilter) {
-			continue
-		}
-		if sourceFilter != "" && !strings.EqualFold(entry.Source, sourceFilter) {
 			continue
 		}
 

@@ -1,7 +1,7 @@
 package web
 
 import (
-	_ "embed"
+	"embed"
 	"strings"
 )
 
@@ -22,6 +22,9 @@ var themeJS string
 //go:embed app.js
 var appJS string
 
+//go:embed client.js state.js formatters.js auth.js events.js
+var runtimeFiles embed.FS
+
 const (
 	placeholderCSS   = "/*@@APP_CSS@@*/"
 	placeholderTheme = "/*@@THEME_JS@@*/"
@@ -30,13 +33,25 @@ const (
 
 var indexHTML = assemble()
 
+func runtimeJS() string {
+	var sources []string
+	for _, name := range []string{"client.js", "state.js", "formatters.js", "auth.js", "events.js"} {
+		raw, err := runtimeFiles.ReadFile(name)
+		if err != nil {
+			panic(err)
+		}
+		sources = append(sources, string(raw))
+	}
+	return strings.Join(sources, "\n")
+}
+
 func assemble() string {
 	// strings.NewReplacer performs a single pass, so content inside the CSS/JS can
 	// never be mistaken for another placeholder.
 	return strings.NewReplacer(
 		placeholderCSS, appCSS,
 		placeholderTheme, themeJS,
-		placeholderApp, appJS,
+		placeholderApp, runtimeJS()+"\n"+appJS,
 	).Replace(shellHTML)
 }
 

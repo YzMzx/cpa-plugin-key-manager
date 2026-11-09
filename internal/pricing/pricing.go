@@ -34,41 +34,6 @@ type CostBreakdown struct {
 	PriceFound bool       `json:"price_found"`
 }
 
-// CalculateCostNanoUSD computes the exact cost in nano-USD (10^-9 USD) for the given token counts
-// and per-1M-token prices.
-//
-// Since price is USD per 10^6 tokens and 1 USD = 10^9 nano-USD:
-//
-//	1 token at $P / 1M tokens = P * 1000 nano-USD.
-func CalculateCostNanoUSD(uncachedInput, output, cacheRead, cacheWrite int64, price ModelPrice) int64 {
-	if uncachedInput < 0 {
-		uncachedInput = 0
-	}
-	if output < 0 {
-		output = 0
-	}
-	if cacheRead < 0 {
-		cacheRead = 0
-	}
-	if cacheWrite < 0 {
-		cacheWrite = 0
-	}
-
-	// If cache_read or cache_write price is not explicitly set (0), we use 0 unless configured,
-	// as models.dev explicitly specifies cache_read/cache_write when applicable.
-	inRateNanoPerToken := price.Input * 1000.0
-	outRateNanoPerToken := price.Output * 1000.0
-	readRateNanoPerToken := price.CacheRead * 1000.0
-	writeRateNanoPerToken := price.CacheWrite * 1000.0
-
-	totalNano := float64(uncachedInput)*inRateNanoPerToken +
-		float64(output)*outRateNanoPerToken +
-		float64(cacheRead)*readRateNanoPerToken +
-		float64(cacheWrite)*writeRateNanoPerToken
-
-	return int64(math.Round(totalNano))
-}
-
 // NanoToUSD converts nano-USD (10^-9 USD) to standard USD float64 rounded to 6 decimal places (micro-USD precision).
 func NanoToUSD(nano int64) float64 {
 	usd := float64(nano) / float64(NanoUSDPerUSD)
@@ -81,9 +46,8 @@ func FormatUSD(nano int64) string {
 }
 
 type customRule struct {
-	pattern    string
-	isWildcard bool
-	price      ModelPrice
+	pattern string
+	price   ModelPrice
 }
 
 // Engine manages model pricing from local custom overrides, models.dev remote sync, and local disk cache.
@@ -92,7 +56,6 @@ type Engine struct {
 	customExact   map[string]ModelPrice
 	customRules   []customRule
 	modelsDevMap  map[string]ModelPrice
-	modelsDevKeys []string // sorted keys of modelsDevMap, for prefix degradation
 	defaultPrice  *ModelPrice
 	lastSyncAt    time.Time
 	lastSyncError string
@@ -109,7 +72,19 @@ func NewEngine() *Engine {
 
 // SetCustomPrices updates the user-configured price overrides and optional default fallback price.
 // Safe for hot-reload without losing synced models.dev prices.
-func (e *Engine) SetCustomPrices(custom map[string]ModelPrice, defaultPrice *ModelPrice) {
+func (e *Engine) SetCustomPrices(custom map[string]ModelPrice, defaultPrice *ModelPrice) error {
+	// Validate the complete candidate before publishing any part of it. A bad
+	// override must not erase a previously valid set during hot reload.
+	for model, price := range custom {
+		if err := ValidatePrice(price); err != nil {
+			return fmt.Errorf("custom price %q: %w", model, err)
+		}
+	}
+	if defaultPrice != nil {
+		if err := ValidatePrice(*defaultPrice); err != nil {
+			return fmt.Errorf("default price: %w", err)
+		}
+	}
 	exact := make(map[string]ModelPrice, len(custom))
 	rules := make([]customRule, 0, len(custom))
 
@@ -134,9 +109,8 @@ func (e *Engine) SetCustomPrices(custom map[string]ModelPrice, defaultPrice *Mod
 		p.Source = "custom_override"
 		if strings.ContainsAny(pat, "*?") {
 			rules = append(rules, customRule{
-				pattern:    pat,
-				isWildcard: true,
-				price:      p,
+				pattern: pat,
+				price:   p,
 			})
 		} else {
 			exact[pat] = p
@@ -155,6 +129,7 @@ func (e *Engine) SetCustomPrices(custom map[string]ModelPrice, defaultPrice *Mod
 	e.customRules = rules
 	e.defaultPrice = defCopy
 	e.mu.Unlock()
+	return nil
 }
 
 // normalizeModelVariants flattens the candidate names into unique lowercase variants.
@@ -193,39 +168,16 @@ func modelPrefixLadder(model string) []string {
 	return out
 }
 
-// bestPrefixMatchLocked finds the most specific models.dev key that is either equal to
-// `base` or extends it with a further "-" segment. Callers must hold at least a read lock.
+// bestPrefixMatchLocked accepts only a published ancestor of the requested ID.
+// A longer descendant (for example family-preview) is not evidence that its
+// price applies to an unknown sibling. An exact base always wins.
 func (e *Engine) bestPrefixMatchLocked(base string) (string, ModelPrice, bool) {
-	keys := e.modelsDevKeys
-	if len(keys) == 0 || base == "" {
-		return "", ModelPrice{}, false
-	}
-	idx := sort.SearchStrings(keys, base)
-	bestKey := ""
-	var bestPrice ModelPrice
-	for ; idx < len(keys); idx++ {
-		key := keys[idx]
-		if !strings.HasPrefix(key, base) {
-			// Sorted keys: once the prefix block ends, no later key can start with base.
-			break
-		}
-		if len(key) > len(base) && key[len(base)] != '-' {
-			// "gemini-3" must not match "gemini-30-flash".
-			continue
-		}
-		if len(key) > len(bestKey) {
-			bestKey = key
-			bestPrice = e.modelsDevMap[key]
-		}
-	}
-	if bestKey == "" {
-		return "", ModelPrice{}, false
-	}
-	return bestKey, bestPrice, true
+	price, ok := e.modelsDevMap[base]
+	return base, price, ok
 }
 
 // lookupModelsDevLocked resolves a models.dev price: exact variant first, then a
-// degraded prefix match (gemini-3.8-flash-high -> gemini-3.8-flash-* -> gemini-3.8-*).
+// exact-ancestor fallback (gemini-3.8-flash-high -> gemini-3.8-flash -> gemini-3.8).
 func (e *Engine) lookupModelsDevLocked(variants []string) (ModelPrice, bool) {
 	for _, v := range variants {
 		if p, ok := e.modelsDevMap[v]; ok {
@@ -243,66 +195,64 @@ func (e *Engine) lookupModelsDevLocked(variants []string) (ModelPrice, bool) {
 	return ModelPrice{}, false
 }
 
-// Lookup resolves the price for the given model (checking custom exact -> custom wildcard -> models.dev -> default).
+// Lookup resolves candidates in caller priority order: requested model first,
+// then served model. Each candidate completes custom exact -> custom wildcard ->
+// reference lookup before the next candidate is considered. A global default is
+// used only when no candidate has a price. A served-model override therefore
+// cannot supersede a known price for the client-requested product.
 func (e *Engine) Lookup(modelCandidates ...string) (ModelPrice, bool) {
-	variants := normalizeModelVariants(modelCandidates)
-
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-
-	// 1. Custom exact match
-	for _, v := range variants {
-		if p, ok := e.customExact[v]; ok {
+	for _, candidate := range modelCandidates {
+		variants := normalizeModelVariants([]string{candidate})
+		for _, v := range variants {
+			if p, ok := e.customExact[v]; ok {
+				return p, true
+			}
+		}
+		for _, rule := range e.customRules {
+			for _, v := range variants {
+				if authz.MatchWildcard(rule.pattern, v) {
+					return rule.price, true
+				}
+			}
+		}
+		if p, ok := e.lookupModelsDevLocked(variants); ok {
 			return p, true
 		}
 	}
-
-	// 2. Custom wildcard match
-	for _, rule := range e.customRules {
-		for _, v := range variants {
-			if authz.MatchWildcard(rule.pattern, v) {
-				return rule.price, true
-			}
-		}
-	}
-
-	// 3. models.dev match (exact, then progressively degraded prefix match)
-	if p, ok := e.lookupModelsDevLocked(variants); ok {
-		return p, true
-	}
-
-	// 4. Default price fallback if configured
 	if e.defaultPrice != nil {
 		return *e.defaultPrice, true
 	}
-
 	return ModelPrice{Source: "unmatched"}, false
 }
 
 // LookupReference resolves the models.dev reference price for the given model, ignoring custom overrides and default fallback.
 func (e *Engine) LookupReference(modelCandidates ...string) (ModelPrice, bool) {
-	variants := normalizeModelVariants(modelCandidates)
-
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-
-	if p, ok := e.lookupModelsDevLocked(variants); ok {
-		return p, true
+	for _, candidate := range modelCandidates {
+		if p, ok := e.lookupModelsDevLocked(normalizeModelVariants([]string{candidate})); ok {
+			return p, true
+		}
 	}
 	return ModelPrice{Source: "unmatched"}, false
 }
 
 // Calculate computes the CostBreakdown for the given model and orthogonal token counts.
-func (e *Engine) Calculate(uncachedInput, output, cacheRead, cacheWrite int64, modelCandidates ...string) CostBreakdown {
+func (e *Engine) Calculate(uncachedInput, output, cacheRead, cacheWrite int64, modelCandidates ...string) (CostBreakdown, error) {
 	price, found := e.Lookup(modelCandidates...)
-	nano := CalculateCostNanoUSD(uncachedInput, output, cacheRead, cacheWrite, price)
+	nano, err := CalculateCostNanoUSD(uncachedInput, output, cacheRead, cacheWrite, price)
+	if err != nil {
+		return CostBreakdown{UnitPrice: price, PriceFound: found}, err
+	}
 	return CostBreakdown{
 		NanoUSD:    nano,
 		USD:        NanoToUSD(nano),
 		Formatted:  FormatUSD(nano),
 		UnitPrice:  price,
 		PriceFound: found,
-	}
+	}, nil
 }
 
 // ParseAndLoadModelsDevJSON parses the raw JSON payload from https://models.dev/api.json
@@ -348,8 +298,14 @@ func (e *Engine) ParseAndLoadModelsDevJSON(rawJSON []byte, source string) (int, 
 		}
 	}
 
-	modelCount := 0
-	for provKey, prov := range root {
+	// Stable provider and model order also defines the tie-break at equal priority.
+	providerKeys := make([]string, 0, len(root))
+	for key := range root {
+		providerKeys = append(providerKeys, key)
+	}
+	sort.Strings(providerKeys)
+	for _, provKey := range providerKeys {
+		prov := root[provKey]
 		provID := strings.ToLower(strings.TrimSpace(prov.ID))
 		if provID == "" {
 			provID = strings.ToLower(strings.TrimSpace(provKey))
@@ -359,7 +315,13 @@ func (e *Engine) ParseAndLoadModelsDevJSON(rawJSON []byte, source string) (int, 
 			basePrio = 50
 		}
 
-		for modelKey, m := range prov.Models {
+		modelKeys := make([]string, 0, len(prov.Models))
+		for key := range prov.Models {
+			modelKeys = append(modelKeys, key)
+		}
+		sort.Strings(modelKeys)
+		for _, modelKey := range modelKeys {
+			m := prov.Models[modelKey]
 			if m.Cost == nil {
 				continue
 			}
@@ -371,6 +333,9 @@ func (e *Engine) ParseAndLoadModelsDevJSON(rawJSON []byte, source string) (int, 
 				CacheWrite: m.Cost.CacheWrite,
 				Source:     source,
 			}
+			if err := ValidatePrice(p); err != nil {
+				return 0, fmt.Errorf("models.dev provider %q model %q: %w", provKey, modelKey, err)
+			}
 			prio := basePrio
 			if p.Input == 0 && p.Output == 0 {
 				prio -= 20
@@ -380,7 +345,6 @@ func (e *Engine) ParseAndLoadModelsDevJSON(rawJSON []byte, source string) (int, 
 			if modelID == "" {
 				modelID = strings.ToLower(strings.TrimSpace(modelKey))
 			}
-			modelCount++
 
 			// Index 1: <provider>/<model_id>
 			if provID != "" && modelID != "" {
@@ -411,11 +375,6 @@ func (e *Engine) ParseAndLoadModelsDevJSON(rawJSON []byte, source string) (int, 
 
 	e.mu.Lock()
 	e.modelsDevMap = parsed
-	e.modelsDevKeys = make([]string, 0, len(parsed))
-	for k := range parsed {
-		e.modelsDevKeys = append(e.modelsDevKeys, k)
-	}
-	sort.Strings(e.modelsDevKeys)
 	e.lastSyncAt = time.Now()
 	e.lastSyncError = ""
 	e.syncSource = source

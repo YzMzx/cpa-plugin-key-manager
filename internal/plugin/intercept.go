@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -45,6 +46,8 @@ func (m *Manager) handleFrontendAuth(raw []byte) ([]byte, error) {
 }
 
 func (m *Manager) handleRequestInterceptBefore(raw []byte) ([]byte, error) {
+	m.admissionMu.RLock()
+	defer m.admissionMu.RUnlock()
 	var req pluginapi.RequestInterceptRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return nil, err
@@ -74,7 +77,7 @@ func (m *Manager) handleRequestInterceptBefore(raw []byte) ([]byte, error) {
 	// 3. Check per-API-Key cumulative USD quota limit (if quota_limit_usd > 0).
 	//    The quota counts usage since the last "重置额度", not the lifetime total.
 	if rule.QuotaLimitUSD > 0 {
-		usedUSD := m.usageStore.GetKeyCostUSD(apiKey) - rule.QuotaUsedBaseUSD
+		usedUSD := m.quotaCostUSD(rule) - rule.QuotaUsedBaseUSD
 		if usedUSD < 0 {
 			usedUSD = 0
 		}
@@ -169,6 +172,8 @@ func (m *Manager) handleSchedulerPick(raw []byte) ([]byte, error) {
 }
 
 func (m *Manager) handleResponseInterceptAfter(raw []byte) ([]byte, error) {
+	m.admissionMu.RLock()
+	defer m.admissionMu.RUnlock()
 	var req pluginapi.ResponseInterceptRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return nil, err
@@ -203,6 +208,8 @@ func (m *Manager) handleResponseInterceptAfter(raw []byte) ([]byte, error) {
 }
 
 func (m *Manager) handleStreamChunkIntercept(raw []byte) ([]byte, error) {
+	m.admissionMu.RLock()
+	defer m.admissionMu.RUnlock()
 	var req pluginapi.StreamChunkInterceptRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return nil, err
@@ -215,6 +222,8 @@ func (m *Manager) handleStreamChunkIntercept(raw []byte) ([]byte, error) {
 }
 
 func (m *Manager) handleRequestComplete(raw []byte) ([]byte, error) {
+	m.admissionMu.RLock()
+	defer m.admissionMu.RUnlock()
 	var completion pluginapi.RequestCompletion
 	if err := json.Unmarshal(raw, &completion); err != nil {
 		return nil, err
@@ -241,6 +250,8 @@ func (m *Manager) handleRequestComplete(raw []byte) ([]byte, error) {
 }
 
 func (m *Manager) handleUsageRecord(raw []byte) ([]byte, error) {
+	m.admissionMu.RLock()
+	defer m.admissionMu.RUnlock()
 	var rec pluginapi.UsageRecord
 	if err := json.Unmarshal(raw, &rec); err != nil {
 		return nil, err
@@ -263,7 +274,38 @@ func (m *Manager) handleManagement(raw []byte) ([]byte, error) {
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return nil, err
 	}
+	m.managementMu.Lock()
+	defer m.managementMu.Unlock()
+	method := strings.ToUpper(req.Method)
+	if method != http.MethodGet && method != http.MethodHead {
+		if value := req.Headers.Get("X-Key-Guard-Revision"); value != "" {
+			revision, err := strconv.ParseUint(value, 10, 64)
+			if err != nil || revision != m.RulesRevision() {
+				return okEnvelope(pluginapi.ManagementResponse{StatusCode: http.StatusConflict, Headers: http.Header{"Content-Type": {"application/json"}}, Body: []byte(`{"error":{"message":"Rules changed in another session. Refresh and retry."}}`)})
+			}
+		}
+	}
 	resp := handler.HandleManagementRequest(context.Background(), m, req.ManagementRequest, req.HostCallbackID)
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 && strings.HasPrefix(req.Path, "/v0/management/key-guard/") {
+		credential := strings.TrimSpace(req.Headers.Get("Authorization"))
+		if strings.HasPrefix(strings.ToLower(credential), "bearer ") {
+			credential = strings.TrimSpace(credential[7:])
+		}
+		if credential == "" {
+			credential = strings.TrimSpace(req.Headers.Get("X-Management-Key"))
+		}
+		m.syncPendingHost(context.Background(), credential)
+		var payload map[string]any
+		if json.Unmarshal(resp.Body, &payload) == nil && payload != nil {
+			payload["host_sync"] = m.HostSyncStatus()
+			payload["rules_revision"] = m.RulesRevision()
+			if nested, ok := payload["overview"].(map[string]any); ok {
+				nested["host_sync"] = payload["host_sync"]
+				nested["rules_revision"] = payload["rules_revision"]
+			}
+			resp.Body, _ = json.Marshal(payload)
+		}
+	}
 	return okEnvelope(resp)
 }
 

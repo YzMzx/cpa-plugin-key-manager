@@ -148,8 +148,12 @@ type TrackedRequest struct {
 	StartedAt      time.Time
 	CompletedAt    time.Time
 
-	ExtractedUsage NormalizedUsage
-	BilledUsage    NormalizedUsage
+	ExtractedUsage   NormalizedUsage
+	BilledUsage      NormalizedUsage
+	billedStats      ModelStats
+	billedAccountKey string
+	billedPrice      pricing.ModelPrice
+	billedPriceFound bool
 	// BilledKey is the tuple bucket already billed for this request, if any.
 	BilledKey      string
 	CountedRequest bool
@@ -168,10 +172,17 @@ type TrackedRequest struct {
 
 // Store manages in-memory usage accounting, request deduplication, and atomic JSON persistence.
 type Store struct {
-	mu       sync.Mutex
-	pricing  *pricing.Engine
-	keys     map[string]*KeyStats
-	accounts map[string]*AccountStats
+	// Lock order: lifecycleMu -> flushMu -> mu. Request accounting only takes mu.
+	lifecycleMu            sync.Mutex
+	flushMu                sync.Mutex
+	lastPersistenceSuccess time.Time
+	lastPersistenceError   string
+	lastAccountingError    string
+	flushInProgress        bool
+	mu                     sync.Mutex
+	pricing                *pricing.Engine
+	keys                   map[string]*KeyStats
+	accounts               map[string]*AccountStats
 
 	// Active & recently completed request trackers (for coordinating request.complete and usage.handle)
 	byRequestID   map[string]*TrackedRequest
@@ -249,70 +260,90 @@ func (s *Store) ConfigurePersistence(filePath string, flushInterval time.Duratio
 	return s.ConfigureSQLite(cleanPath, flushInterval)
 }
 
-// ConfigureSQLite opens the database, adopts its rows (or imports the current
-// in-memory history when it is empty) and starts the periodic flush loop.
+// ConfigureSQLite applies persistence configuration without reloading a live database.
+// A failed flush or candidate open leaves the old handle, state and flusher intact.
 func (s *Store) ConfigureSQLite(dbPath string, flushInterval time.Duration) error {
-	s.stopFlusher()
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
 	if flushInterval <= 0 {
 		flushInterval = 10 * time.Second
 	}
+	s.stopFlusher()
+	s.flushMu.Lock()
+	err := s.configureSQLiteSerialized(dbPath)
+	s.flushMu.Unlock()
 	s.mu.Lock()
-	previous := s.db
-	s.db = nil
+	interval := s.flushInterval
+	if err == nil {
+		interval = flushInterval
+		s.flushInterval = interval
+	}
+	configured := s.db != nil
 	s.mu.Unlock()
-	if previous != nil {
-		_ = s.FlushNowIfOpen(previous)
-		_ = previous.Close()
-	}
-	if err := s.EnableSQLite(dbPath); err != nil {
-		return err
-	}
-	s.mu.Lock()
-	s.flushInterval = flushInterval
-	stopCh := make(chan struct{})
-	stoppedCh := make(chan struct{})
-	s.stopFlushCh = stopCh
-	s.flushStopped = stoppedCh
-	s.mu.Unlock()
-	go s.flushLoop(stopCh, stoppedCh, flushInterval)
-	return nil
-}
-
-// FlushNowIfOpen flushes pending rows using an explicit handle (used while swapping
-// the database during a hot reload).
-func (s *Store) FlushNowIfOpen(db *sqlitestore.DB) error {
-	if db == nil {
-		return nil
-	}
-	s.mu.Lock()
-	swap := s.db == nil
-	if swap {
-		s.db = db
-	}
-	s.mu.Unlock()
-	err := s.flushToDB()
-	if swap {
-		s.mu.Lock()
-		s.db = nil
-		s.mu.Unlock()
+	if configured {
+		s.startFlusher(interval)
 	}
 	return err
 }
 
-// Close stops the periodic flusher, flushes pending rows and releases the database.
-func (s *Store) Close() error {
-	s.stopFlusher()
-	errFlush := s.FlushNow()
+// FlushNowIfOpen only accepts the current handle; it never temporarily publishes
+// a detached handle which could race another flush or configuration change.
+func (s *Store) FlushNowIfOpen(db *sqlitestore.DB) error {
+	s.flushMu.Lock()
+	defer s.flushMu.Unlock()
 	s.mu.Lock()
-	db := s.db
-	s.db = nil
+	current := s.db
 	s.mu.Unlock()
-	if db != nil {
-		if errClose := db.Close(); errClose != nil && errFlush == nil {
-			return errClose
-		}
+	if db == nil {
+		return nil
 	}
-	return errFlush
+	if db != current {
+		return fmt.Errorf("sqlite: stale database handle")
+	}
+	return s.flushToDBSerialized()
+}
+
+// Close stops the flusher and flushes before releasing the database. On failure
+// the handle and dirty state remain available so the caller can retry safely.
+func (s *Store) Close() error {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	s.stopFlusher()
+	s.flushMu.Lock()
+	defer s.flushMu.Unlock()
+	// Keep accounting excluded between the final snapshot and handle release.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.db == nil {
+		return nil
+	}
+	s.pruneLedgerLocked(time.Now())
+	batch := s.takeFlushBatchLocked()
+	if !batch.empty() {
+		if err := writeFlushBatch(s.db.Conn(), batch); err != nil {
+			s.restoreFlushBatchLocked(batch)
+			s.lastPersistenceError = err.Error()
+			return err
+		}
+		s.lastPersistenceSuccess, s.lastPersistenceError = time.Now().UTC(), ""
+	}
+	if err := s.db.Close(); err != nil {
+		s.lastPersistenceError = err.Error()
+		return err
+	}
+	s.db = nil
+	return nil
+}
+
+func (s *Store) startFlusher(interval time.Duration) {
+	if interval <= 0 {
+		interval = 10 * time.Second
+	}
+	s.mu.Lock()
+	stopCh, stoppedCh := make(chan struct{}), make(chan struct{})
+	s.stopFlushCh, s.flushStopped = stopCh, stoppedCh
+	s.mu.Unlock()
+	go s.flushLoop(stopCh, stoppedCh, interval)
 }
 
 // DB exposes the shared database handle so other layers (for example the rule
@@ -503,21 +534,9 @@ func (s *Store) CompleteRequest(completion pluginapi.RequestCompletion, fallback
 	}
 	if traceID != "" {
 		tr.TraceID = traceID
-		// If usage.handle already created a trace entry before CompleteRequest knew the TraceID, merge them!
+		// An explicit shared TraceID is the only cross-request-id merge proof.
 		if existingTrace, ok := s.byTraceID[traceID]; ok && existingTrace != tr {
-			tr.ExtractedUsage = MergeMaxUsage(tr.ExtractedUsage, existingTrace.ExtractedUsage)
-			if existingTrace.APIKey != "" && existingTrace.APIKey != "__anonymous__" && (tr.APIKey == "" || tr.APIKey == "__anonymous__") {
-				tr.APIKey = existingTrace.APIKey
-			}
-			if existingTrace.KeyName != "" && tr.KeyName == "" {
-				tr.KeyName = existingTrace.KeyName
-			}
-			if existingTrace.CountedRequest {
-				tr.CountedRequest = true
-				tr.BilledUsage = existingTrace.BilledUsage
-				tr.BilledKey = existingTrace.BilledKey
-				tr.Failed = existingTrace.Failed
-			}
+			s.mergeTrackedRequestLocked(tr, existingTrace)
 		}
 		s.byTraceID[traceID] = tr
 	}
@@ -563,22 +582,29 @@ func (s *Store) ObserveHostUsageRecord(rec pluginapi.UsageRecord, keyName string
 	if tr == nil && hostReqID != "" {
 		tr = s.byRequestID[hostReqID]
 	}
-	// 3. Try matching an active/recent tracker for the same APIKey & Model that hasn't bound a TraceID yet
-	if tr == nil && apiKey != "__anonymous__" {
-		var best *TrackedRequest
+	// Only records without an explicit request identity may use a conservative
+	// fallback: one uncompleted, model-matching tracker, never "the latest".
+	if tr == nil && hostReqID == "" && apiKey != "__anonymous__" {
+		var match *TrackedRequest
+		ambiguous := false
 		for _, candidate := range s.byRequestID {
-			if candidate.APIKey != apiKey {
+			if candidate.APIKey != apiKey || !candidate.CompletedAt.IsZero() || time.Since(candidate.StartedAt) >= 10*time.Minute {
 				continue
 			}
 			if traceID != "" && candidate.TraceID != "" && candidate.TraceID != traceID {
 				continue
 			}
-			if best == nil || candidate.StartedAt.After(best.StartedAt) {
-				best = candidate
+			if strings.TrimSpace(rec.Model) == "" || !strings.EqualFold(strings.TrimSpace(candidate.Model), strings.TrimSpace(rec.Model)) {
+				continue
 			}
+			if match != nil && match != candidate {
+				ambiguous = true
+				break
+			}
+			match = candidate
 		}
-		if best != nil && time.Since(best.StartedAt) < 10*time.Minute {
-			tr = best
+		if !ambiguous {
+			tr = match
 		}
 	}
 
@@ -641,6 +667,10 @@ func (s *Store) ObserveHostUsageRecord(rec pluginapi.UsageRecord, keyName string
 		tr.AuthType = authType
 	}
 
+	if rec.Failed {
+		tr.Failed = true
+		s.rollbackLedgerStampsLocked(tr)
+	}
 	// Merge host usage with interceptor usage (taking the more complete value per bucket)
 	tr.ExtractedUsage = MergeMaxUsage(tr.ExtractedUsage, hostUsage)
 	s.reconcileTrackerDeltaLocked(tr)
@@ -681,203 +711,6 @@ func isInvalidKeyID(k string) bool {
 func isInvalidModelID(m string) bool {
 	v := strings.TrimSpace(m)
 	return v == "" || strings.EqualFold(v, "unknown")
-}
-
-// reconcileTrackerDeltaLocked applies the request count (at most once) and any newly
-// discovered token deltas to the (requested model, served model) tuple buckets of the
-// key and of the upstream account.
-func (s *Store) reconcileTrackerDeltaLocked(tr *TrackedRequest) {
-	apiKey := normalizeAPIKey(tr.APIKey)
-	if isInvalidKeyID(apiKey) {
-		return
-	}
-	requested := requestedModelOf(tr)
-	if requested == "" {
-		return
-	}
-	served := servedModelOf(tr, requested)
-	key := tupleKey(requested, served)
-
-	ks := s.getOrCreateKeyStatsLocked(apiKey, tr.KeyName)
-	acct := s.getOrCreateAccountStatsLocked(tr)
-
-	// The served model can only be learned mid-flight for a streaming response, so
-	// move the slice already billed for the previous tuple onto the new one.
-	if prev := strings.TrimSpace(tr.BilledKey); prev != "" && prev != key {
-		migrateTupleBucket(ks.Models, prev, key, requested, served)
-		if acct != nil {
-			migrateTupleBucket(acct.Models, prev, key, requested, served)
-		}
-		s.markKeyDirtyLocked(apiKey)
-		s.markAccountDirtyLocked(tr)
-	}
-	tr.BilledKey = key
-
-	// 1. Compute token deltas between ExtractedUsage and already BilledUsage
-	target := MergeMaxUsage(tr.BilledUsage, tr.ExtractedUsage)
-	dIn := target.UncachedInputTokens - tr.BilledUsage.UncachedInputTokens
-	dOut := target.OutputTokens - tr.BilledUsage.OutputTokens
-	dReason := target.ReasoningTokens - tr.BilledUsage.ReasoningTokens
-	dRead := target.CacheReadTokens - tr.BilledUsage.CacheReadTokens
-	dWrite := target.CacheWriteTokens - tr.BilledUsage.CacheWriteTokens
-	hasDelta := dIn > 0 || dOut > 0 || dReason > 0 || dRead > 0 || dWrite > 0
-
-	// Nothing left to record (request already counted and no new tokens): return
-	// before creating buckets, otherwise an idle reconcile would materialise an
-	// empty tuple row with 0 requests and 0 tokens.
-	if tr.CountedRequest && !hasDelta {
-		if existing, ok := ks.Models[key]; ok && existing != nil && existing.UnitPricePer1M.Source == "" {
-			if p, found := s.pricing.Lookup(requested, served); found {
-				existing.UnitPricePer1M = p
-				s.dirty = true
-			}
-		}
-		return
-	}
-
-	ms := getOrCreateTupleStats(ks, key, requested, served)
-	ams := getOrCreateAccountTupleStats(acct, key, requested, served)
-	now := time.Now()
-	nowStr := now.UTC().Format(time.RFC3339)
-
-	// Ledger dimensions: bill by the client-requested (catalog) model, never by the
-	// substituted upstream name, so usage history matches the model catalog.
-	ledgerAccount, ledgerProvider := "", ""
-	if acct != nil {
-		ledgerAccount = acct.AuthID
-		ledgerProvider = acct.Provider
-	}
-	recordLedger := func(requests, in, out, read, write, total, costNano int64) {
-		// Failed calls never count toward the quota ledger.
-		if tr.Failed {
-			return
-		}
-		stamp := s.applyLedgerLocked(now, apiKey, tr.KeyName, ledgerAccount, ledgerProvider,
-			requested, served, tr.SourceFormat, requests, in, out, read, write, total, costNano)
-		tr.ledgerStamps = append(tr.ledgerStamps, stamp)
-	}
-
-	// 2. Apply request count once
-	if !tr.CountedRequest {
-		tr.CountedRequest = true
-		ks.TotalRequests++
-		ms.Requests++
-		if tr.Failed {
-			ks.FailedRequests++
-			ms.FailedRequests++
-			if acct != nil {
-				acct.FailedRequests++
-			}
-			if ams != nil {
-				ams.FailedRequests++
-			}
-		} else {
-			ks.SuccessRequests++
-			ms.SuccessRequests++
-			if acct != nil {
-				acct.SuccessRequests++
-			}
-			if ams != nil {
-				ams.SuccessRequests++
-			}
-		}
-		if acct != nil {
-			acct.Requests++
-			acct.LastRequestAt = nowStr
-			acct.LastModel = served
-		}
-		if ams != nil {
-			ams.Requests++
-			ams.LastUsedAt = nowStr
-		}
-		ks.LastRequestAt = nowStr
-		ms.LastUsedAt = nowStr
-		recordLedger(1, 0, 0, 0, 0, 0, 0)
-		s.markKeyDirtyLocked(apiKey)
-		s.markAccountDirtyLocked(tr)
-		s.dirty = true
-	}
-
-	if !hasDelta {
-		return
-	}
-
-	if dIn < 0 {
-		dIn = 0
-	}
-	if dOut < 0 {
-		dOut = 0
-	}
-	if dReason < 0 {
-		dReason = 0
-	}
-	if dRead < 0 {
-		dRead = 0
-	}
-	if dWrite < 0 {
-		dWrite = 0
-	}
-	dTotal := dIn + dOut + dRead + dWrite
-
-	// Cost is priced from the client-requested model: upstream variant names rarely
-	// have a published price, while the requested name identifies the real product.
-	costBreakdown := s.pricing.Calculate(dIn, dOut, dRead, dWrite, requested, served)
-	tr.BilledUsage = target
-
-	// Update the tuple statistics
-	ms.InputTokens += dIn
-	ms.OutputTokens += dOut
-	ms.ReasoningTokens += dReason
-	ms.CacheReadTokens += dRead
-	ms.CacheWriteTokens += dWrite
-	ms.TotalTokens += dTotal
-	ms.CostNanoUSD += costBreakdown.NanoUSD
-	ms.CostUSD = pricing.NanoToUSD(ms.CostNanoUSD)
-	ms.CostFormatted = pricing.FormatUSD(ms.CostNanoUSD)
-	ms.UnitPricePer1M = costBreakdown.UnitPrice
-	ms.LastUsedAt = nowStr
-
-	// Update KeyStats
-	ks.InputTokens += dIn
-	ks.OutputTokens += dOut
-	ks.ReasoningTokens += dReason
-	ks.CacheReadTokens += dRead
-	ks.CacheWriteTokens += dWrite
-	ks.TotalTokens += dTotal
-	ks.TotalCostNanoUSD += costBreakdown.NanoUSD
-	ks.TotalCostUSD = pricing.NanoToUSD(ks.TotalCostNanoUSD)
-	ks.TotalCostFormatted = pricing.FormatUSD(ks.TotalCostNanoUSD)
-	ks.LastRequestAt = nowStr
-
-	// Update AccountStats (upstream credential + provider dimension)
-	if acct != nil {
-		acct.InputTokens += dIn
-		acct.OutputTokens += dOut
-		acct.ReasoningTokens += dReason
-		acct.CacheReadTokens += dRead
-		acct.CacheWriteTokens += dWrite
-		acct.TotalTokens += dTotal
-		acct.LastModel = served
-		acct.LastRequestAt = nowStr
-	}
-	if ams != nil {
-		ams.InputTokens += dIn
-		ams.OutputTokens += dOut
-		ams.ReasoningTokens += dReason
-		ams.CacheReadTokens += dRead
-		ams.CacheWriteTokens += dWrite
-		ams.TotalTokens += dTotal
-		ams.CostNanoUSD += costBreakdown.NanoUSD
-		ams.CostUSD = pricing.NanoToUSD(ams.CostNanoUSD)
-		ams.CostFormatted = pricing.FormatUSD(ams.CostNanoUSD)
-		ams.LastUsedAt = nowStr
-	}
-
-	recordLedger(0, dIn, dOut, dRead, dWrite, dTotal, costBreakdown.NanoUSD)
-
-	s.markKeyDirtyLocked(apiKey)
-	s.markAccountDirtyLocked(tr)
-	s.dirty = true
 }
 
 // markKeyDirtyLocked schedules one API key (with its model tuples) for the next flush.
@@ -991,46 +824,6 @@ func mergeTupleStats(dst, src *ModelStats) {
 	if src.LastUsedAt > dst.LastUsedAt {
 		dst.LastUsedAt = src.LastUsedAt
 	}
-}
-
-// migrateTupleBucket moves an already billed tuple onto the tuple that just became
-// known (a streaming response reveals the served model mid-flight), merging when the
-// destination already exists.
-func migrateTupleBucket(models map[string]*ModelStats, from, to, requested, served string) {
-	if models == nil || from == "" || to == "" || from == to {
-		return
-	}
-	src, ok := models[from]
-	if !ok || src == nil {
-		return
-	}
-	dst, exists := models[to]
-	if !exists || dst == nil {
-		src.RequestedModel = requested
-		src.ServedModel = served
-		models[to] = src
-		delete(models, from)
-		return
-	}
-	dst.Requests += src.Requests
-	dst.SuccessRequests += src.SuccessRequests
-	dst.FailedRequests += src.FailedRequests
-	dst.InputTokens += src.InputTokens
-	dst.OutputTokens += src.OutputTokens
-	dst.ReasoningTokens += src.ReasoningTokens
-	dst.CacheReadTokens += src.CacheReadTokens
-	dst.CacheWriteTokens += src.CacheWriteTokens
-	dst.TotalTokens += src.TotalTokens
-	dst.CostNanoUSD += src.CostNanoUSD
-	dst.CostUSD = pricing.NanoToUSD(dst.CostNanoUSD)
-	dst.CostFormatted = pricing.FormatUSD(dst.CostNanoUSD)
-	if dst.UnitPricePer1M.Source == "" {
-		dst.UnitPricePer1M = src.UnitPricePer1M
-	}
-	if src.LastUsedAt > dst.LastUsedAt {
-		dst.LastUsedAt = src.LastUsedAt
-	}
-	delete(models, from)
 }
 
 // normalizeAccountIdentity collapses credential ids that differ only by a
@@ -1314,157 +1107,10 @@ func (s *Store) getOrCreateKeyStatsLocked(apiKey, keyName string) *KeyStats {
 	return ks
 }
 
-// Snapshot returns a deep copy of current usage stats enriched with live active concurrency counts.
-func (s *Store) Snapshot(filterAPIKey, filterModel string, activeByKey map[string]int, maxConcByKey map[string]int, keyNames map[string]string, maskKeys bool) PersistedSnapshot {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	filterKey := strings.TrimSpace(filterAPIKey)
-	filterMod := strings.ToLower(strings.TrimSpace(filterModel))
-
-	// Include all configured keys or valid keys with stats
-	allKeyIDs := make(map[string]struct{}, len(s.keys)+len(keyNames)+len(maxConcByKey))
-	for k := range s.keys {
-		if !isInvalidKeyID(k) {
-			allKeyIDs[k] = struct{}{}
-		}
-	}
-	for k := range keyNames {
-		if !isInvalidKeyID(k) {
-			allKeyIDs[k] = struct{}{}
-		}
-	}
-	for k := range maxConcByKey {
-		if !isInvalidKeyID(k) {
-			allKeyIDs[k] = struct{}{}
-		}
-	}
-
-	outKeys := make(map[string]*KeyStats, len(allKeyIDs))
-	for k := range allKeyIDs {
-		if isInvalidKeyID(k) {
-			continue
-		}
-		if filterKey != "" && k != filterKey && MaskAPIKey(k) != filterKey {
-			continue
-		}
-		src, exists := s.keys[k]
-		var cpKey KeyStats
-		if exists {
-			cpKey = *src
-		} else {
-			cpKey = KeyStats{
-				APIKey:             k,
-				MaskedKey:          MaskAPIKey(k),
-				KeyName:            keyNames[k],
-				TotalCostFormatted: "$0.000000",
-			}
-		}
-		if name, ok := keyNames[k]; ok && name != "" {
-			cpKey.KeyName = name
-		}
-		if activeByKey != nil {
-			cpKey.ActiveConcurrency = activeByKey[k]
-		}
-		if maxConcByKey != nil {
-			cpKey.MaxConcurrency = maxConcByKey[k]
-		}
-		if maskKeys {
-			cpKey.APIKey = ""
-		}
-
-		cpModels := make(map[string]*ModelStats)
-		var sumReq, sumOk, sumFail, sumIn, sumOut, sumReason, sumRead, sumWrite, sumTotal, sumNano int64
-		if exists && src.Models != nil {
-			for tuple, mStat := range src.Models {
-				if mStat == nil {
-					continue
-				}
-				// A filter matches either side of the tuple so searching the requested
-				// name and the served name both work.
-				if filterMod != "" &&
-					!strings.Contains(strings.ToLower(mStat.RequestedModel), filterMod) &&
-					!strings.Contains(strings.ToLower(mStat.ServedModel), filterMod) {
-					continue
-				}
-				mCopy := *mStat
-				mCopy.CostUSD = pricing.NanoToUSD(mCopy.CostNanoUSD)
-				mCopy.CostFormatted = pricing.FormatUSD(mCopy.CostNanoUSD)
-				cpModels[tuple] = &mCopy
-
-				sumReq += mCopy.Requests
-				sumOk += mCopy.SuccessRequests
-				sumFail += mCopy.FailedRequests
-				sumIn += mCopy.InputTokens
-				sumOut += mCopy.OutputTokens
-				sumReason += mCopy.ReasoningTokens
-				sumRead += mCopy.CacheReadTokens
-				sumWrite += mCopy.CacheWriteTokens
-				sumTotal += mCopy.TotalTokens
-				sumNano += mCopy.CostNanoUSD
-			}
-		}
-		cpKey.Models = cpModels
-		if filterMod == "" && exists {
-			cpKey.TotalRequests = sumReq
-			cpKey.SuccessRequests = sumOk
-			cpKey.FailedRequests = sumFail
-			cpKey.InputTokens = sumIn
-			cpKey.OutputTokens = sumOut
-			cpKey.ReasoningTokens = sumReason
-			cpKey.CacheReadTokens = sumRead
-			cpKey.CacheWriteTokens = sumWrite
-			cpKey.TotalTokens = sumTotal
-			cpKey.TotalCostNanoUSD = sumNano
-		}
-		cpKey.TotalCostUSD = pricing.NanoToUSD(cpKey.TotalCostNanoUSD)
-		cpKey.TotalCostFormatted = pricing.FormatUSD(cpKey.TotalCostNanoUSD)
-
-		mapKey := k
-		if maskKeys {
-			mapKey = MaskAPIKey(k)
-		}
-		outKeys[mapKey] = &cpKey
-	}
-
-	return PersistedSnapshot{
-		Version:   1,
-		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
-		Keys:      outKeys,
-		Accounts:  s.snapshotAccountsLocked(),
-	}
-}
-
-// snapshotAccountsLocked copies the account buckets for read-only delivery.
-func (s *Store) snapshotAccountsLocked() map[string]*AccountStats {
-	if len(s.accounts) == 0 {
-		return nil
-	}
-	out := make(map[string]*AccountStats, len(s.accounts))
-	for k, v := range s.accounts {
-		if v == nil {
-			continue
-		}
-		cp := *v
-		if len(v.Models) > 0 {
-			cp.Models = make(map[string]*ModelStats, len(v.Models))
-			for mk, mv := range v.Models {
-				if mv == nil {
-					continue
-				}
-				mcp := *mv
-				mcp.CostUSD = pricing.NanoToUSD(mcp.CostNanoUSD)
-				mcp.CostFormatted = pricing.FormatUSD(mcp.CostNanoUSD)
-				cp.Models[mk] = &mcp
-			}
-		}
-		out[k] = &cp
-	}
-	return out
-}
-
 // Reset clears statistics either for a specific API Key or globally (when apiKey is empty).
 func (s *Store) Reset(apiKey string) error {
+	s.flushMu.Lock()
+	defer s.flushMu.Unlock()
 	target := strings.TrimSpace(apiKey)
 	s.mu.Lock()
 	if target == "" {
@@ -1480,6 +1126,14 @@ func (s *Store) Reset(apiKey string) error {
 		s.dirtyLedger = make(map[string]struct{})
 		s.deletedLedger = make(map[ledgerRef]struct{})
 	} else {
+		for id, tr := range s.byRequestID {
+			if tr.APIKey == target {
+				delete(s.byRequestID, id)
+				if tr.TraceID != "" {
+					delete(s.byTraceID, tr.TraceID)
+				}
+			}
+		}
 		delete(s.keys, target)
 		s.deletedKeys[target] = struct{}{}
 		delete(s.dirtyKeys, target)
@@ -1496,7 +1150,7 @@ func (s *Store) Reset(apiKey string) error {
 	}
 	s.dirty = true
 	s.mu.Unlock()
-	return s.FlushNow()
+	return s.flushToDBSerialized()
 }
 
 // FlushIfDirty writes the snapshot to disk only if new usage has been recorded since the last flush.
@@ -1512,7 +1166,6 @@ func (s *Store) FlushIfDirty() error {
 
 // FlushNow persists every row touched since the previous flush.
 func (s *Store) FlushNow() error {
-	s.pruneLedgerLocked(time.Now())
 	return s.flushToDB()
 }
 

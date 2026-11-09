@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -20,7 +21,7 @@ import (
 
 const (
 	PluginID      = "cpa-plugin-key-manager"
-	PluginVersion = "0.10.0"
+	PluginVersion = "0.10.3"
 	PluginAuthor  = "YzMzx"
 	PluginRepo    = "https://github.com/YzMzx/cpa-plugin-key-manager"
 	PluginLogoSVG = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%238b8680'/><path d='M24 22a10 10 0 1 0 9.5 13H42v5h6v-5h4v-6H33.5A10 10 0 0 0 24 22zm0 6a4 4 0 1 1 0 8 4 4 0 0 1 0-8z' fill='%23fff'/></svg>"
@@ -59,6 +60,12 @@ type managementRegistrationResponse struct {
 // It is safe for concurrent use and preserves in-flight concurrency slots,
 // dynamic Web UI rules, and accumulated usage across `plugin.reconfigure` hot-reloads.
 type Manager struct {
+	// mutationMu orders configuration changes and durable rule commits.
+	mutationMu    sync.Mutex
+	managementMu  sync.Mutex
+	admissionMu   sync.RWMutex
+	hostSyncError string
+	hostKeySync   func(context.Context, string, []string) error
 	mu            sync.RWMutex
 	seedCfg       Config
 	dynamicState  *DynamicRulesState
@@ -120,7 +127,9 @@ func (m *Manager) HandleRPC(method string, request []byte) ([]byte, error) {
 		return okEnvelope(m.registrationPayload())
 
 	case pluginabi.MethodPluginQuiesce:
-		_ = m.usageStore.FlushIfDirty()
+		if err := m.usageStore.FlushIfDirty(); err != nil {
+			return nil, err
+		}
 		return okEnvelope(struct{}{})
 
 	case pluginabi.MethodPluginShutdown:
@@ -178,9 +187,13 @@ func (m *Manager) HandleRPC(method string, request []byte) ([]byte, error) {
 }
 
 // Configure parses and applies configuration from `plugin.register` or `plugin.reconfigure`.
-// Hot-reloading preserves all active concurrency slots (`m.limiter`), dynamic rules (`key_guard_rules.json`),
+// Hot-reloading preserves active concurrency slots and SQLite dynamic rules,
 // and accumulated billing data (`m.usageStore`).
 func (m *Manager) Configure(raw []byte) error {
+	m.managementMu.Lock()
+	defer m.managementMu.Unlock()
+	m.mutationMu.Lock()
+	defer m.mutationMu.Unlock()
 	var req lifecycleRequest
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &req); err != nil {
@@ -193,6 +206,16 @@ func (m *Manager) Configure(raw []byte) error {
 		return fmt.Errorf("parse plugin config YAML: %w", err)
 	}
 
+	if err := validateConfig(seedCfg); err != nil {
+		return err
+	}
+	m.mu.RLock()
+	currentDB := m.usageStore.SQLitePath()
+	m.mu.RUnlock()
+	if currentDB != "" && currentDB != seedCfg.Storage.UsageDBFile {
+		return fmt.Errorf("changing storage.usage_db_file requires a restart")
+	}
+
 	// SQLite is the only persistence backend on this branch: open it before loading
 	// the rules, because the rules repository lives in the very same database.
 	seedFlush := time.Duration(seedCfg.Storage.FlushIntervalSeconds) * time.Second
@@ -201,11 +224,7 @@ func (m *Manager) Configure(raw []byte) error {
 		// (typically an ephemeral container directory). Adopt it once, otherwise the
 		// durable database starts empty and the history looks lost.
 		if moved, errImport := importLegacyUsageDB(seedCfg.Storage.LegacyUsageDBFile, dbPath); errImport != nil {
-			m.host.Log("warn", "failed to import the legacy sqlite database", map[string]any{
-				"from":  seedCfg.Storage.LegacyUsageDBFile,
-				"to":    dbPath,
-				"error": errImport.Error(),
-			})
+			return fmt.Errorf("import legacy database: %w", errImport)
 		} else if moved {
 			m.host.Log("info", "imported legacy sqlite database into the durable location", map[string]any{
 				"from": seedCfg.Storage.LegacyUsageDBFile,
@@ -217,67 +236,32 @@ func (m *Manager) Configure(raw []byte) error {
 		if info, errStat := os.Stat(dbPath); errStat != nil || info.IsDir() || info.Size() == 0 {
 			candidates := UsageFileCandidates(seedCfg.Storage.UsageFile)
 			if errImport := m.usageStore.ImportLegacySnapshotCandidates(candidates); errImport != nil {
-				m.host.Log("warn", "failed to import the legacy usage snapshot", map[string]any{
-					"error": errImport.Error(),
-				})
+				return fmt.Errorf("import legacy usage: %w", errImport)
 			}
 		}
 		if errDB := m.usageStore.ConfigureSQLite(dbPath, seedFlush); errDB != nil {
-			m.host.Log("warn", "failed to open the plugin sqlite database", map[string]any{
-				"file":  dbPath,
-				"error": errDB.Error(),
-			})
+			return fmt.Errorf("configure plugin database: %w", errDB)
 		}
 	}
-	m.mu.Lock()
-	m.rulesRepo = newRulesRepository(m.usageStore.DB())
-	repo := m.rulesRepo
-	m.mu.Unlock()
-
-	dynState := &DynamicRulesState{Version: 1, CustomPrices: make(map[string]pricing.ModelPrice)}
-	if repo != nil {
-		loaded, errRules := m.loadRulesState(repo, seedCfg.Storage.RulesFile)
-		if errRules != nil {
-			m.host.Log("warn", "failed to load rules from sqlite, falling back to config.yaml seed", map[string]any{
-				"error": errRules.Error(),
-			})
-		} else {
-			dynState = loaded
-		}
+	repo := newRulesRepository(m.usageStore.DB())
+	if repo == nil {
+		return fmt.Errorf("rules database is not configured")
 	}
-
-	// Seed synchronization: if the disk rules are empty, restore them from the
-	// plugin config that CLIProxyAPI itself delivers in the registration payload.
-	if len(dynState.Keys) == 0 && len(seedCfg.Keys) > 0 {
-		dynState.Keys = make([]KeyRuleConfig, len(seedCfg.Keys))
-		for i, k := range seedCfg.Keys {
-			dynState.Keys[i] = cloneKeyRule(k)
-		}
+	dynState, err := m.loadRulesState(repo, seedCfg.Storage.RulesFile)
+	if err != nil {
+		return fmt.Errorf("load rules: %w", err)
 	}
-	if repo != nil && (len(dynState.Keys) > 0 || dynState.DefaultPolicy != nil) {
-		if raw, errMarshal := json.Marshal(dynState); errMarshal == nil {
-			_ = repo.Save(raw)
+	// A reload never falls back to permissive seed rules on an unreadable store.
+	if len(dynState.Keys) == 0 && len(dynState.DeletedKeys) == 0 && len(seedCfg.Keys) > 0 {
+		for _, key := range seedCfg.Keys {
+			dynState.Keys = append(dynState.Keys, cloneKeyRule(key))
 		}
-	}
-
-	// 2. Hot-reload safety: If in-memory state already has dynamic rules (e.g. during plugin.reconfigure),
-	// make sure we never erase in-flight rules that may not yet be on disk
-	m.mu.RLock()
-	existingDyn := m.dynamicState
-	m.mu.RUnlock()
-	if existingDyn != nil && len(existingDyn.Keys) > 0 {
-		diskKeyMap := make(map[string]struct{}, len(dynState.Keys))
-		for _, dk := range dynState.Keys {
-			diskKeyMap[dk.APIKey] = struct{}{}
+		rawState, err := json.Marshal(dynState)
+		if err != nil {
+			return err
 		}
-		for _, ek := range existingDyn.Keys {
-			if _, exists := diskKeyMap[ek.APIKey]; !exists {
-				dynState.Keys = append(dynState.Keys, cloneKeyRule(ek))
-			}
-		}
-		if dynState.DefaultPolicy == nil && existingDyn.DefaultPolicy != nil {
-			dp := *existingDyn.DefaultPolicy
-			dynState.DefaultPolicy = &dp
+		if err := repo.Save(rawState); err != nil {
+			return err
 		}
 	}
 
@@ -289,21 +273,24 @@ func (m *Manager) Configure(raw []byte) error {
 	m.mu.RUnlock()
 
 	cfg := MergeDynamicState(seedCfg, dynState, hostKeys...)
-	m.pricingEngine.SetCustomPrices(cfg.Pricing.CustomPrices, cfg.Pricing.DefaultPrice)
-
-	flushDur := time.Duration(cfg.Storage.FlushIntervalSeconds) * time.Second
-	m.usageStore.SetLedgerRetention(cfg.Storage.LedgerRetentionDays)
-	if dbPath := strings.TrimSpace(cfg.Storage.UsageDBFile); dbPath != "" {
-		if errDB := m.usageStore.ConfigureSQLite(dbPath, flushDur); errDB != nil {
-			m.host.Log("warn", "failed to configure the plugin sqlite database", map[string]any{
-				"file":  dbPath,
-				"error": errDB.Error(),
-			})
-		}
-		m.mu.Lock()
-		m.rulesRepo = newRulesRepository(m.usageStore.DB())
-		m.mu.Unlock()
+	if err := validateConfig(cfg); err != nil {
+		return err
 	}
+	if fingerprint := configFingerprint(cfg); dynState.ConfigFingerprint != fingerprint {
+		dynState.Revision++
+		dynState.ConfigFingerprint = fingerprint
+		rawState, err := json.Marshal(dynState)
+		if err != nil {
+			return err
+		}
+		if err := repo.Save(rawState); err != nil {
+			return fmt.Errorf("persist configured revision: %w", err)
+		}
+	}
+	if err := m.pricingEngine.SetCustomPrices(cfg.Pricing.CustomPrices, cfg.Pricing.DefaultPrice); err != nil {
+		return err
+	}
+	m.usageStore.SetLedgerRetention(cfg.Storage.LedgerRetentionDays)
 
 	syncKey := fmt.Sprintf("%s|%s|%d|%d",
 		cfg.Pricing.SyncURL,
@@ -314,6 +301,7 @@ func (m *Manager) Configure(raw []byte) error {
 
 	m.mu.Lock()
 	prevSyncKey := m.lastSyncKey
+	m.rulesRepo = repo
 	m.seedCfg = seedCfg
 	m.dynamicState = dynState
 	m.hostAPIKeys = hostKeys
@@ -335,8 +323,12 @@ func (m *Manager) Configure(raw []byte) error {
 
 // Shutdown stops background tasks and flushes usage statistics to disk.
 func (m *Manager) Shutdown() {
+	m.mutationMu.Lock()
+	defer m.mutationMu.Unlock()
 	m.pricingSyncer.Stop()
-	_ = m.usageStore.Close()
+	if err := m.usageStore.Close(); err != nil {
+		m.host.Log("error", "failed to flush usage on shutdown", map[string]any{"error": err.Error()})
+	}
 }
 
 func (m *Manager) registrationPayload() registrationResponse {
@@ -352,7 +344,7 @@ func (m *Manager) registrationPayload() registrationResponse {
 				{
 					Name:        "storage",
 					Type:        pluginapi.ConfigFieldTypeObject,
-					Description: "Persistence paths for token usage statistics JSON and dynamic rules JSON.",
+					Description: "SQLite storage path, retention, persistence interval and dashboard timezone.",
 				},
 				{
 					Name:        "default_policy",

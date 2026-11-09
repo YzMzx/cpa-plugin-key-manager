@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -260,8 +261,13 @@ func HandleManagementRequest(ctx context.Context, provider SnapshotProvider, req
 			if origKey == "" {
 				origKey = strings.TrimSpace(tmp.OrigKey)
 			}
-			if origKey != "" && strings.TrimSpace(tmp.APIKey) != "" && strings.TrimSpace(tmp.APIKey) != origKey {
-				_ = provider.DeleteKeyRule(origKey)
+			if origKey != "" {
+				var body map[string]json.RawMessage
+				if err := json.Unmarshal(req.Body, &body); err != nil {
+					return jsonError(http.StatusBadRequest, "invalid JSON body")
+				}
+				body["orig_key"], _ = json.Marshal(origKey)
+				req.Body, _ = json.Marshal(body)
 			}
 			rule, err := provider.UpsertKeyRuleFromJSON(req.Body)
 			if err != nil {
@@ -465,9 +471,26 @@ func HandleManagementRequest(ctx context.Context, provider SnapshotProvider, req
 		if method != http.MethodGet {
 			return jsonError(http.StatusMethodNotAllowed, "method not allowed")
 		}
+		zone := queryValue(req, "tz")
+		if zone == "" {
+			if source, ok := provider.(interface{ ConfiguredTimezone() string }); ok {
+				zone = source.ConfiguredTimezone()
+			}
+		}
+		from, err := parseTimeParamInZone(queryValue(req, "from"), zone)
+		if err != nil {
+			return jsonError(http.StatusBadRequest, err.Error())
+		}
+		to, err := parseTimeParamInZone(queryValue(req, "to"), zone)
+		if err != nil {
+			return jsonError(http.StatusBadRequest, err.Error())
+		}
+		if !from.IsZero() && !to.IsZero() && !to.After(from) {
+			return jsonError(http.StatusBadRequest, "to must be after from")
+		}
 		q := usage.LedgerQuery{
-			From:        parseTimeParam(queryValue(req, "from")),
-			To:          parseTimeParam(queryValue(req, "to")),
+			From:        from,
+			To:          to,
 			Granularity: queryValue(req, "granularity"),
 			Key:         queryValue(req, "key"),
 			Account:     queryValue(req, "account"),
@@ -508,32 +531,38 @@ func queryValue(req pluginapi.ManagementRequest, key string) string {
 	return strings.TrimSpace(req.Query.Get(key))
 }
 
-// parseTimeParam accepts RFC3339, a plain date (YYYY-MM-DD) or unix seconds.
+// parseTimeParam retains the default-zone helper for existing callers.
 func parseTimeParam(raw string) time.Time {
+	value, _ := parseTimeParamInZone(raw, usage.DefaultTimezone)
+	return value
+}
+
+func parseTimeParamInZone(raw, zone string) (time.Time, error) {
+	if zone == "" {
+		zone = usage.DefaultTimezone
+	}
+	loc, err := time.LoadLocation(zone)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid timezone")
+	}
 	value := strings.TrimSpace(raw)
 	if value == "" {
-		return time.Time{}
+		return time.Time{}, nil
 	}
 	if parsed, err := time.Parse(time.RFC3339, value); err == nil {
-		return parsed
-	}
-	// Plain dates are plugin-local (UTC+8) calendar days, so a bare
-	// "2026-01-02" means 00:00 in Asia/Shanghai, not in the server zone.
-	loc, errLoc := time.LoadLocation(usage.DefaultTimezone)
-	if errLoc != nil {
-		loc = time.Local
+		return parsed, nil
 	}
 	if parsed, err := time.ParseInLocation("2006-01-02", value, loc); err == nil {
-		return parsed
+		return parsed, nil
 	}
 	if secs, err := strconv.ParseInt(value, 10, 64); err == nil {
-		return time.Unix(secs, 0)
+		return time.Unix(secs, 0), nil
 	}
-	return time.Time{}
+	return time.Time{}, fmt.Errorf("invalid date/time parameter")
 }
 
 func jsonResponse(statusCode int, payload any) pluginapi.ManagementResponse {
-	raw, err := json.MarshalIndent(payload, "", "  ")
+	raw, err := json.Marshal(payload)
 	if err != nil {
 		raw = []byte(`{"error":"failed to encode response"}`)
 		statusCode = http.StatusInternalServerError

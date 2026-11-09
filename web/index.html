@@ -38,6 +38,7 @@
       <h1>API Key 管控与 Token 用量</h1>
     </div>
   </header>
+  <div id="refreshStatus" role="status" class="card-hint hidden"></div>
 
   <!-- Navigation Tabs -->
   <div class="page-tabs-row">
@@ -296,7 +297,7 @@
           <h2 class="card-title">按账号 & 提供商 Token 用量</h2>
         </div>
         <div class="input-row">
-          <input type="text" class="input" style="width:200px" id="dashAccountSearch" placeholder="搜索账号 / 提供商..." oninput="renderDashboardTables()">
+          <input type="text" class="input" style="width:200px" id="dashAccountSearch" placeholder="搜索账号 / 提供商..." oninput="renderAccountUsageTable()">
         </div>
       </div>
       <div class="table-wrap">
@@ -575,7 +576,7 @@
 
 <!-- ==================== MODAL: EDIT / OVERRIDE MODEL PRICE ==================== -->
 <div class="modal-backdrop" id="priceModalBackdrop">
-  <div class="modal" style="max-width:540px">
+  <div class="modal" style="max-width:540px" role="dialog" aria-modal="true" aria-labelledby="priceModalTitle">
     <div class="modal-header">
       <h3 class="card-title" id="priceModalTitle">修改模型价格</h3>
       <button type="button" class="btn btn-sm" onclick="closePriceModal()">×</button>
@@ -624,7 +625,7 @@
 
 <!-- ==================== MODAL: CREATE / EDIT UNIFIED API KEY ==================== -->
 <div class="modal-backdrop" id="keyModalBackdrop">
-  <div class="modal">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="keyModalTitle">
     <div class="modal-header">
       <h3 class="card-title" id="keyModalTitle">新建 / 编辑 API Key 规则</h3>
       <button type="button" class="btn btn-sm" onclick="closeKeyModal()">×</button>
@@ -732,7 +733,7 @@
 
 <script>
 /*@@APP_JS@@*/</script>
-<div class="model-popover" id="modelPopover" role="dialog" aria-label="模型白名单明细" onclick="event.stopPropagation()"></div>
+<div class="model-popover" id="modelPopover" role="dialog" aria-label="模型白名单明细"></div>
 
 </body>
 </html>

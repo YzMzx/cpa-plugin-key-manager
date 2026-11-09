@@ -62,14 +62,6 @@ func (m *Manager) authFilesWithUsage(files []pluginapi.HostAuthFileEntry) []map[
 
 // BuildAdminOverview returns the complete state needed by the Admin Dashboard in a single call.
 func (m *Manager) BuildAdminOverview(hostCallbackID string) map[string]any {
-	diskKeys := ReadHostConfigAPIKeys("")
-	if len(diskKeys) > 0 {
-		m.mu.Lock()
-		m.hostAPIKeys = diskKeys
-		m.cfg = MergeDynamicState(m.seedCfg, m.dynamicState, m.hostAPIKeys...)
-		m.mu.Unlock()
-	}
-
 	snap := m.BuildSnapshot("", "", false)
 	rawAuthFiles := m.cachedHostAuthFiles(hostCallbackID)
 	authFiles := m.authFilesWithUsage(rawAuthFiles)
@@ -84,6 +76,13 @@ func (m *Manager) BuildAdminOverview(hostCallbackID string) map[string]any {
 	}
 	dpCopy := cfg.DefaultPolicy
 	m.mu.RUnlock()
+	for i := range keysCopy {
+		used := m.quotaCostUSD(keysCopy[i]) - keysCopy[i].QuotaUsedBaseUSD
+		if used < 0 {
+			used = 0
+		}
+		keysCopy[i].QuotaUsedUSD = &used
+	}
 
 	var totalTokens, inTokens, outTokens, reasonTokens, readTokens, writeTokens int64
 	var totalReq, okReq, errReq int64
@@ -121,6 +120,9 @@ func (m *Manager) BuildAdminOverview(hostCallbackID string) map[string]any {
 	}
 
 	return map[string]any{
+		"timezone":         cfg.Storage.Timezone,
+		"rules_revision":   m.RulesRevision(),
+		"host_sync":        m.HostSyncStatus(),
 		"summary":          summary,
 		"keys":             keysCopy,
 		"default_policy":   dpCopy,
@@ -166,6 +168,7 @@ func (m *Manager) BuildPersistenceDiagnostics() map[string]any {
 	}
 
 	return map[string]any{
+		"persistence":          m.usageStore.PersistenceStatus(),
 		"rules_keys_in_memory": stateKeys,
 		"usage_db_file":        usageDBFile,
 		"usage_db_exists":      usageDBExists,

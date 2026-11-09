@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -13,14 +14,14 @@ import (
 )
 
 // loadSnapshotFromDB rebuilds the in-memory state from SQLite.
-func (s *Store) loadSnapshotFromDB() (PersistedSnapshot, error) {
+func loadSnapshotFromDB(db *sqlitestore.DB) (PersistedSnapshot, error) {
 	snap := PersistedSnapshot{
 		Version:   1,
 		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
 		Keys:      make(map[string]*KeyStats),
 		Accounts:  make(map[string]*AccountStats),
 	}
-	conn := s.db.Conn()
+	conn := db.Conn()
 
 	rows, err := conn.Query(`SELECT api_key, masked_key, key_name, total_requests, success_requests, failed_requests,
 		input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens, total_tokens,
@@ -317,13 +318,22 @@ const (
 // value copy taken under the lock, the whole write is one transaction, and a failed
 // transaction re-queues its markers so the next flush retries instead of losing data.
 func (s *Store) flushToDB() error {
+	s.flushMu.Lock()
+	defer s.flushMu.Unlock()
+	return s.flushToDBSerialized()
+}
+
+// flushToDBSerialized holds flushMu from snapshot capture through commit/restore.
+func (s *Store) flushToDBSerialized() error {
 	s.mu.Lock()
+	s.pruneLedgerLocked(time.Now())
 	db := s.db
 	if db == nil {
 		s.mu.Unlock()
 		return nil
 	}
 	batch := s.takeFlushBatchLocked()
+	s.flushInProgress = !batch.empty()
 	s.mu.Unlock()
 
 	if batch.empty() {
@@ -332,9 +342,16 @@ func (s *Store) flushToDB() error {
 	if err := writeFlushBatch(db.Conn(), batch); err != nil {
 		s.mu.Lock()
 		s.restoreFlushBatchLocked(batch)
+		s.lastPersistenceError = err.Error()
+		s.flushInProgress = false
 		s.mu.Unlock()
 		return err
 	}
+	s.mu.Lock()
+	s.lastPersistenceSuccess = time.Now().UTC()
+	s.lastPersistenceError = ""
+	s.flushInProgress = false
+	s.mu.Unlock()
 	return nil
 }
 
@@ -399,7 +416,7 @@ func writeFlushBatch(conn *sql.DB, b *flushBatch) error {
 		if _, err := stmtKey.Exec(ks.APIKey, ks.MaskedKey, ks.KeyName, ks.TotalRequests, ks.SuccessRequests,
 			ks.FailedRequests, ks.InputTokens, ks.OutputTokens, ks.ReasoningTokens, ks.CacheReadTokens,
 			ks.CacheWriteTokens, ks.TotalTokens, ks.TotalCostNanoUSD, ks.LastRequestAt); err != nil {
-			return fmt.Errorf("sqlite: upsert key %s: %w", ks.APIKey, err)
+			return fmt.Errorf("sqlite: upsert key: %w", err)
 		}
 		// Tuples are few per key, so replace this key's tuple set atomically.
 		if _, err := tx.Exec(`DELETE FROM key_model_usage WHERE api_key = ?`, ks.APIKey); err != nil {
@@ -411,7 +428,7 @@ func writeFlushBatch(conn *sql.DB, b *flushBatch) error {
 				ms.CacheReadTokens, ms.CacheWriteTokens, ms.TotalTokens, ms.CostNanoUSD,
 				ms.UnitPricePer1M.Input, ms.UnitPricePer1M.Output, ms.UnitPricePer1M.CacheRead,
 				ms.UnitPricePer1M.CacheWrite, ms.UnitPricePer1M.Source, ms.LastUsedAt); err != nil {
-				return fmt.Errorf("sqlite: upsert key tuple %s/%s: %w", ks.APIKey, ms.ServedModel, err)
+				return fmt.Errorf("sqlite: upsert key tuple: %w", err)
 			}
 		}
 	}
@@ -505,54 +522,84 @@ func (s *Store) ImportLegacySnapshotCandidates(paths []string) error {
 	return s.loadFromDisk(bestPath)
 }
 
-// EnableSQLite opens the database, loads existing rows and marks SQLite as the only backend.
+// EnableSQLite is a compatibility entry point using the same safe lifecycle path.
 func (s *Store) EnableSQLite(dbPath string) error {
-	db, err := sqlitestore.Open(dbPath, sqlitestore.Options{})
+	return s.ConfigureSQLite(dbPath, 10*time.Second)
+}
+
+// configureSQLiteSerialized requires flushMu; only a complete candidate is
+// published. Holding mu during this uncommon switch prevents overwriting usage
+// arriving between the final old-database flush and snapshot adoption.
+func (s *Store) configureSQLiteSerialized(dbPath string) error {
+	s.mu.Lock()
+	previous := s.db
+	if previous != nil && filepath.Clean(previous.Path()) == filepath.Clean(dbPath) {
+		s.mu.Unlock()
+		return s.flushToDBSerialized()
+	}
+	s.mu.Unlock()
+	candidate, err := sqlitestore.Open(dbPath, sqlitestore.Options{})
 	if err != nil {
+		s.mu.Lock()
+		s.lastPersistenceError = err.Error()
+		s.mu.Unlock()
 		return err
 	}
-
 	s.mu.Lock()
-	s.db = db
-	s.mu.Unlock()
-
-	snap, errLoad := s.loadSnapshotFromDB()
-	if errLoad != nil {
-		_ = db.Close()
-		s.mu.Lock()
-		s.db = nil
-		s.mu.Unlock()
-		return errLoad
+	defer s.mu.Unlock()
+	fail := func(err error) error {
+		_ = candidate.Close()
+		s.lastPersistenceError = err.Error()
+		return err
 	}
-
-	hasExisting := len(snap.Keys) > 0 || len(snap.Accounts) > 0 || len(snap.Ledger) > 0
-	s.mu.Lock()
-	if hasExisting {
-		s.keys = snap.Keys
-		s.accounts = snap.Accounts
-		s.ledgerResetLocked()
-		for _, entry := range snap.Ledger {
-			if entry == nil {
-				continue
+	if previous != nil {
+		batch := s.takeFlushBatchLocked()
+		if !batch.empty() {
+			if err := writeFlushBatch(previous.Conn(), batch); err != nil {
+				s.restoreFlushBatchLocked(batch)
+				return fail(err)
 			}
-			s.ledgerPutLocked(ledgerEntryKey(entry.Hour, entry.APIKey, entry.Account, entry.Model, entry.Source), entry)
+			s.lastPersistenceSuccess = time.Now().UTC()
 		}
-	} else {
-		// Import whatever is currently in memory (e.g. migrated JSON history).
-		for apiKey := range s.keys {
-			s.dirtyKeys[apiKey] = struct{}{}
+	}
+	snap, err := loadSnapshotFromDB(candidate)
+	if err != nil {
+		return fail(err)
+	}
+	hasExisting := len(snap.Keys) > 0 || len(snap.Accounts) > 0 || len(snap.Ledger) > 0
+	if !hasExisting {
+		// Seed a new database without clearing live dirty markers until it commits.
+		for key := range s.keys {
+			s.dirtyKeys[key] = struct{}{}
 		}
-		for accountKey := range s.accounts {
-			s.dirtyAccounts[accountKey] = struct{}{}
+		for key := range s.accounts {
+			s.dirtyAccounts[key] = struct{}{}
 		}
 		for key := range s.ledger {
 			s.dirtyLedger[key] = struct{}{}
 		}
+		batch := s.takeFlushBatchLocked()
+		if !batch.empty() {
+			if err := writeFlushBatch(candidate.Conn(), batch); err != nil {
+				s.restoreFlushBatchLocked(batch)
+				return fail(err)
+			}
+		}
+	} else {
+		s.keys, s.accounts = snap.Keys, snap.Accounts
+		s.ledgerResetLocked()
+		for _, entry := range snap.Ledger {
+			if entry != nil {
+				s.ledgerPutLocked(ledgerEntryKey(entry.Hour, entry.APIKey, entry.Account, entry.Model, entry.Source), entry)
+			}
+		}
 	}
-	s.mu.Unlock()
-
-	if !hasExisting {
-		return s.flushToDB()
+	s.db = candidate
+	s.lastPersistenceSuccess, s.lastPersistenceError = time.Now().UTC(), ""
+	if previous != nil {
+		if err := previous.Close(); err != nil {
+			s.lastPersistenceError = err.Error()
+		}
 	}
 	return nil
 }

@@ -11,6 +11,8 @@ import (
 // only enablement plus the database path may live there. Everything else (keys,
 // default policy, price overrides) is stored inside the SQLite database.
 func TestConfigExampleStaysMinimalAndParses(t *testing.T) {
+	t.Setenv("CPA_KEY_MANAGER_USAGE_DB", "")
+	t.Setenv("CPA_DIR", t.TempDir())
 	raw, err := os.ReadFile(filepath.Join("..", "..", "config.example.yaml"))
 	if err != nil {
 		t.Fatalf("read config.example.yaml: %v", err)

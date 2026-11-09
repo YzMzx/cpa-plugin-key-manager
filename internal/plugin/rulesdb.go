@@ -119,37 +119,14 @@ func (m *Manager) loadRulesState(repo *rulesRepository, legacyJSONPath string) (
 		legacy = &DynamicRulesState{Version: 1, CustomPrices: map[string]pricing.ModelPrice{}}
 	}
 	normalizeRulesState(legacy)
-	if raw, errMarshal := json.Marshal(legacy); errMarshal == nil {
-		_ = repo.Save(raw)
+	raw, errMarshal := json.Marshal(legacy)
+	if errMarshal != nil {
+		return nil, errMarshal
+	}
+	if err := repo.Save(raw); err != nil {
+		return nil, err
 	}
 	return legacy, nil
-}
-
-// persistRules writes the in-memory dynamic state through the repository. The
-// caller must hold m.mu (every call site mutates the state under the write lock).
-func (m *Manager) persistRules() error {
-	state := m.dynamicState
-	repo := m.rulesRepo
-	if state == nil {
-		return nil
-	}
-	if repo == nil {
-		return fmt.Errorf("rules db: not configured")
-	}
-	raw, err := json.Marshal(state)
-	if err != nil {
-		return err
-	}
-	return repo.Save(raw)
-}
-
-// rulesLocation describes where rules are stored (used in logs and errors). It is
-// intentionally lock free because it is called while holding m.mu.
-func (m *Manager) rulesLocation() string {
-	if m.rulesRepo != nil && m.rulesRepo.db != nil {
-		return m.rulesRepo.db.Path() + " (rules_state)"
-	}
-	return m.cfg.Storage.RulesFile
 }
 
 func normalizeRulesState(state *DynamicRulesState) {

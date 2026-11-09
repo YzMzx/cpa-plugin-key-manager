@@ -12,8 +12,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
-	"time"
 
 	"github.com/YzMzx/cpa-plugin-key-manager/internal/authz"
 	"github.com/YzMzx/cpa-plugin-key-manager/internal/pricing"
@@ -34,6 +32,7 @@ type Config struct {
 	// Precomputed lookup maps built by Normalize()
 	byAPIKey      map[string]*KeyRuleConfig
 	byCallerScope map[string]string
+	deletedKeys   map[string]struct{}
 }
 
 // StorageConfig defines persistence file paths and intervals.
@@ -82,20 +81,26 @@ type KeyRuleConfig struct {
 	QuotaLimitUSD  float64 `yaml:"quota_limit_usd" json:"quota_limit_usd"`
 	// QuotaUsedBaseUSD is the accumulated cost already written off by "重置额度".
 	// The effective usage is (total cost - base), so resetting never touches billing history.
-	QuotaUsedBaseUSD float64               `yaml:"quota_used_base_usd,omitempty" json:"quota_used_base_usd,omitempty"`
-	AllowedModels    []string              `yaml:"allowed_models" json:"allowed_models"`
-	UpstreamBinding  authz.UpstreamBinding `yaml:"upstream_binding" json:"upstream_binding"`
-	CreatedAt        string                `yaml:"created_at,omitempty" json:"created_at,omitempty"`
-	UpdatedAt        string                `yaml:"updated_at,omitempty" json:"updated_at,omitempty"`
+	QuotaUsedBaseUSD   float64               `yaml:"quota_used_base_usd,omitempty" json:"quota_used_base_usd,omitempty"`
+	QuotaSourceKeys    []string              `yaml:"-" json:"quota_source_keys,omitempty"`
+	QuotaSourceBaseUSD float64               `yaml:"-" json:"quota_source_base_usd,omitempty"`
+	QuotaUsedUSD       *float64              `yaml:"-" json:"quota_used_usd,omitempty"`
+	AllowedModels      []string              `yaml:"allowed_models" json:"allowed_models"`
+	UpstreamBinding    authz.UpstreamBinding `yaml:"upstream_binding" json:"upstream_binding"`
+	CreatedAt          string                `yaml:"created_at,omitempty" json:"created_at,omitempty"`
+	UpdatedAt          string                `yaml:"updated_at,omitempty" json:"updated_at,omitempty"`
 }
 
-// DynamicRulesState is persisted to `storage.rules_file` (default `./data/key_guard_rules.json`)
+// DynamicRulesState is persisted atomically in SQLite rules_state.
 // whenever rules, keys, or custom prices are modified via the Web UI / Management API.
 type DynamicRulesState struct {
-	Version       int                  `json:"version"`
-	UpdatedAt     string               `json:"updated_at"`
-	DefaultPolicy *DefaultPolicyConfig `json:"default_policy,omitempty"`
-	Keys          []KeyRuleConfig      `json:"keys"`
+	Version           int                  `json:"version"`
+	UpdatedAt         string               `json:"updated_at"`
+	Revision          uint64               `json:"revision,omitempty"`
+	HostSyncPending   bool                 `json:"host_sync_pending,omitempty"`
+	ConfigFingerprint string               `json:"config_fingerprint,omitempty"`
+	DefaultPolicy     *DefaultPolicyConfig `json:"default_policy,omitempty"`
+	Keys              []KeyRuleConfig      `json:"keys"`
 	// KeyOrder is the administrator-defined display order (drag & drop) of API keys.
 	KeyOrder      []string                      `json:"key_order,omitempty"`
 	DeletedKeys   []string                      `json:"deleted_keys,omitempty"`
@@ -199,10 +204,14 @@ func ParseConfigYAML(raw []byte) (Config, error) {
 		if errRoot := yaml.Unmarshal(raw, &root); errRoot == nil && root.Plugins.Configs != nil {
 			if node, ok := root.Plugins.Configs[PluginID]; ok {
 				var parsed Config
-				if errDecode := node.Decode(&parsed); errDecode == nil {
-					parsed.Normalize()
-					return parsed, nil
+				if errDecode := node.Decode(&parsed); errDecode != nil {
+					return Config{}, errDecode
 				}
+				parsed.Normalize()
+				if err := validateConfig(parsed); err != nil {
+					return Config{}, err
+				}
+				return parsed, nil
 			}
 		}
 
@@ -213,6 +222,9 @@ func ParseConfigYAML(raw []byte) (Config, error) {
 		cfg = parsed
 	}
 	cfg.Normalize()
+	if err := validateConfig(cfg); err != nil {
+		return Config{}, err
+	}
 	return cfg, nil
 }
 
@@ -509,6 +521,11 @@ func (c *Config) Normalize() {
 			c.byCallerScope[scope] = k
 		}
 	}
+	for deleted := range c.deletedKeys {
+		if scope := ComputeCallerScope(deleted); scope != "" {
+			c.byCallerScope[scope] = deleted
+		}
+	}
 }
 
 // ShouldAutoInjectIncludeUsage returns true if `stream_options.include_usage` auto-injection is enabled.
@@ -530,6 +547,10 @@ func (c *Config) AllowUnlisted() bool {
 // ResolveKeyRule finds the configured KeyRuleConfig for an API key, or returns a synthesized rule from DefaultPolicy.
 func (c *Config) ResolveKeyRule(apiKey string) (rule KeyRuleConfig, listed bool) {
 	k := strings.TrimSpace(apiKey)
+	if _, deleted := c.deletedKeys[k]; deleted {
+		enabled := false
+		return KeyRuleConfig{APIKey: k, Enabled: &enabled}, true
+	}
 	if k != "" && c.byAPIKey != nil {
 		if found, ok := c.byAPIKey[k]; ok && found != nil {
 			return *found, true
@@ -866,244 +887,6 @@ func UsageFileCandidates(configured string) []string {
 	return out
 }
 
-// ReadHostConfigAPIKeys reads global client `api-keys` (or `access.api-keys`) from CLIProxyAPI's config.yaml on disk.
-// hostConfigCache memoises the parsed api-keys of config.yaml keyed by path,
-// modification time and size, so the admin overview does not re-read and re-parse
-// the YAML on every refresh.
-var hostConfigCache struct {
-	sync.Mutex
-	path  string
-	mtime time.Time
-	size  int64
-	keys  []string
-	valid bool
-}
-
-func ReadHostConfigAPIKeys(configPath string) []string {
-	resolvedPath := FindHostConfigFile(configPath)
-	info, errStat := os.Stat(resolvedPath)
-	if errStat != nil || info.IsDir() {
-		return nil
-	}
-	hostConfigCache.Lock()
-	if hostConfigCache.valid && hostConfigCache.path == resolvedPath &&
-		hostConfigCache.mtime.Equal(info.ModTime()) && hostConfigCache.size == info.Size() {
-		cached := append([]string(nil), hostConfigCache.keys...)
-		hostConfigCache.Unlock()
-		return cached
-	}
-	hostConfigCache.Unlock()
-
-	keys := readHostConfigAPIKeysUncached(resolvedPath)
-	hostConfigCache.Lock()
-	hostConfigCache.path = resolvedPath
-	hostConfigCache.mtime = info.ModTime()
-	hostConfigCache.size = info.Size()
-	hostConfigCache.keys = append([]string(nil), keys...)
-	hostConfigCache.valid = true
-	hostConfigCache.Unlock()
-	return keys
-}
-
-// invalidateHostConfigCache forces the next ReadHostConfigAPIKeys to re-read the
-// file; used right after the plugin itself rewrites config.yaml.
-func invalidateHostConfigCache() {
-	hostConfigCache.Lock()
-	hostConfigCache.valid = false
-	hostConfigCache.Unlock()
-}
-
-func readHostConfigAPIKeysUncached(resolvedPath string) []string {
-	raw, err := os.ReadFile(resolvedPath)
-	if err != nil || len(raw) == 0 {
-		return nil
-	}
-	var root struct {
-		APIKeys []string `yaml:"api-keys"`
-		Access  struct {
-			APIKeys []string `yaml:"api-keys"`
-		} `yaml:"access"`
-	}
-	if err := yaml.Unmarshal(raw, &root); err != nil {
-		return nil
-	}
-	seen := make(map[string]struct{})
-	out := make([]string, 0, len(root.APIKeys)+len(root.Access.APIKeys))
-	for _, list := range [][]string{root.APIKeys, root.Access.APIKeys} {
-		for _, item := range list {
-			k := strings.TrimSpace(item)
-			if k == "" {
-				continue
-			}
-			if _, ok := seen[k]; !ok {
-				seen[k] = struct{}{}
-				out = append(out, k)
-			}
-		}
-	}
-	return out
-}
-
-// WriteHostConfigAPIKeys updates the global `api-keys` list in CLIProxyAPI's config.yaml on disk
-// while preserving all other YAML nodes and comments.
-//
-// Note: the plugin deliberately does NOT mirror its rule state (remarks, model
-// whitelists, default policy) into config.yaml. CLIProxyAPI rewrites that file
-// from its own in-memory copy on every management save, so such a snapshot is
-// silently lost; the durable mirrors written by SaveDynamicRulesFile are the
-// only supported persistence mechanism.
-func WriteHostConfigAPIKeys(configPath string, keys []string) error {
-	resolvedPath := FindHostConfigFile(configPath)
-	raw, err := os.ReadFile(resolvedPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-	var doc yaml.Node
-	if err := yaml.Unmarshal(raw, &doc); err != nil {
-		return nil
-	}
-	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
-		return nil
-	}
-	rootMap := doc.Content[0]
-
-	// Avoid rewriting CPA's main config (and reflowing its comments/formatting)
-	// when the api-keys list already holds exactly these keys.
-	if keysEqual(apiKeysFromNode(rootMap), dedupeKeys(keys)) {
-		return nil
-	}
-
-	seqNode := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
-	seen := make(map[string]struct{}, len(keys))
-	for _, rawKey := range keys {
-		k := strings.TrimSpace(rawKey)
-		if k == "" {
-			continue
-		}
-		if _, ok := seen[k]; ok {
-			continue
-		}
-		seen[k] = struct{}{}
-		seqNode.Content = append(seqNode.Content, &yaml.Node{
-			Kind:  yaml.ScalarNode,
-			Tag:   "!!str",
-			Value: k,
-		})
-	}
-
-	updated := false
-	for i := 0; i+1 < len(rootMap.Content); i += 2 {
-		kNode := rootMap.Content[i]
-		vNode := rootMap.Content[i+1]
-		if kNode.Value == "api-keys" && (vNode.Kind == yaml.SequenceNode || vNode.Tag == "!!null") {
-			rootMap.Content[i+1] = seqNode
-			updated = true
-			break
-		}
-		if kNode.Value == "access" && vNode.Kind == yaml.MappingNode {
-			for j := 0; j+1 < len(vNode.Content); j += 2 {
-				if vNode.Content[j].Value == "api-keys" {
-					vNode.Content[j+1] = seqNode
-					updated = true
-					break
-				}
-			}
-		}
-	}
-	if !updated {
-		rootMap.Content = append(rootMap.Content,
-			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "api-keys"},
-			seqNode,
-		)
-	}
-
-	var buf strings.Builder
-	enc := yaml.NewEncoder(&buf)
-	enc.SetIndent(2)
-	if err := enc.Encode(&doc); err != nil {
-		_ = enc.Close()
-		return err
-	}
-	_ = enc.Close()
-	errWrite := usage.WriteFileAtomically(resolvedPath, []byte(buf.String()))
-	invalidateHostConfigCache()
-	return errWrite
-}
-
-// apiKeysFromNode returns the api-keys currently stored in a parsed config.yaml
-// (either top level or under access:).
-func apiKeysFromNode(rootMap *yaml.Node) []string {
-	collect := func(seq *yaml.Node) []string {
-		if seq == nil || seq.Kind != yaml.SequenceNode {
-			return nil
-		}
-		out := make([]string, 0, len(seq.Content))
-		for _, item := range seq.Content {
-			if item != nil && item.Kind == yaml.ScalarNode {
-				out = append(out, item.Value)
-			}
-		}
-		return dedupeKeys(out)
-	}
-	for i := 0; i+1 < len(rootMap.Content); i += 2 {
-		k, v := rootMap.Content[i], rootMap.Content[i+1]
-		if k.Value == "api-keys" {
-			return collect(v)
-		}
-		if k.Value == "access" && v.Kind == yaml.MappingNode {
-			for j := 0; j+1 < len(v.Content); j += 2 {
-				if v.Content[j].Value == "api-keys" {
-					return collect(v.Content[j+1])
-				}
-			}
-		}
-	}
-	return nil
-}
-
-// dedupeKeys trims, drops empties and removes duplicates while keeping order.
-func dedupeKeys(keys []string) []string {
-	out := make([]string, 0, len(keys))
-	seen := make(map[string]struct{}, len(keys))
-	for _, raw := range keys {
-		k := strings.TrimSpace(raw)
-		if k == "" {
-			continue
-		}
-		if _, ok := seen[k]; ok {
-			continue
-		}
-		seen[k] = struct{}{}
-		out = append(out, k)
-	}
-	return out
-}
-
-// keysEqual compares two key lists as ordered sequences.
-func keysEqual(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
-// configuredKeyList extracts the API key strings of the merged rules in order.
-func configuredKeyList(rules []KeyRuleConfig) []string {
-	out := make([]string, 0, len(rules))
-	for _, r := range rules {
-		out = append(out, r.APIKey)
-	}
-	return out
-}
-
 // MergeDynamicState combines CPA's global `api-keys`, the base config.yaml seed, and dynamic Web UI changes from DynamicRulesState.
 func MergeDynamicState(seed Config, state *DynamicRulesState, hostAPIKeys ...string) Config {
 	out := seed
@@ -1232,6 +1015,7 @@ func MergeDynamicState(seed Config, state *DynamicRulesState, hostAPIKeys ...str
 		out.Pricing.DefaultPrice = &cp
 	}
 
+	out.deletedKeys = deletedKeySet
 	out.Normalize()
 	return out
 }
@@ -1242,9 +1026,21 @@ func cloneKeyRule(kr KeyRuleConfig) KeyRuleConfig {
 		b := *kr.Enabled
 		cp.Enabled = &b
 	}
+	cp.QuotaSourceKeys = append([]string(nil), kr.QuotaSourceKeys...)
 	cp.AllowedModels = append([]string(nil), kr.AllowedModels...)
 	cp.UpstreamBinding.AuthIDs = append([]string(nil), kr.UpstreamBinding.AuthIDs...)
 	cp.UpstreamBinding.Credentials = append([]string(nil), kr.UpstreamBinding.Credentials...)
+	cp.UpstreamBinding.Providers = append([]string(nil), kr.UpstreamBinding.Providers...)
+	if kr.UpstreamBinding.Strict != nil {
+		strict := *kr.UpstreamBinding.Strict
+		cp.UpstreamBinding.Strict = &strict
+	}
+	if kr.UpstreamBinding.Attributes != nil {
+		cp.UpstreamBinding.Attributes = make(map[string]string, len(kr.UpstreamBinding.Attributes))
+		for k, v := range kr.UpstreamBinding.Attributes {
+			cp.UpstreamBinding.Attributes[k] = v
+		}
+	}
 	return cp
 }
 

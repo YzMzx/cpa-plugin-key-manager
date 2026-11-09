@@ -5,7 +5,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/YzMzx/cpa-plugin-key-manager/internal/pricing"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
@@ -102,67 +101,34 @@ func (m *Manager) ListHostAuthFiles(hostCallbackID string) ([]pluginapi.HostAuth
 	return out, err
 }
 
-// SyncHostAPIKeys synchronizes the global API keys from CLIProxyAPI (`/v0/management/api-keys` or `config.yaml`)
-// with the plugin's in-memory and persisted state so CPA and the plugin share a single unified set of API keys.
+// SyncHostAPIKeys explicitly imports new native keys without reviving tombstones.
 func (m *Manager) SyncHostAPIKeys(keys []string) error {
-	cleaned := make([]string, 0, len(keys))
-	seen := make(map[string]struct{}, len(keys))
-	for _, rawKey := range keys {
-		k := strings.TrimSpace(rawKey)
-		if k == "" {
-			continue
-		}
-		if _, ok := seen[k]; !ok {
-			seen[k] = struct{}{}
-			cleaned = append(cleaned, k)
-		}
-	}
-
-	m.mu.Lock()
-	if m.dynamicState == nil {
-		m.dynamicState = &DynamicRulesState{Version: 1, CustomPrices: make(map[string]pricing.ModelPrice)}
-	}
-	prevKeys := configuredKeyList(m.cfg.Keys)
-	prevDeleted := len(m.dynamicState.DeletedKeys)
-	m.hostAPIKeys = cleaned
-
-	// Remove any key present in CPA's global api-keys from DeletedKeys
-	if len(m.dynamicState.DeletedKeys) > 0 {
-		filteredDel := make([]string, 0, len(m.dynamicState.DeletedKeys))
-		for _, dk := range m.dynamicState.DeletedKeys {
-			if _, inHost := seen[strings.TrimSpace(dk)]; !inHost {
-				filteredDel = append(filteredDel, dk)
+	cleaned := dedupeKeys(keys)
+	return m.mutateRules(ruleMutation{op: "host key import", syncHostKeys: true}, func(state *DynamicRulesState) error {
+		for _, key := range cleaned {
+			deleted := false
+			for _, tombstone := range state.DeletedKeys {
+				if key == tombstone {
+					deleted = true
+					break
+				}
+			}
+			if deleted {
+				continue
+			}
+			exists := false
+			for _, rule := range state.Keys {
+				if key == rule.APIKey {
+					exists = true
+					break
+				}
+			}
+			if !exists {
+				rule, _ := m.cfg.ResolveKeyRule(key)
+				rule.APIKey = key
+				state.Keys = append(state.Keys, cloneKeyRule(rule))
 			}
 		}
-		m.dynamicState.DeletedKeys = filteredDel
-	}
-
-	m.cfg = MergeDynamicState(m.seedCfg, m.dynamicState, m.hostAPIKeys...)
-
-	// The admin page calls this on every load and refresh. When neither the
-	// merged key set nor the tombstones changed there is nothing to persist, so
-	// skip both the rules upsert and the config.yaml rewrite.
-	if keysEqual(prevKeys, configuredKeyList(m.cfg.Keys)) && prevDeleted == len(m.dynamicState.DeletedKeys) {
-		m.mu.Unlock()
 		return nil
-	}
-	errSave := m.persistRules()
-	if errSave != nil {
-		m.host.Log("error", "failed to save dynamic rules file on sync host keys", map[string]any{
-			"file":  m.rulesLocation(),
-			"error": errSave.Error(),
-		})
-	}
-	allKeys := make([]string, 0, len(m.cfg.Keys))
-	for _, k := range m.cfg.Keys {
-		allKeys = append(allKeys, k.APIKey)
-	}
-	m.mu.Unlock()
-
-	if errHost := WriteHostConfigAPIKeys("", allKeys); errHost != nil {
-		m.host.Log("warn", "failed to sync host config api-keys", map[string]any{
-			"error": errHost.Error(),
-		})
-	}
-	return errSave
+	})
 }

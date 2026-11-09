@@ -91,17 +91,17 @@ storage:
 	if used == nil {
 		t.Fatalf("used credential missing from overview: %+v", files)
 	}
-	if toInt(used["requests"]) != 2 {
-		t.Fatalf("expected 2 recorded requests, got %v", used["requests"])
+	if toInt(used["requests"]) != 3 {
+		t.Fatalf("expected 3 distinct recorded requests, got %v", used["requests"])
 	}
 	if toInt(used["success"]) != 2 {
 		t.Fatalf("expected 2 successes, got %v", used["success"])
 	}
-	if _, ok := used["failed"]; !ok {
-		t.Fatalf("failed counter missing")
+	if toInt(used["failed"]) != 1 {
+		t.Fatalf("expected 1 failure, got %v", used["failed"])
 	}
-	if toInt(used["total_tokens"]) != 30 {
-		t.Fatalf("expected 30 tokens, got %v", used["total_tokens"])
+	if toInt(used["total_tokens"]) != 45 {
+		t.Fatalf("expected all three requests to retain 45 observed tokens, got %v", used["total_tokens"])
 	}
 
 	unused := byName["unused.json"]

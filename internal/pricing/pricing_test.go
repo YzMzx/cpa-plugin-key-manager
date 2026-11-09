@@ -95,7 +95,10 @@ func TestPricingEngineResolutionAndOverrides(t *testing.T) {
 	// + 2,000 cache read ($0.3/1M = $0.000600)
 	// + 1,000 cache write ($3.75/1M = $0.003750)
 	// Total = $0.014850 = 14,850,000 nano-USD
-	breakdown := eng.Calculate(1000, 500, 2000, 1000, "claude-3-5-sonnet-20241022")
+	breakdown, err := eng.Calculate(1000, 500, 2000, 1000, "claude-3-5-sonnet-20241022")
+	if err != nil {
+		t.Fatalf("Calculate: %v", err)
+	}
 	if !breakdown.PriceFound {
 		t.Fatalf("expected price found")
 	}

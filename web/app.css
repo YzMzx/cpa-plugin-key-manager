@@ -1220,11 +1220,11 @@
   .auth-gate-card {
     width: 100%;
     max-width: 440px;
-    background: var(--bg-card);
+    background: var(--floating-surface);
     border: 1px solid var(--border-primary);
     border-radius: var(--radius-lg);
     padding: 28px 26px;
-    box-shadow: var(--shadow-md);
+    box-shadow: var(--shadow);
   }
   .auth-gate-title {
     font-size: 18px;
@@ -1242,9 +1242,9 @@
     margin-top: 12px;
     padding: 9px 12px;
     border-radius: var(--radius-md);
-    background: var(--error-badge-bg);
-    border: 1px solid var(--error-badge-border);
-    color: var(--error-badge-text);
+    background: var(--failure-badge-bg);
+    border: 1px solid var(--failure-badge-border);
+    color: var(--failure-badge-text);
     font-size: 12px;
   }
 

@@ -1,0 +1,345 @@
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+const vm = require("node:vm");
+const Client = require("./client.js");
+const State = require("./state.js");
+const Format = require("./formatters.js");
+const Auth = require("./auth.js");
+const Events = require("./events.js");
+const response = (body, status = 200, type = "application/json") => new Response(typeof body === "string" ? body : JSON.stringify(body), { status, headers: { "Content-Type": type } });
+const overview = (extra = {}) => ({ summary: { total_tokens: 12, total_requests: 2, total_cost_nano_usd: 10 }, keys: [], usage: { keys: {}, accounts: {} }, default_policy: {}, available_models: [], auth_files: [], timezone: "UTC", rules_revision: 4, ...extra });
+const ledger = (extra = {}) => ({ series: [], models: [], requests: 2, total_tokens: 12, from: "2026-01-01T00:00:00Z", to: "2026-01-02T00:00:00Z", ...extra });
+const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
+const tick = () => new Promise(done => setImmediate(done));
+
+function environment(fetchImpl = async () => response(overview())) {
+  const elements = new Map();
+  const listeners = new Map();
+  const classes = () => { const set = new Set(); return { add: (...items) => items.forEach(item => set.add(item)), remove: (...items) => items.forEach(item => set.delete(item)), contains: item => set.has(item), toggle: (item, force) => { const add = force === undefined ? !set.has(item) : force; if (add) set.add(item); else set.delete(item); return add; } }; };
+  const element = id => {
+    if (!elements.has(id)) elements.set(id, { id, value: "", textContent: "", innerHTML: "", disabled: false, checked: false, style: {}, dataset: {}, classList: classes(), focus() {}, setSelectionRange() {}, getAttribute() { return null; }, addEventListener() {}, remove() {} });
+    return elements.get(id);
+  };
+  const doc = { body: { classList: classes() }, getElementById: element,
+    createElement: () => ({ className: "", style: {}, textContent: "", remove() {} }),
+    querySelectorAll: selector => {
+      if (selector.includes(".modal-backdrop input")) return [element("kmApiKey"), element("kmOriginalApiKey"), element("pmModelInput")];
+      if (selector.includes("#adminWorkspace tbody")) return [element("crudKeysTableBody"), element("dashKeyTableBody"), element("dashAccountTableBody"), element("modelPopover")];
+      return [];
+    },
+    addEventListener: (type, handler) => { if (!listeners.has(type)) listeners.set(type, []); listeners.get(type).push(handler); }, removeEventListener() {}
+  };
+  element("toastBox").appendChild = () => {};
+  const store = new Map();
+  const storage = { getItem: key => store.get(key) || null, setItem: (key, value) => store.set(key, value), removeItem: key => store.delete(key) };
+  const win = { location: { href: "http://localhost/ui", origin: "http://localhost", host: "localhost" }, history: { replaceState() {} }, addEventListener() {}, localStorage: storage };
+  win.parent = win;
+  const context = vm.createContext({ window: win, document: doc, location: win.location, navigator: { userAgent: "test", clipboard: { writeText: async () => {} } }, sessionStorage: storage,
+    KeyGuardClient: Client, KeyGuardState: State, KeyGuardFormat: Format, KeyGuardAuth: Auth, KeyGuardEvents: Events,
+    fetch: fetchImpl, Headers, Response, AbortController, URL, URLSearchParams, TextEncoder, TextDecoder, atob, console, confirm: () => true,
+    setTimeout: (fn, ms) => { const timer = setTimeout(fn, ms); timer.unref(); return timer; }, clearTimeout });
+  // Skip only automatic page boot. All production functions and delegated bindings execute unchanged.
+  const source = fs.readFileSync(path.join(__dirname, "app.js"), "utf8").replace(/  restoreAdminTabFromUrl\(\);\s*loadAdminOverview\(\)\.catch\(\(\) => \{\}\);\s*$/, "");
+  vm.runInContext(source, context);
+  const run = code => vm.runInContext(code, context);
+  run("activeManagementKey = 'test-admin'");
+  return { run, context, element, listeners, doc, store };
+}
+
+test("API validates status, JSON, content type, schemas and optimistic revision", async () => {
+  let options;
+  const client = Client.createClient({ getKey: () => "secret", getRevision: () => 42, fetchImpl: async (_, opts) => { options = opts; return response({ ok: true, overview: overview() }); } });
+  await client.request("/keys", { method: "POST", body: "{}" });
+  assert.equal(options.headers.get("X-Key-Guard-Revision"), "42");
+  assert.equal(options.headers.get("Authorization"), "Bearer secret");
+  for (const [body, status, type, pattern] of [["bad", 200, "application/json", /JSON/], [{}, 200, "application/json", /概览/], [overview(), 200, "text/html", /类型/], [{ error: { message: "disk failed" } }, 500, "application/json", /disk failed/], [{ error: "conflict" }, 409, "application/json", /刷新后重试/]]) {
+    const failing = Client.createClient({ getKey: () => "secret", fetchImpl: async () => response(body, status, type) });
+    await assert.rejects(failing.request("/overview"), pattern);
+  }
+  assert.throws(() => Client.validateResponse("/ledger", "GET", {}), /账本/);
+  assert.throws(() => Client.validateResponse("/pricing?search=x", "GET", {}), /检索/);
+  assert.throws(() => Client.validateResponse("/pricing?model=x", "GET", { query: {} }), /价格/);
+  assert.throws(() => Client.validateResponse("/keys", "POST", {}), /未确认/);
+});
+
+test("API timeout includes stalled fetch and stalled response body", async () => {
+  for (const fetchImpl of [() => new Promise(() => {}), async () => ({ status: 200, text: () => new Promise(() => {}) })]) {
+    const client = Client.createClient({ getKey: () => "key", timeoutMs: 10, fetchImpl });
+    await assert.rejects(client.request("/overview"), /超时/);
+  }
+});
+
+test("401 immediately invalidates auth even with non-JSON body and cancels other requests", async () => {
+  let client;
+  let locked = false;
+  const blocked = deferred();
+  client = Client.createClient({ getKey: () => "key", onUnauthorized: () => { locked = true; client.cancelAll(); }, fetchImpl: path => path === "/blocked" ? blocked.promise : Promise.resolve(response("login required", 401, "text/plain")) });
+  const pending = client.request("/blocked");
+  const pendingCheck = assert.rejects(pending, error => error.name === "AbortError");
+  await assert.rejects(client.request("/unauthorized"));
+  await pendingCheck;
+  assert.equal(locked, true);
+  blocked.resolve(response(overview()));
+});
+
+test("request ownership rejects stale completion and authentication epochs", () => {
+  const gate = State.createRequestGate();
+  const a = gate.begin("ledger");
+  const b = gate.begin("ledger");
+  assert.equal(a.current(), false); assert.equal(a.signal.aborted, true); assert.equal(b.current(), true);
+  const independent = gate.begin("price");
+  b.finish(); assert.equal(independent.current(), true);
+  gate.cancelAll(); assert.equal(independent.current(), false); assert.equal(independent.signal.aborted, true);
+});
+
+test("calendar boundaries follow configured zones and 23/25 hour DST days", () => {
+  const shanghai = Format.rangeBounds("today", "Asia/Shanghai", new Date("2026-03-08T12:00:00Z"));
+  assert.equal(shanghai.from.toISOString(), "2026-03-07T16:00:00.000Z");
+  const spring = Format.rangeBounds("today", "America/New_York", new Date("2026-03-08T12:00:00Z"));
+  assert.equal(spring.from.toISOString(), "2026-03-08T05:00:00.000Z");
+  assert.equal(spring.to.getTime() - spring.from.getTime() + 1, 23 * 3600000);
+  const autumn = Format.rangeBounds("today", "America/New_York", new Date("2026-11-01T12:00:00Z"));
+  assert.equal(autumn.to.getTime() - autumn.from.getTime() + 1, 25 * 3600000);
+  assert.equal(Format.dateTime("2026-01-01T23:04:05Z", "UTC"), "2026-01-01 23:04:05");
+  assert.equal(Format.dateTime("2026-01-01T23:04:05Z", "Asia/Tokyo"), "2026-01-02 08:04:05");
+  assert.equal(Format.timezone("not/a-zone"), "Asia/Shanghai");
+});
+
+test("calendar custom range uses local inclusive end, including DST", () => {
+  const range = Format.rangeBounds("custom", "America/New_York", new Date("2026-03-08T12:00:00Z"), { from: "2026-03-08", to: "2026-03-08" });
+  assert.equal(range.from.toISOString(), "2026-03-08T05:00:00.000Z");
+  assert.equal(range.to.toISOString(), "2026-03-09T03:59:59.999Z");
+});
+
+test("bridge requires exact parent, origin, channel and nonce", async () => {
+  const parent = {};
+  const base = { source: parent, origin: "https://host", data: { channel: Auth.CHANNEL, type: "response", nonce: "n", managementKey: "secret" } };
+  assert.equal(Auth.validBridgeReply(base, parent, "https://host", "n"), true);
+  for (const changed of [{ source: {} }, { origin: "https://evil" }, { data: { ...base.data, nonce: "other" } }, { data: { ...base.data, type: "request" } }]) assert.equal(Auth.validBridgeReply({ ...base, ...changed }, parent, "https://host", "n"), false);
+  assert.equal(await Auth.requestParentKey({ parent: { location: { origin: "https://evil" } }, location: { origin: "https://host" } }), "");
+});
+
+test("delegated events pass quotes, backslashes and newlines as data without executing them", () => {
+  const listeners = new Map();
+  const document = { addEventListener: (name, fn) => listeners.set(name, fn), removeEventListener() {} };
+  const hostile = "x');globalThis.injected=true;//\\\n\"<>&";
+  let actual;
+  Events.bind(document, { actions: { copy: value => { actual = value; } }, change: {}, input: {}, drag: {}, tip: {} });
+  const button = { dataset: { action: "copy", value: hostile } };
+  listeners.get("click")({ target: { closest: () => button }, preventDefault() {}, stopPropagation() {} });
+  assert.equal(actual, hostile); assert.equal(globalThis.injected, undefined);
+});
+
+test("generated markup has no inline events and static HTML controls remain", () => {
+  const source = fs.readFileSync(path.join(__dirname, "app.js"), "utf8");
+  assert.doesNotMatch(source, /\bon[a-z]+\s*=/i);
+  assert.doesNotMatch(source, /__reactFiber|XMLHttpRequest|API_CPA_KEYS|API_KEYS_SYNC|writeCPAGlobalKeys/);
+  const html = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
+  assert.match(html, /onclick="refreshAllData\(\)"/);
+  const env = environment();
+  const key = "key'\\\n\"<>&";
+  env.context.fixture = overview({ keys: [{ api_key: key, allowed_models: ["model'\""], upstream_binding: {} }] });
+  env.run("overviewData = fixture; overviewIndex = KeyGuardState.indexOverview(fixture); renderKeysCrudTable(); renderQuotaTable();");
+  const generated = env.element("crudKeysTableBody").innerHTML + env.element("quotaTableBody").innerHTML;
+  assert.doesNotMatch(generated, /\bon[a-z]+\s*=/i);
+  assert.match(generated, /data-key="key&#39;/);
+});
+
+test("overview schema errors keep prior data and show refresh failure instead of zeros", async () => {
+  const env = environment(async () => response({}));
+  env.context.fixture = overview();
+  env.run("overviewData = fixture; renderDashboardKPIs = () => {}; renderKeysCrudTable = () => {}; renderQuotaTable = () => {}; renderDashboardTables = () => {};");
+  await assert.rejects(env.run("loadAdminOverview()"), /概览/);
+  assert.equal(env.run("overviewData.summary.total_tokens"), 12);
+  assert.match(env.element("refreshStatus").textContent, /上次成功数据/);
+});
+
+test("overview is read-only, loads timezone before ledger and mutations carry revision", async () => {
+  const calls = [];
+  const env = environment(async (url, options) => {
+    calls.push({ url, options });
+    return response(url.endsWith("/overview") ? overview({ timezone: "America/New_York" }) : ledger());
+  });
+  env.run("applyOverviewData = value => { overviewData = value; return true; }; renderOverviewAll = () => {};");
+  await env.run("loadAdminOverview()");
+  assert.equal(calls[0].options.method, "GET"); assert.match(calls[0].url, /overview$/);
+  assert.match(calls[1].url, /tz=America%2FNew_York/);
+  assert.ok(calls.every(call => call.options.method === "GET"));
+});
+
+test("late ledger response cannot replace newest filter result even when transport ignores abort", async () => {
+  const calls = [];
+  const env = environment(() => { const job = deferred(); calls.push(job); return job.promise; });
+  env.run("renderOverviewAll = () => {}; overviewState.data = {}; showOverviewSkeleton = () => {};");
+  const a = env.run("loadOverviewLedger(false)");
+  env.run("overviewState.granularity = 'day'");
+  const b = env.run("loadOverviewLedger(false)");
+  calls[1].resolve(response(ledger({ total_tokens: 200 })));
+  await b;
+  calls[0].resolve(response(ledger({ total_tokens: 1 })));
+  await a;
+  assert.equal(env.run("overviewState.data.total_tokens"), 200);
+});
+
+test("late reference price cannot fill a different or closed model modal", async () => {
+  const pending = deferred();
+  const env = environment(() => pending.promise);
+  env.element("pmModelInput").value = "model-a";
+  env.element("priceModalBackdrop").classList.add("open");
+  const task = env.run("fillPriceModalFromModelsDev()");
+  env.run("openPriceModalWithValues('model-b', 2, 3, 4, 5)");
+  pending.resolve(response({ query: { found: true, price: { input: 99, output: 99 } } }));
+  await task;
+  assert.equal(env.element("pmModelInput").value, "model-b");
+  assert.equal(env.element("pmInputPrice").value, 2);
+});
+
+test("late price search cannot overwrite the current query", async () => {
+  const requests = [];
+  const env = environment(() => { const job = deferred(); requests.push(job); return job.promise; });
+  env.element("modelsDevSearchInput").value = "a";
+  const a = env.run("searchModelsDevCatalog()");
+  env.element("modelsDevSearchInput").value = "b";
+  const b = env.run("searchModelsDevCatalog()");
+  requests[1].resolve(response({ reference_models: [{ model: "model-b", price: {} }] })); await b;
+  requests[0].resolve(response({ reference_models: [{ model: "model-a", price: {} }] })); await a;
+  assert.match(env.element("modelsDevSearchTableBody").innerHTML, /model-b/);
+  assert.doesNotMatch(env.element("modelsDevSearchTableBody").innerHTML, /model-a/);
+});
+
+test("lock closes all modals, clears sensitive fields and cancels old async work", async () => {
+  const pending = deferred();
+  const env = environment(() => pending.promise);
+  env.element("keyModalBackdrop").classList.add("open"); env.element("priceModalBackdrop").classList.add("open");
+  env.element("kmApiKey").value = "sensitive"; env.element("kmOriginalApiKey").value = "sensitive";
+  env.element("pmModelInput").value = "secret-model";
+  const old = env.run("callManagementAPI('/overview')");
+  const rejected = assert.rejects(old, error => error.name === "AbortError");
+  env.run("lockAdminWorkspace('expired')"); await rejected;
+  assert.equal(env.element("keyModalBackdrop").classList.contains("open"), false);
+  assert.equal(env.element("priceModalBackdrop").classList.contains("open"), false);
+  assert.equal(env.element("kmApiKey").value, ""); assert.equal(env.element("kmOriginalApiKey").value, "");
+  assert.equal(env.run("activeManagementKey"), "");
+  pending.resolve(response(overview()));
+  await tick();
+  assert.equal(env.run("overviewData"), null);
+});
+
+test("indexes retain key order and special identifiers without prototype collisions", () => {
+  const rule = { api_key: "__proto__", upstream_binding: { credentials: ["Team.JSON", "Team.JSON"] } };
+  const index = State.indexOverview(overview({ keys: [rule] }));
+  assert.equal(index.rules.get("__proto__"), rule);
+  assert.deepEqual(State.boundRules(index, { id: "team.json", name: "team.json" }), [rule]);
+});
+
+test("account and key expansion repaint only their respective table regions", () => {
+  const env = environment();
+  env.run("var painted = []; renderDashboardTables = keysOnly => painted.push(keysOnly ? 'key' : 'all'); renderAccountUsageTable = () => painted.push('account'); toggleDashAccountExpand('a'); toggleDashKeyExpand('k');");
+  assert.equal(env.run("painted.join(',')"), "account,key");
+});
+
+test("auth theme references only defined fallback tokens", () => {
+  const css = fs.readFileSync(path.join(__dirname, "app.css"), "utf8");
+  assert.doesNotMatch(css, /var\(--(?:bg-card|shadow-md|error-badge-[a-z]+)\)/);
+  for (const token of ["floating-surface", "shadow", "failure-badge-bg", "failure-badge-border", "failure-badge-text"]) assert.match(css, new RegExp("--" + token + ":"));
+});
+
+test("same-origin bridge has bounded fallback without randomUUID", async () => {
+  const listeners = new Set();
+  let request;
+  const win = { location: { origin: "http://intranet" }, crypto: { getRandomValues: bytes => bytes.fill(7) },
+    addEventListener: (_type, handler) => listeners.add(handler), removeEventListener: (_type, handler) => listeners.delete(handler) };
+  win.parent = { location: { origin: "http://intranet" }, postMessage: data => {
+    request = data;
+    queueMicrotask(() => { for (const handler of listeners) handler({ source: win.parent, origin: win.location.origin, data: { ...data, type: "response", managementKey: "shared-key" } }); });
+  } };
+  assert.equal(await Auth.requestParentKey(win, 20), "shared-key");
+  assert.equal(request.nonce.length, 48); assert.equal(listeners.size, 0);
+  win.parent.postMessage = () => {};
+  assert.equal(await Auth.requestParentKey(win, 5), ""); assert.equal(listeners.size, 0);
+});
+
+test("every static HTML event function still resolves after modularization", () => {
+  const html = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
+  const env = environment();
+  const names = new Set();
+  for (const match of html.matchAll(/\bon[a-z]+="([^"]*)"/g)) {
+    for (const call of match[1].matchAll(/([A-Za-z_$][\w$]*)\s*\(/g)) {
+      if (!["if"].includes(call[1])) names.add(call[1]);
+    }
+  }
+  assert.ok(names.size > 15);
+  for (const name of names) assert.equal(env.run("typeof " + name), "function", name + " must remain available to static HTML");
+});
+
+test("delegated change drag and popover clicks retain expected behavior", () => {
+  const env = environment();
+  env.run("var actions = []; toggleModelCheckItem = (...args) => actions.push(args); openEntityPopover = (_event, element) => actions.push(element.dataset.key);");
+  const model = { dataset: { change: "modelCheck", prefix: "km", value: "model'\\\n" }, checked: true };
+  for (const handler of env.listeners.get("change")) handler({ target: model });
+  assert.equal(env.run("actions[0][1]"), model.dataset.value);
+  assert.equal(env.run("actions[0][2]"), true);
+  const row = { dataset: { key: "key'\\" }, classList: { add: name => { row.added = name; } } };
+  for (const handler of env.listeners.get("dragstart")) handler({ target: { closest: () => row }, dataTransfer: { setData() {} } });
+  assert.equal(row.added, "dragging");
+  const button = { dataset: { action: "entityPopover", key: "key'" } };
+  const event = { target: { closest: selector => selector === "[data-action]" || selector.includes("[data-action],") ? button : null }, preventDefault() {}, stopPropagation() {} };
+  for (const handler of env.listeners.get("click")) handler(event);
+  assert.equal(env.run("actions[1]"), "key'");
+});
+
+test("overview applies warning and host_sync pending without claiming host success", async () => {
+  const env = environment();
+  env.run("applyOverviewData = value => { overviewData = value; return true; }; loadOverviewLedger = async () => {};");
+  env.context.result = { ok: true, overview: overview({ host_sync: { pending: true, error: "write failed" } }) };
+  await env.run("refreshAfterMutation(result)");
+  assert.match(env.element("refreshStatus").textContent, /待重试.*write failed/);
+});
+
+test("runtime rejects duplicate mutations and sends the current rules revision", async () => {
+  const pending = deferred(); let sent;
+  const env = environment(async (_path, options) => { sent = options; return pending.promise; });
+  env.context.fixture = overview({ rules_revision: 123 }); env.run("overviewData = fixture");
+  const first = env.run("callManagementAPI('/keys', { method: 'POST', body: '{}' })");
+  await assert.rejects(env.run("callManagementAPI('/keys', { method: 'POST', body: '{}' })"), /正在保存/);
+  assert.equal(sent.headers.get("X-Key-Guard-Revision"), "123");
+  pending.resolve(response({ ok: true, overview: overview() })); await first;
+});
+
+
+test("closing and reopening the same price model invalidates the previous query", async () => {
+  const pending = deferred(); const env = environment(() => pending.promise);
+  env.run("openPriceModal('same-model')");
+  const task = env.run("fillPriceModalFromModelsDev()");
+  env.run("closePriceModal(); openPriceModal('same-model')");
+  pending.resolve(response({ query: { found: true, price: { input: 99 } } })); await task;
+  assert.equal(env.element("pmInputPrice").value, 0);
+});
+
+test("nested malformed payloads and negative prices are rejected before rendering", async () => {
+  assert.equal(Client.isOverview(overview({ available_models: "bad" })), false);
+  assert.equal(Client.isOverview(overview({ usage: { keys: { broken: null } } })), false);
+  assert.throws(() => Client.validateResponse("/pricing?search=x", "GET", { reference_models: [null] }), /检索/);
+  assert.throws(() => Client.validateResponse("/pricing?model=x", "GET", { query: { found: true, price: { input: -1 } } }), /价格/);
+  const client = Client.createClient({ getKey: () => "key", fetchImpl: async () => response("null", 500) });
+  await assert.rejects(client.request("/overview"), /HTTP 500/);
+});
+
+test("quota table uses authoritative renamed-key usage, with backward compatible fallback", () => {
+  const env = environment();
+  env.context.fixture = overview({ usage: { keys: { renamed: { total_cost_usd: 3 } } } });
+  env.run("overviewData = fixture");
+  assert.equal(env.run("quotaUsageOf({api_key:'renamed', quota_limit_usd:10, quota_used_base_usd:1, quota_used_usd:7}).used"), 7);
+  assert.equal(env.run("quotaUsageOf({api_key:'renamed', quota_limit_usd:10, quota_used_base_usd:1, quota_used_usd:7}).remaining"), 3);
+  assert.equal(env.run("quotaUsageOf({api_key:'renamed', quota_limit_usd:10, quota_used_base_usd:1}).used"), 2);
+  assert.equal(env.run("quotaUsageOf({api_key:'renamed', quota_limit_usd:10, quota_used_base_usd:1, quota_used_usd:0}).used"), 0);
+});
+
+test("overview exposes persistence and accounting failures instead of hiding them", () => {
+ const env = environment();
+ env.context.health = overview({diagnostics:{persistence:{last_error:"disk full", accounting_error:"aggregate overflow"}}});
+ const message = env.run("overviewHealthMessage(health)");
+ assert.match(message,/disk full/); assert.match(message,/aggregate overflow/);
+});

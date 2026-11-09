@@ -24,49 +24,6 @@ type ruleMutation struct {
 	refreshPricing bool
 }
 
-// mutateRules is the single write path for the dynamic rules: it locks the
-// manager, applies fn to the dynamic state, re-merges the effective config,
-// persists the state to SQLite and optionally refreshes pricing / the host
-// api-keys list. Returning an error from fn aborts without persisting.
-func (m *Manager) mutateRules(opts ruleMutation, fn func(state *DynamicRulesState) error) error {
-	m.mu.Lock()
-	if m.dynamicState == nil {
-		m.dynamicState = &DynamicRulesState{Version: 1, CustomPrices: make(map[string]pricing.ModelPrice)}
-	}
-	if m.dynamicState.CustomPrices == nil {
-		m.dynamicState.CustomPrices = make(map[string]pricing.ModelPrice)
-	}
-	if err := fn(m.dynamicState); err != nil {
-		m.mu.Unlock()
-		return err
-	}
-	m.cfg = MergeDynamicState(m.seedCfg, m.dynamicState, m.hostAPIKeys...)
-	if opts.refreshPricing {
-		m.pricingEngine.SetCustomPrices(m.cfg.Pricing.CustomPrices, m.cfg.Pricing.DefaultPrice)
-	}
-	errSave := m.persistRules()
-	if errSave != nil {
-		m.host.Log("error", "failed to persist rules on "+opts.op, map[string]any{
-			"file":  m.rulesLocation(),
-			"error": errSave.Error(),
-		})
-	}
-	var hostKeys []string
-	if opts.syncHostKeys {
-		hostKeys = configuredKeyList(m.cfg.Keys)
-	}
-	m.mu.Unlock()
-
-	if opts.syncHostKeys {
-		if errHost := WriteHostConfigAPIKeys("", hostKeys); errHost != nil {
-			m.host.Log("warn", "failed to write host config api-keys on "+opts.op, map[string]any{
-				"error": errHost.Error(),
-			})
-		}
-	}
-	return errSave
-}
-
 // removeString returns list without any element equal to target (after trimming).
 func removeString(list []string, target string, fold bool) []string {
 	out := make([]string, 0, len(list))
@@ -113,7 +70,10 @@ func (m *Manager) ResetKeyQuota(apiKey string) (float64, error) {
 	if key == "" {
 		return 0, fmt.Errorf("api_key is required")
 	}
-	used := m.usageStore.GetKeyCostUSD(key)
+	m.mu.RLock()
+	resetRule, _ := m.cfg.ResolveKeyRule(key)
+	m.mu.RUnlock()
+	used := m.quotaCostUSD(resetRule)
 	err := m.mutateRules(ruleMutation{op: "quota reset"}, func(state *DynamicRulesState) error {
 		for i := range state.Keys {
 			if state.Keys[i].APIKey == key {
@@ -137,7 +97,7 @@ func (m *Manager) GetKeyQuota(apiKey string) (limitUSD, usedUSD, remainingUSD fl
 	m.mu.RUnlock()
 
 	limitUSD = rule.QuotaLimitUSD
-	usedUSD = m.usageStore.GetKeyCostUSD(strings.TrimSpace(apiKey)) - rule.QuotaUsedBaseUSD
+	usedUSD = m.quotaCostUSD(rule) - rule.QuotaUsedBaseUSD
 	if usedUSD < 0 {
 		usedUSD = 0
 	}
@@ -158,6 +118,7 @@ func (m *Manager) UpsertKeyRuleFromJSON(rawBody []byte) (any, error) {
 	if err := json.Unmarshal(rawBody, &rule); err != nil {
 		return nil, fmt.Errorf("invalid key rule JSON: %w", err)
 	}
+	rule.QuotaUsedUSD = nil
 	rule.APIKey = strings.TrimSpace(rule.APIKey)
 	if rule.APIKey == "" {
 		return nil, fmt.Errorf("api_key is required")
@@ -165,8 +126,8 @@ func (m *Manager) UpsertKeyRuleFromJSON(rawBody []byte) (any, error) {
 	if rule.MaxConcurrency < 0 {
 		rule.MaxConcurrency = 0
 	}
-	if rule.QuotaLimitUSD < 0 {
-		rule.QuotaLimitUSD = 0
+	if err := validateQuota(rule.QuotaLimitUSD); err != nil {
+		return nil, err
 	}
 	if rule.Enabled == nil {
 		v := true
@@ -178,7 +139,53 @@ func (m *Manager) UpsertKeyRuleFromJSON(rawBody []byte) (any, error) {
 	nowStr := time.Now().UTC().Format(time.RFC3339)
 	rule.UpdatedAt = nowStr
 
+	var request struct {
+		OrigKey string `json:"orig_key"`
+	}
+	if err := json.Unmarshal(rawBody, &request); err != nil {
+		return nil, err
+	}
+	origKey := strings.TrimSpace(request.OrigKey)
+	if origKey != "" && origKey != rule.APIKey {
+		m.admissionMu.Lock()
+		defer m.admissionMu.Unlock()
+		if m.limiter.ActiveCountForKey(origKey) > 0 {
+			return nil, fmt.Errorf("cannot rename a key with active requests; wait for completion")
+		}
+	}
 	err := m.mutateRules(ruleMutation{op: "upsert", syncHostKeys: true}, func(state *DynamicRulesState) error {
+		if origKey != "" && origKey != rule.APIKey {
+			for _, existing := range m.cfg.Keys {
+				if existing.APIKey == rule.APIKey {
+					return fmt.Errorf("target api key already exists")
+				}
+			}
+			found := false
+			for _, existing := range m.cfg.Keys {
+				if existing.APIKey == origKey {
+					found = true
+					spent := m.quotaCostUSD(existing) - existing.QuotaUsedBaseUSD
+					if spent < 0 {
+						spent = 0
+					}
+					// A possibly negative baseline carries consumed quota without rewriting history.
+					rule.QuotaUsedBaseUSD = m.usageStore.GetKeyCostUSD(rule.APIKey) - spent
+					rule.QuotaSourceKeys = removeString(appendUnique(append([]string(nil), existing.QuotaSourceKeys...), origKey, false), rule.APIKey, false)
+					rule.QuotaSourceBaseUSD = 0
+					for _, source := range rule.QuotaSourceKeys {
+						rule.QuotaSourceBaseUSD += m.usageStore.GetKeyCostUSD(source)
+					}
+					if rule.CreatedAt == "" {
+						rule.CreatedAt = existing.CreatedAt
+					}
+				}
+			}
+			if !found {
+				return errRuleNotFound
+			}
+			removeKeyFromState(state, origKey)
+			state.DeletedKeys = appendUnique(state.DeletedKeys, origKey, false)
+		}
 		state.DeletedKeys = removeString(state.DeletedKeys, rule.APIKey, false)
 
 		replaced := false
@@ -192,21 +199,27 @@ func (m *Manager) UpsertKeyRuleFromJSON(rawBody []byte) (any, error) {
 			// The quota baseline is owned by "重置额度" only, so editing a rule never
 			// silently restores spent quota.
 			rule.QuotaUsedBaseUSD = state.Keys[i].QuotaUsedBaseUSD
+			rule.QuotaSourceKeys = append([]string(nil), state.Keys[i].QuotaSourceKeys...)
+			rule.QuotaSourceBaseUSD = state.Keys[i].QuotaSourceBaseUSD
 			state.Keys[i] = cloneKeyRule(rule)
 			replaced = true
 			break
 		}
 		if !replaced {
+			if origKey == "" || origKey == rule.APIKey {
+				rule.QuotaSourceKeys = nil
+				rule.QuotaSourceBaseUSD = 0
+				rule.QuotaUsedBaseUSD = 0
+			}
 			if rule.CreatedAt == "" {
 				rule.CreatedAt = nowStr
 			}
 			state.Keys = append(state.Keys, cloneKeyRule(rule))
 		}
-		m.hostAPIKeys = appendUnique(m.hostAPIKeys, rule.APIKey, false)
 		return nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to persist rules to %s: %w", m.rulesLocation(), err)
+		return nil, fmt.Errorf("key rule change was not committed: %w", err)
 	}
 	return rule, nil
 }
@@ -225,7 +238,6 @@ func (m *Manager) DeleteKeyRule(apiKey string) error {
 			}
 		}
 		state.Keys = nextKeys
-		m.hostAPIKeys = removeString(m.hostAPIKeys, target, false)
 		// Keep the drag & drop display order in sync with the surviving keys.
 		if len(state.KeyOrder) > 0 {
 			state.KeyOrder = removeString(state.KeyOrder, target, false)
@@ -262,8 +274,8 @@ func (m *Manager) SaveDefaultPolicyFromJSON(rawBody []byte) (any, error) {
 	if dp.MaxConcurrency < 0 {
 		dp.MaxConcurrency = 0
 	}
-	if dp.QuotaLimitUSD < 0 {
-		dp.QuotaLimitUSD = 0
+	if err := validateQuota(dp.QuotaLimitUSD); err != nil {
+		return nil, err
 	}
 	if len(dp.AllowedModels) == 0 {
 		dp.AllowedModels = []string{"*"}
@@ -285,6 +297,9 @@ func (m *Manager) UpsertCustomPrice(model string, price pricing.ModelPrice) erro
 	norm := strings.ToLower(strings.TrimSpace(model))
 	if norm == "" {
 		return fmt.Errorf("model is required")
+	}
+	if err := pricing.ValidatePrice(price); err != nil {
+		return err
 	}
 	return m.mutateRules(ruleMutation{op: "price upsert", refreshPricing: true}, func(state *DynamicRulesState) error {
 		if norm == "__default__" {
@@ -314,4 +329,13 @@ func (m *Manager) DeleteCustomPrice(model string) error {
 		state.DeletedPrices = appendUnique(state.DeletedPrices, norm, true)
 		return nil
 	})
+}
+
+// quotaCostUSD carries late usage on retired keys without rewriting billing history.
+func (m *Manager) quotaCostUSD(rule KeyRuleConfig) float64 {
+	total := m.usageStore.GetKeyCostUSD(rule.APIKey)
+	for _, source := range rule.QuotaSourceKeys {
+		total += m.usageStore.GetKeyCostUSD(source)
+	}
+	return total - rule.QuotaSourceBaseUSD
 }

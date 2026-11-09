@@ -1,5 +1,4 @@
   const API_OVERVIEW       = "/v0/management/key-guard/overview";
-  const API_KEYS_SYNC      = "/v0/management/key-guard/keys/sync";
   const API_KEYS_REORDER   = "/v0/management/key-guard/keys/reorder";
   const API_KEYS_CRUD      = "/v0/management/key-guard/keys";
   const API_DEFAULT_POLICY = "/v0/management/key-guard/default-policy";
@@ -7,7 +6,6 @@
   const API_PRICING        = "/v0/management/key-guard/pricing";
   const API_PRICING_SYNC   = "/v0/management/key-guard/pricing/sync";
   const API_PRICING_CUSTOM = "/v0/management/key-guard/pricing/custom";
-  const API_CPA_KEYS       = "/v0/management/api-keys";
   const SESSION_KEY_NAME   = "cpa_plugin_key_manager_mgmt_session";
   const LEGACY_SESSION_KEY_NAME = "cpa_plugin_key_mgmt_session";
 
@@ -20,6 +18,35 @@
   let expandedDashKeys = {};
   let expandedDashAccounts = {};
   let revealedKeys = {};
+  let overviewIndex = KeyGuardState.indexOverview({});
+  let priceModalEpoch = 0;
+  const pendingMutations = new Set();
+  let usageGroupsCache = new WeakMap();
+  const requestGate = KeyGuardState.createRequestGate();
+  const apiClient = KeyGuardClient.createClient({
+    fetchImpl: (...args) => fetch(...args),
+    getKey: () => activeManagementKey,
+    getRevision: () => overviewData && overviewData.rules_revision,
+    onUnauthorized: message => lockAdminWorkspace(message)
+  });
+  function overviewHealthMessage(data) {
+    const messages = [];
+    const sync = data && data.host_sync;
+    if (sync && sync.pending) messages.push("规则已保存，宿主同步待重试" + (sync.error ? "：" + sync.error : ""));
+    const persistence = data && data.diagnostics && data.diagnostics.persistence;
+    if (persistence && persistence.last_error) messages.push("统计持久化失败，待重试：" + persistence.last_error);
+    if (persistence && persistence.accounting_error) messages.push("统计记账异常：" + persistence.accounting_error);
+    return messages.join("；");
+  }
+  const isCancelled = error => error && error.name === "AbortError";
+  const currentTimezone = () => KeyGuardFormat.timezone(overviewData && overviewData.timezone);
+  function setRefreshStatus(message, failed = false) {
+    const element = document.getElementById("refreshStatus");
+    if (!element) return;
+    element.textContent = message || "";
+    element.classList.toggle("hidden", !message);
+    element.style.color = failed ? "var(--error-color)" : "var(--text-secondary)";
+  }
 
   // Checkbox selection state for Modal ('km') and Default Policy ('dp')
   const selectorState = {
@@ -119,114 +146,7 @@
     return "";
   }
 
-  // Extract in-memory managementKey from same-origin CPAMC parent React 18 Fiber tree (works even when "Remember Password" is unchecked)
-  function extractKeyFromParentReactFiber() {
-    if (window.parent === window) return "";
-    try {
-      const inspectFiberHooks = (fiber) => {
-        let h = fiber && fiber.memoizedState;
-        let prevWasBoolTrue = false;
-        while (h) {
-          const ms = h.memoizedState;
-          // Zustand v4 useSyncExternalStoreWithSelector stores [selection, [api.getState, ...]] in useMemo
-          if (Array.isArray(ms) && Array.isArray(ms[1])) {
-            for (const dep of ms[1]) {
-              if (typeof dep === "function" && dep.length === 0) {
-                try {
-                  const st = dep();
-                  if (st && typeof st === "object" && st.isAuthenticated === true && typeof st.managementKey === "string" && st.managementKey.trim()) {
-                    return cleanBearerToken(st.managementKey);
-                  }
-                } catch (_) {}
-              }
-            }
-          }
-          // ProtectedRoute consecutive hooks: isAuthenticated (true) -> managementKey (string)
-          if (ms === true) {
-            prevWasBoolTrue = true;
-          } else if (prevWasBoolTrue && typeof ms === "string" && ms.trim() && !ms.startsWith("http") && !ms.startsWith("/")) {
-            return cleanBearerToken(ms);
-          } else {
-            prevWasBoolTrue = false;
-          }
-          h = h.next;
-        }
-        return "";
-      };
-
-      const findReactFiberOnNode = (domNode) => {
-        if (!domNode) return null;
-        for (const k of Object.keys(domNode)) {
-          if (k.startsWith("__reactFiber$") || k.startsWith("__reactContainer$")) {
-            return domNode[k];
-          }
-        }
-        return null;
-      };
-
-      // 1. Walk up ancestor fibers from window.frameElement (passes directly through ProtectedRoute & MainLayout)
-      if (window.frameElement) {
-        let f = findReactFiberOnNode(window.frameElement);
-        let guard = 0;
-        while (f && guard++ < 80) {
-          const found = inspectFiberHooks(f);
-          if (found) return found;
-          f = f.return;
-        }
-      }
-
-      // 2. Walk down from parent #root container
-      const rootEl = window.parent.document && window.parent.document.getElementById("root");
-      const rootFiber = findReactFiberOnNode(rootEl);
-      if (rootFiber) {
-        const stack = [rootFiber.current || rootFiber];
-        let visited = 0;
-        while (stack.length > 0 && visited++ < 400) {
-          const curr = stack.pop();
-          if (!curr) continue;
-          const found = inspectFiberHooks(curr);
-          if (found) return found;
-          if (curr.sibling) stack.push(curr.sibling);
-          if (curr.child) stack.push(curr.child);
-        }
-      }
-    } catch (_) {}
-    return "";
-  }
-
-  // Fallback for same-origin CPAMC parent: trigger MainLayout's non-disruptive 'auth-files-changed' listener and capture XHR Authorization header
-  function captureKeyFromParentXHR() {
-    return new Promise((resolve) => {
-      if (window.parent === window) return resolve("");
-      try {
-        const pWin = window.parent;
-        const proto = pWin.XMLHttpRequest && pWin.XMLHttpRequest.prototype;
-        if (!proto || typeof proto.setRequestHeader !== "function") return resolve("");
-        const origSetHeader = proto.setRequestHeader;
-        let settled = false;
-        const finish = (val) => {
-          if (settled) return;
-          settled = true;
-          try { proto.setRequestHeader = origSetHeader; } catch (_) {}
-          resolve(val || "");
-        };
-        proto.setRequestHeader = function(name, value) {
-          try {
-            if (typeof name === "string" && (name.toLowerCase() === "authorization" || name.toLowerCase() === "x-management-key") && typeof value === "string") {
-              const token = cleanBearerToken(value);
-              if (token) finish(token);
-            }
-          } catch (_) {}
-          return origSetHeader.apply(this, arguments);
-        };
-        setTimeout(() => finish(""), 350);
-        pWin.dispatchEvent(new pWin.Event("auth-files-changed"));
-      } catch (_) {
-        resolve("");
-      }
-    });
-  }
-
+  // Reuse supported same-origin storage first; ephemeral host sessions require the explicit bridge.
   async function discoverCPAManagementKey() {
     if (activeManagementKey) return activeManagementKey;
     try {
@@ -243,11 +163,8 @@
         if (fromParentLocal) return fromParentLocal;
       } catch (_) {}
 
-      const fromFiber = extractKeyFromParentReactFiber();
-      if (fromFiber) return fromFiber;
-
-      const fromXHR = await captureKeyFromParentXHR();
-      if (fromXHR) return fromXHR;
+      const fromBridge = await KeyGuardAuth.requestParentKey(window);
+      if (fromBridge) return cleanBearerToken(fromBridge);
     }
     return "";
   }
@@ -261,6 +178,22 @@
   }
 
   function lockAdminWorkspace(errMsg) {
+    requestGate.cancelAll(); apiClient.cancelAll();
+    overviewState.loading = false;
+    clearTimeout(modelsDevSearchTimer);
+    priceModalEpoch++;
+    closeKeyModal(); closePriceModal(); closeModelPopover();
+    document.querySelectorAll(".modal-backdrop input, .modal-backdrop select").forEach(input => { input.value = ""; });
+    ["kmModelCheckList", "kmCredCheckList", "dpModelCheckList", "dpCredCheckList", "pmRefHint", "authGateKeyInput"].forEach(id => {
+      const element = document.getElementById(id); if (element) { if ("value" in element) element.value = ""; else element.textContent = ""; }
+    });
+    for (const state of Object.values(selectorState)) { state.selectedModels.clear(); state.selectedCreds.clear(); }
+    revealedKeys = {}; expandedDashKeys = {}; expandedDashAccounts = {};
+    overviewState.data = null;
+    overviewTrendGeom = null;
+    hideTrendTip();
+    overviewIndex = KeyGuardState.indexOverview({});
+    document.querySelectorAll("#adminWorkspace tbody, #modelPopover").forEach(element => { element.textContent = ""; });
     activeManagementKey = "";
     overviewData = null;
     try {
@@ -269,6 +202,7 @@
     } catch (_) {}
     document.getElementById("adminWorkspace").classList.add("hidden");
     document.getElementById("authGateView").classList.remove("hidden");
+    setRefreshStatus("");
     const errEl = document.getElementById("authGateError");
     if (errMsg) {
       errEl.textContent = errMsg;
@@ -281,31 +215,21 @@
   // Authenticated Management API request: all endpoints live under /v0/management/key-guard/*
   // which CLIProxyAPI protects with its Management Key middleware.
   async function callManagementAPI(path, options = {}, overrideKey = "") {
-    const key = cleanBearerToken(overrideKey || activeManagementKey);
-    if (!key) {
-      lockAdminWorkspace();
-      throw new Error("需要 CLIProxyAPI Management Key 授权访问");
+    const method = String(options.method || "GET").toUpperCase();
+    if (method === "GET" || method === "HEAD") return apiClient.request(path, options, overrideKey);
+    if (pendingMutations.size) throw new Error("已有变更正在保存，请稍候再试");
+    requestGate.cancel("overview");
+    requestGate.cancel("ledger");
+    pendingMutations.add(path);
+    const controls = Array.from(document.querySelectorAll(".modal-footer button, #dpSaveBtn"));
+    const previous = controls.map(control => control.disabled);
+    controls.forEach(control => { control.disabled = true; });
+    try {
+      const result = await apiClient.request(path, options, overrideKey);
+      requestGate.cancel("overview");
+      return result;
     }
-    const headers = Object.assign({
-      "Accept": "application/json",
-      "Authorization": "Bearer " + key,
-      "X-Management-Key": key
-    }, options.headers || {});
-    if (options.body && !headers["Content-Type"]) {
-      headers["Content-Type"] = "application/json";
-    }
-    const resp = await fetch(path, Object.assign({}, options, { headers }));
-    const data = await resp.json().catch(() => ({}));
-    if (resp.status === 401 || resp.status === 403) {
-      const msg = (data && data.error && data.error.message) || data.error || "Management Key 验证失败或未授权 (HTTP " + resp.status + ")";
-      lockAdminWorkspace(msg);
-      throw new Error(msg);
-    }
-    if (!resp.ok) {
-      const msg = (data && data.error && data.error.message) || data.error || ("操作失败: HTTP " + resp.status);
-      throw new Error(msg);
-    }
-    return data;
+    finally { pendingMutations.delete(path); controls.forEach((control, i) => { control.disabled = previous[i]; }); }
   }
 
   async function submitAuthGateKey() {
@@ -325,47 +249,6 @@
     } finally {
       if (btn) btn.disabled = false;
     }
-  }
-
-  // Sync with CPA's in-memory `/v0/management/api-keys` using verified Management Key
-  async function fetchCPAGlobalKeysSilent(keyOverride = "") {
-    const key = cleanBearerToken(keyOverride || activeManagementKey);
-    if (!key) return null;
-    try {
-      const resp = await fetch(API_CPA_KEYS, {
-        method: "GET",
-        headers: {
-          "Accept": "application/json",
-          "Authorization": "Bearer " + key,
-          "X-Management-Key": key
-        }
-      });
-      if (!resp.ok) return null;
-      const res = await resp.json();
-      const list = res["api-keys"] || res.api_keys || [];
-      if (Array.isArray(list)) {
-        return list.map(k => String(k || "").trim()).filter(Boolean);
-      }
-    } catch (_) {}
-    return null;
-  }
-
-  async function writeCPAGlobalKeysSilent(keysArray) {
-    const key = cleanBearerToken(activeManagementKey);
-    if (!key) return;
-    try {
-      const unique = Array.from(new Set(keysArray.map(k => String(k || "").trim()).filter(Boolean)));
-      await fetch(API_CPA_KEYS, {
-        method: "PUT",
-        headers: {
-          "Accept": "application/json",
-          "Content-Type": "application/json",
-          "Authorization": "Bearer " + key,
-          "X-Management-Key": key
-        },
-        body: JSON.stringify(unique)
-      });
-    } catch (_) {}
   }
 
   function switchAdminTab(tabId, options) {
@@ -415,10 +298,8 @@
       btn.classList.add("is-loading");
       btn.disabled = true;
     }
-    showKpiSkeleton();
-    showOverviewSkeleton();
-    showKeysTabSkeleton();
-    showDashboardSkeleton();
+    if (!overviewData) { showKpiSkeleton(); showKeysTabSkeleton(); showDashboardSkeleton(); }
+    if (!overviewState.data) showOverviewSkeleton();
     try {
       await loadAdminOverview();
       // Belt and braces: make sure the key/quota/leaderboard tables are painted even
@@ -440,40 +321,32 @@
   }
 
   async function loadAdminOverview(candidateKey = "") {
+    const ticket = requestGate.begin("overview");
     try {
       const keyToUse = cleanBearerToken(candidateKey || activeManagementKey || await discoverCPAManagementKey());
+      if (!ticket.current()) return;
       if (!keyToUse) {
         lockAdminWorkspace();
+        document.getElementById("authGateDesc").textContent = "未找到可共享的管理会话。请在管理中心保存登录，或输入 Management Key；未保存会话需要宿主提供安全认证桥。";
         return;
       }
-      // The ledger only depends on the management key, so it is fetched in
-      // parallel with the overview instead of after it.
-      const wasUnlocked = !!activeManagementKey;
-      const ledgerPromise = wasUnlocked ? loadOverviewLedger(false, keyToUse) : null;
-
-      const cpaKeys = await fetchCPAGlobalKeysSilent(keyToUse);
-      let data;
-      if (cpaKeys !== null) {
-        data = await callManagementAPI(API_KEYS_SYNC, {
-          method: "POST",
-          body: JSON.stringify({ keys: cpaKeys })
-        }, keyToUse);
-      } else {
-        data = await callManagementAPI(API_OVERVIEW, { method: "GET" }, keyToUse);
-      }
+      const data = await callManagementAPI(API_OVERVIEW, { method: "GET", signal: ticket.signal }, keyToUse);
+      if (!ticket.current()) return;
       unlockAdminWorkspace(keyToUse);
       applyOverviewData(data);
-      // First unlock: the key was unknown when the ledger request would have
-      // started, so run it now.
-      await (ledgerPromise || loadOverviewLedger(true));
+      const sync = data.host_sync;
+      const healthMessage = overviewHealthMessage(data);
+      setRefreshStatus(healthMessage, !!healthMessage);
+      await loadOverviewLedger(!overviewState.data);
     } catch (err) {
-      if (activeManagementKey) {
-        showToast(err.message, true);
-      } else {
-        lockAdminWorkspace(err.message);
-      }
+      if (isCancelled(err) || !ticket.current()) return;
+      if (activeManagementKey && overviewData) {
+        renderDashboardKPIs(overviewData); renderKeysCrudTable(); renderQuotaTable(); renderDashboardTables();
+        setRefreshStatus("刷新失败，显示上次成功数据：" + err.message, true);
+        showToast("刷新失败，保留上次成功数据：" + err.message, true);
+      } else { lockAdminWorkspace(err.message); }
       throw err;
-    }
+    } finally { ticket.finish(); }
   }
 
   // refreshAfterMutation repaints from the overview a mutation endpoint returned
@@ -481,18 +354,25 @@
   // ledger blocks are re-queried only when the change can affect usage/cost.
   async function refreshAfterMutation(res, opts = {}) {
     const payload = res && (res.overview || (res.summary && res.keys ? res : null));
+    const sync = res && (res.host_sync || (payload && payload.host_sync));
+    if (res && res.warning) showToast(String(res.warning), true);
+    else if (sync && (sync.pending || sync.ok === false || sync.status === "pending" || sync.status === "failed")) showToast("规则已保存，宿主同步尚未完成，请稍后刷新确认", true);
     if (!applyOverviewData(payload)) {
       await loadAdminOverview();
       return;
     }
+    const healthMessage = overviewHealthMessage(payload);
+    setRefreshStatus(healthMessage, !!healthMessage);
     if (opts.ledger) await loadOverviewLedger(false);
   }
   // applyOverviewData stores a fresh overview payload and repaints every block that
   // is rendered from it. Mutation endpoints that already return the overview use
   // this directly instead of issuing another full reload.
   function applyOverviewData(data) {
-    if (!data || typeof data !== "object") return false;
+    if (!KeyGuardClient.isOverview(data)) return false;
     overviewData = data;
+    overviewIndex = KeyGuardState.indexOverview(data);
+    usageGroupsCache = new WeakMap();
     renderDashboardKPIs(data);
     renderKeysCrudTable();
     renderQuotaTable();
@@ -622,7 +502,7 @@
     const container = document.getElementById(prefix + "ProviderPills");
     container.innerHTML = Array.from(provSet).map(p => {
       const active = st.providerFilter === p ? "active" : "";
-      return `<button type="button" class="provider-pill ${active}" onclick="setProviderFilter('${prefix}', '${escapeHtml(p)}')">${escapeHtml(labels[p] || p)}</button>`;
+      return `<button type="button" class="provider-pill ${active}" data-action="provider" data-prefix="${escapeHtml(prefix)}" data-value="${escapeHtml(p)}">${escapeHtml(labels[p] || p)}</button>`;
     }).join("");
   }
 
@@ -662,7 +542,7 @@
     container.innerHTML = list.map(m => {
       const checked = st.selectedModels.has(m.id);
       return `<label class="check-item ${checked ? "checked" : ""}">
-        <input type="checkbox" ${checked ? "checked" : ""} onchange="toggleModelCheckItem('${prefix}', '${escapeHtml(m.id)}', this.checked)">
+        <input type="checkbox" ${checked ? "checked" : ""} data-change="modelCheck" data-prefix="${escapeHtml(prefix)}" data-value="${escapeHtml(m.id)}">
         <div class="check-item-body">
           <div class="check-item-title mono">${escapeHtml(m.id)}</div>
           <div class="check-item-sub">${escapeHtml(m.provider || "model")}</div>
@@ -731,7 +611,7 @@
       const sub = [af.provider || af.type, af.email || af.account || af.label].filter(Boolean).join(" · ");
       const statusOk = !af.disabled && !af.unavailable;
       return `<label class="check-item ${checked ? "checked" : ""}">
-        <input type="checkbox" ${checked ? "checked" : ""} onchange="toggleCredCheckItem('${prefix}', '${escapeHtml(val)}', this.checked)">
+        <input type="checkbox" ${checked ? "checked" : ""} data-change="credCheck" data-prefix="${escapeHtml(prefix)}" data-value="${escapeHtml(val)}">
         <div class="check-item-body">
           <div class="check-item-title mono">${escapeHtml(val)}</div>
           <div class="check-item-sub">${escapeHtml(sub || "可用凭证")}</div>
@@ -814,7 +694,7 @@
     const shown = models.slice(0, 2).map(modelPillHtml).join("");
     const hidden = models.length - 2;
     const moreBtn = hidden > 0
-      ? `<button type="button" class="model-more" data-key="${escapeHtml(apiKey)}" data-kind="models" onclick="openEntityPopover(event, this)" title="查看全部 ${models.length} 个模型">+${hidden}</button>`
+      ? `<button type="button" class="model-more" data-key="${escapeHtml(apiKey)}" data-kind="models" data-action="entityPopover" title="查看全部 ${models.length} 个模型">+${hidden}</button>`
       : "";
     return `<div class="model-cell">${shown}${moreBtn}</div>`;
   }
@@ -967,7 +847,7 @@
     const shown = groups.slice(0, 3).map(group => {
       const title = `${group.label}: ${group.items.length} 个凭证 · 厂商 ${group.vendor}`;
       return `<button type="button" class="cred-badge prov-${group.dot}" data-key="${escapeHtml(apiKey)}" data-kind="creds" ` +
-        `onclick="openEntityPopover(event, this)" title="${escapeHtml(title)}">` +
+        `data-action="entityPopover" title="${escapeHtml(title)}">` +
         `<span class="model-dot dot-${group.dot}"></span>` +
         `<span class="cred-badge-label">${escapeHtml(group.label)}</span>` +
         `<span class="cred-badge-count mono">${group.items.length}</span></button>`;
@@ -975,7 +855,7 @@
     const hiddenFamilies = groups.length - 3;
     const moreBtn = hiddenFamilies > 0
       ? `<button type="button" class="model-more" data-key="${escapeHtml(apiKey)}" data-kind="creds" ` +
-        `onclick="openEntityPopover(event, this)" title="还有 ${hiddenFamilies} 个渠道，共 ${creds.length} 个凭证">+${hiddenFamilies}</button>`
+        `data-action="entityPopover" title="还有 ${hiddenFamilies} 个渠道，共 ${creds.length} 个凭证">+${hiddenFamilies}</button>`
       : "";
     return `<div class="model-cell">${strategy}${shown}${moreBtn}</div>`;
   }
@@ -984,13 +864,13 @@
   let popoverState = { apiKey: "", kind: "models", items: [], anchor: null };
 
   function allowedModelsFor(apiKey) {
-    const rule = ((overviewData && overviewData.keys) || []).find(r => r.api_key === apiKey);
+    const rule = overviewIndex.rules.get(apiKey);
     const raw = (rule && rule.allowed_models && rule.allowed_models.length) ? rule.allowed_models : [];
     return Array.from(new Set(raw.filter(m => m && m !== "*")));
   }
 
   function boundCredentialsFor(apiKey) {
-    const rule = ((overviewData && overviewData.keys) || []).find(r => r.api_key === apiKey);
+    const rule = overviewIndex.rules.get(apiKey);
     const ub = (rule && rule.upstream_binding) || {};
     return Array.from(new Set([].concat(ub.auth_ids || [], ub.credentials || []).filter(Boolean)));
   }
@@ -1084,13 +964,13 @@
     popover.innerHTML = `
       <div class="model-popover-head">
         <span>${headLabel} <span class="mono" style="color:var(--text-primary)">${all.length}</span> ${unit}${q ? `（匹配 ${matchedCount}）` : ""}</span>
-        <button type="button" class="model-popover-close" onclick="closeModelPopover()" title="关闭">×</button>
+        <button type="button" class="model-popover-close" data-action="closePopover" title="关闭">×</button>
       </div>
-      <input type="text" class="model-popover-search" id="modelPopoverSearch" placeholder="${placeholder}" value="${escapeHtml(query || "")}" oninput="renderEntityPopover(this.value, true)">
+      <input type="text" class="model-popover-search" id="modelPopoverSearch" placeholder="${placeholder}" value="${escapeHtml(query || "")}" data-input="popoverSearch">
       <div class="model-popover-list">${listHtml || `<div class="model-popover-empty">${emptyLabel}</div>`}</div>
       <div class="model-popover-foot">
-        <button type="button" class="btn btn-sm" onclick="copyPopoverItems()">复制全部</button>
-        <button type="button" class="btn btn-sm btn-primary" onclick="editFromPopover('${isCreds ? "creds" : "models"}')">${isCreds ? "管理绑定凭证" : "编辑规则"}</button>
+        <button type="button" class="btn btn-sm" data-action="copyPopover">复制全部</button>
+        <button type="button" class="btn btn-sm btn-primary" data-action="editPopover" data-value="${isCreds ? "creds" : "models"}">${isCreds ? "管理绑定凭证" : "编辑规则"}</button>
       </div>`;
 
     // Re-rendering replaces the input, so restore focus and caret while typing.
@@ -1124,9 +1004,9 @@
     openKeyModalByKey(apiKey, kind || "");
   }
 
-  document.addEventListener("click", () => closeModelPopover());
+  document.addEventListener("click", event => { if (!event.target.closest("[data-action], #modelPopover")) closeModelPopover(); });
   document.addEventListener("keydown", e => {
-    if (e.key === "Escape") closeModelPopover();
+    if (e.key === "Escape") { closeModelPopover(); closeKeyModal(); closePriceModal(); }
   });
   window.addEventListener("resize", () => closeModelPopover());
 
@@ -1154,7 +1034,6 @@
       const dispKey = maskKeyStr(k);
       const maxC = kr.max_concurrency || 0;
 
-      const existingModelIDs = new Set(getAvailableModels().map(m => m.id));
       const rawModels = (kr.allowed_models && kr.allowed_models.length) ? kr.allowed_models : ["*"];
       const isAllModels = rawModels.length === 0 || rawModels.includes("*");
       const allowedList = Array.from(new Set(rawModels.filter(m => m && m !== "*")));
@@ -1170,14 +1049,10 @@
       const dispStrat = strategyLabelMap[ub.strategy || "round-robin"] || (ub.strategy || "");
       const bindHtml = credentialCellHtml(k, creds.length > 0 ? dispStrat : "", creds);
 
-      return `<tr class="key-row" data-key="${escapeHtml(k)}" draggable="true"
-          ondragstart="onKeyRowDragStart(event, '${escapeHtml(k)}')"
-          ondragover="onKeyRowDragOver(event, '${escapeHtml(k)}')"
-          ondrop="onKeyRowDrop(event, '${escapeHtml(k)}')"
-          ondragend="onKeyRowDragEnd(event)">
+      return `<tr class="key-row" data-key="${escapeHtml(k)}" draggable="true">
         <td class="drag-cell" title="拖动调整顺序">⠿</td>
         <td class="cell-nowrap">
-          <span class="tag ${enabled ? "ok" : "bad"}" style="cursor:pointer" onclick="quickToggleKeyEnabled('${escapeHtml(k)}')" title="点击切换启用/禁用">
+          <span class="tag ${enabled ? "ok" : "bad"}" style="cursor:pointer" data-action="toggleKey" data-value="${escapeHtml(k)}" title="点击切换启用/禁用">
             ${enabled ? "启用" : "禁用"}
           </span>
         </td>
@@ -1202,8 +1077,9 @@
     closeModelPopover();
   }
 
-  function copyText(txt) {
-    navigator.clipboard.writeText(txt).then(() => showToast("已复制到剪贴板"));
+  async function copyText(txt) {
+    try { await navigator.clipboard.writeText(txt); showToast("已复制到剪贴板"); }
+    catch (_) { showToast("无法访问剪贴板，请允许浏览器剪贴板权限或手动复制", true); }
   }
 
   // ==================== API KEY DRAG & DROP ORDERING ====================
@@ -1217,9 +1093,8 @@
       ev.dataTransfer.effectAllowed = "move";
       try { ev.dataTransfer.setData("text/plain", key); } catch (_) {}
     }
-    if (ev.currentTarget && ev.currentTarget.classList) {
-      ev.currentTarget.classList.add("dragging");
-    }
+    const row = ev.target.closest && ev.target.closest(".key-row[data-key]");
+    if (row) row.classList.add("dragging");
   }
 
   function onKeyRowDragOver(ev, key) {
@@ -1256,8 +1131,7 @@
     next.splice(from, 1);
     next.splice(to, 0, srcKey);
 
-    // Optimistic reorder so the table does not flicker while saving.
-    applyKeyOrderLocally(next);
+    // Do not mutate the committed snapshot until the server confirms the order.
     try {
       const res = await callManagementAPI(API_KEYS_REORDER, {
         method: "POST",
@@ -1269,22 +1143,6 @@
       showToast(err.message, true);
       await loadAdminOverview();
     }
-  }
-
-  function applyKeyOrderLocally(order) {
-    if (!overviewData || !Array.isArray(overviewData.keys)) return;
-    const byKey = {};
-    overviewData.keys.forEach(kr => { if (kr && kr.api_key) byKey[kr.api_key] = kr; });
-    const next = [];
-    order.forEach(key => {
-      if (byKey[key]) {
-        next.push(byKey[key]);
-        delete byKey[key];
-      }
-    });
-    Object.keys(byKey).forEach(key => next.push(byKey[key]));
-    overviewData.keys = next;
-    renderKeysCrudTable();
   }
 
   function generateRandomSkKey() {
@@ -1299,7 +1157,7 @@
   }
 
   function openKeyModalByKey(apiKey, focusSection) {
-    const found = ((overviewData && overviewData.keys) || []).find(x => x.api_key === apiKey);
+    const found = overviewIndex.rules.get(apiKey);
     openKeyModal(found || null);
     if (focusSection === "creds") {
       // Scroll the credential picker into view so "管理绑定凭证" lands on the right block.
@@ -1362,35 +1220,19 @@
     };
 
     try {
-      const isNewOrRenamed = !origKey || origKey !== apiKey;
-
-      await callManagementAPI(API_KEYS_CRUD, {
-        method: "POST",
-        body: JSON.stringify(Object.assign({ orig_key: origKey }, payload))
+      const res = await callManagementAPI(API_KEYS_CRUD, {
+        method: "POST", body: JSON.stringify(Object.assign({ orig_key: origKey }, payload))
       });
-
-      if (isNewOrRenamed) {
-        const currentKeys = ((overviewData && overviewData.keys) || []).map(k => k.api_key);
-        let nextCpaKeys = currentKeys.slice();
-        if (origKey && origKey !== apiKey) {
-          nextCpaKeys = nextCpaKeys.filter(k => k !== origKey);
-        }
-        if (!nextCpaKeys.includes(apiKey)) {
-          nextCpaKeys.push(apiKey);
-        }
-        await writeCPAGlobalKeysSilent(nextCpaKeys);
-      }
-
       closeKeyModal();
-      showToast("API Key 与管控规则已保存并同步至 CPA 全局配置");
-      await loadAdminOverview();
+      showToast("API Key 与管控规则已保存");
+      await refreshAfterMutation(res, { ledger: true });
     } catch (err) {
       showToast(err.message, true);
     }
   }
 
   async function quickToggleKeyEnabled(apiKey) {
-    const kr = ((overviewData && overviewData.keys) || []).find(x => x.api_key === apiKey);
+    const kr = overviewIndex.rules.get(apiKey);
     if (!kr) return;
     const next = kr.enabled === false ? true : false;
     const payload = Object.assign({}, kr, { enabled: next });
@@ -1409,13 +1251,11 @@
   async function deleteKeyRule(apiKey) {
     if (!confirm(`确定要删除 API Key [${maskKeyStr(apiKey)}] 吗？`)) return;
     try {
-      await callManagementAPI(API_KEYS_CRUD + "?api_key=" + encodeURIComponent(apiKey), {
+      const res = await callManagementAPI(API_KEYS_CRUD + "?api_key=" + encodeURIComponent(apiKey), {
         method: "DELETE"
       });
-      const currentKeys = ((overviewData && overviewData.keys) || []).map(k => k.api_key).filter(k => k !== apiKey);
-      await writeCPAGlobalKeysSilent(currentKeys);
-      showToast("已从 CPA 全局配置与插件中删除该 API Key");
-      await loadAdminOverview();
+      showToast("API Key 删除规则已保存");
+      await refreshAfterMutation(res, { ledger: true });
     } catch (err) {
       showToast(err.message, true);
     }
@@ -1443,7 +1283,8 @@
     const ks = ((overviewData && overviewData.usage && overviewData.usage.keys) || {})[rule.api_key] || {};
     const base = Number(rule.quota_used_base_usd || 0);
     const total = Number(ks.total_cost_usd || 0);
-    const used = Math.max(0, total - base);
+    const used = typeof rule.quota_used_usd === "number" && Number.isFinite(rule.quota_used_usd) && rule.quota_used_usd >= 0
+      ? rule.quota_used_usd : Math.max(0, total - base);
     const limit = Math.max(0, Number(rule.quota_limit_usd || 0));
     const unlimited = limit <= 0;
     const remaining = unlimited ? 0 : Math.max(0, limit - used);
@@ -1452,26 +1293,7 @@
     return { used, limit, remaining, unlimited, percent, lastUsedText, exceeded: !unlimited && used >= limit };
   }
 
-  // Formats an RFC3339 timestamp in fixed UTC+8 (Asia/Shanghai); "-" when unknown.
-  function fmtDateTime(raw) {
-    const text = String(raw || "").trim();
-    if (!text) return "-";
-    const d = new Date(text);
-    if (Number.isNaN(d.getTime())) return text;
-    const pad = (n) => String(n).padStart(2, "0");
-    try {
-      const parts = new Intl.DateTimeFormat("en-CA", {
-        timeZone: "Asia/Shanghai",
-        year: "numeric", month: "2-digit", day: "2-digit",
-        hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false
-      }).formatToParts(d);
-      const get = (t) => (parts.find(p => p.type === t) || {}).value || "";
-      return `${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")}:${get("second")}`;
-    } catch (_) {
-      const shifted = new Date(d.getTime() + 8 * 3600 * 1000);
-      return `${shifted.getUTCFullYear()}-${pad(shifted.getUTCMonth() + 1)}-${pad(shifted.getUTCDate())} ${pad(shifted.getUTCHours())}:${pad(shifted.getUTCMinutes())}:${pad(shifted.getUTCSeconds())}`;
-    }
-  }
+  function fmtDateTime(raw) { return KeyGuardFormat.dateTime(raw, currentTimezone()); }
 
   function quotaBarClass(percent, exceeded) {
     if (exceeded) return "quota-bar-fill quota-bar-critical";
@@ -1521,10 +1343,10 @@
         <td class="cell-nowrap mono" style="font-size:12px;color:var(--text-secondary)">${escapeHtml(usage.lastUsedText || "-")}</td>
         <td class="cell-nowrap">
           <div class="row-actions">
-            <button type="button" class="btn btn-sm" onclick="copyText('${escapeHtml(rule.api_key)}')">复制密钥</button>
-            <button type="button" class="btn btn-sm" onclick="openKeyModalByKey('${escapeHtml(rule.api_key)}')">管理密钥</button>
-            <button type="button" class="btn btn-sm" onclick="resetKeyQuota('${escapeHtml(rule.api_key)}')">重置额度</button>
-            <button type="button" class="btn btn-sm btn-danger" onclick="deleteKeyRule('${escapeHtml(rule.api_key)}')">删除</button>
+            <button type="button" class="btn btn-sm" data-action="copy" data-value="${escapeHtml(rule.api_key)}">复制密钥</button>
+            <button type="button" class="btn btn-sm" data-action="editKey" data-value="${escapeHtml(rule.api_key)}">管理密钥</button>
+            <button type="button" class="btn btn-sm" data-action="resetQuota" data-value="${escapeHtml(rule.api_key)}">重置额度</button>
+            <button type="button" class="btn btn-sm btn-danger" data-action="deleteKey" data-value="${escapeHtml(rule.api_key)}">删除</button>
           </div>
         </td>
       </tr>`;
@@ -1588,11 +1410,18 @@
     return list;
   }
 
-  function renderDashboardTables() {
+  function usageGroups(owner) {
+    if (!usageGroupsCache.has(owner)) {
+      const models = Object.values(owner.models || {}).filter(model => model && (model.served_model || model.requested_model));
+      usageGroupsCache.set(owner, { models, groups: buildRequestedModelGroups(models) });
+    }
+    return usageGroupsCache.get(owner);
+  }
+
+  function renderDashboardTables(keysOnly = false) {
     if (!overviewData) return;
     const snapKeys = (overviewData.usage && overviewData.usage.keys) || {};
-    const rulesMap = {};
-    (overviewData.keys || []).forEach(r => { rulesMap[r.api_key] = r; });
+    const rulesMap = overviewIndex.rules;
 
     const grandTotalTokens = (overviewData.summary && overviewData.summary.total_tokens) || 0;
 
@@ -1615,11 +1444,11 @@
       let html = "";
       for (const ks of rows) {
         const rawKey = ks.api_key || ks.masked_key;
-        const rule = rulesMap[rawKey] || {};
+        const rule = rulesMap.get(rawKey) || {};
         const share = grandTotalTokens > 0 ? (((ks.total_tokens || 0) / grandTotalTokens) * 100).toFixed(1) : "0.0";
-        const validModels = ks.models ? Object.values(ks.models).filter(ms => ms && (ms.served_model || ms.requested_model)) : [];
-        const modelCount = validModels.length;
-        const groupCount = buildRequestedModelGroups(validModels).length;
+        const grouped = usageGroups(ks);
+        const validModels = grouped.models;
+        const groupCount = grouped.groups.length;
         const isExpanded = !!expandedDashKeys[rawKey];
         const keyNote = ks.key_name || rule.name || "";
 
@@ -1639,8 +1468,8 @@
           </td>
           <td class="cell-nowrap">
             <div class="row-actions">
-              <button type="button" class="btn btn-sm" onclick="toggleDashKeyExpand('${escapeHtml(rawKey)}')">${isExpanded ? "收起" : "展开明细 (" + groupCount + ")"}</button>
-              <button type="button" class="btn btn-sm btn-danger" onclick="resetUsageStats('${escapeHtml(rawKey)}')">清零</button>
+              <button type="button" class="btn btn-sm" data-action="expandKey" data-value="${escapeHtml(rawKey)}">${isExpanded ? "收起" : "展开明细 (" + groupCount + ")"}</button>
+              <button type="button" class="btn btn-sm btn-danger" data-action="resetUsage" data-value="${escapeHtml(rawKey)}">清零</button>
             </div>
           </td>
         </tr>`;
@@ -1652,7 +1481,7 @@
               <td class="cell-nowrap mono">${fmtTokenValue(st.output_tokens !== undefined ? st.output_tokens : st.output)} (推理 ${fmtTokenValue(st.reasoning_tokens !== undefined ? st.reasoning_tokens : st.reasoning)})</td>
               <td class="cell-nowrap mono">${fmtTokenValue(st.cache_read_tokens !== undefined ? st.cache_read_tokens : st.cacheRead)} / ${fmtTokenValue(st.cache_write_tokens !== undefined ? st.cache_write_tokens : st.cacheWrite)}</td>
               <td class="cell-nowrap token-val">${fmtTokenValue(st.total_tokens !== undefined ? st.total_tokens : st.totalTokens)}</td>`;
-          for (const group of buildRequestedModelGroups(validModels)) {
+          for (const group of grouped.groups) {
             // Nothing substituted: one row carrying the requested model name.
             if (group.single) {
               const ms = group.children[0];
@@ -1684,6 +1513,7 @@
       tbody.innerHTML = html;
     }
 
+    if (keysOnly) return;
     // Model Token Leaderboard (aggregated by the upstream-served model)
     const modelAgg = {};
     let totalModelTokens = 0;
@@ -1773,11 +1603,9 @@
       const authID = a.auth_id || a.auth_index || "-";
       const provider = a.provider || "unknown";
       const bucketKey = a.auth_id || a.auth_index || provider;
-      const modelList = a.models
-        ? Object.values(a.models).filter(ms => ms && (ms.served_model || ms.requested_model))
-        : [];
-      modelList.sort((x, y) => (y.total_tokens || 0) - (x.total_tokens || 0));
-      const groupCount = buildRequestedModelGroups(modelList).length;
+      const grouped = usageGroups(a);
+      const modelList = grouped.models;
+      const groupCount = grouped.groups.length;
       const isExpanded = !!expandedDashAccounts[bucketKey];
       const lastUsedHint = a.last_request_at
         ? `<div class="txt-muted-xs">最后: ${escapeHtml(fmtDateTime(a.last_request_at))}</div>`
@@ -1797,7 +1625,7 @@
         <td class="cell-nowrap mono">${fmtTokenValue(a.cache_read_tokens)} / ${fmtTokenValue(a.cache_write_tokens)}</td>
         <td class="cell-nowrap token-val">${fmtTokenValue(a.total_tokens)}</td>
         <td class="cell-nowrap">
-          <button type="button" class="btn btn-sm" onclick="toggleDashAccountExpand('${escapeHtml(bucketKey)}')">${isExpanded ? "收起" : "展开明细 (" + groupCount + ")"}</button>
+          <button type="button" class="btn btn-sm" data-action="expandAccount" data-value="${escapeHtml(bucketKey)}">${isExpanded ? "收起" : "展开明细 (" + groupCount + ")"}</button>
         </td>
       </tr>`;
 
@@ -1810,7 +1638,7 @@
             <td class="cell-nowrap mono">${fmtTokenValue(st.output_tokens !== undefined ? st.output_tokens : st.output)} (推理 ${fmtTokenValue(st.reasoning_tokens !== undefined ? st.reasoning_tokens : st.reasoning)})</td>
             <td class="cell-nowrap mono">${fmtTokenValue(st.cache_read_tokens !== undefined ? st.cache_read_tokens : st.cacheRead)} / ${fmtTokenValue(st.cache_write_tokens !== undefined ? st.cache_write_tokens : st.cacheWrite)}</td>
             <td class="cell-nowrap token-val">${fmtTokenValue(st.total_tokens !== undefined ? st.total_tokens : st.totalTokens)}</td>`;
-        for (const group of buildRequestedModelGroups(modelList)) {
+        for (const group of grouped.groups) {
           if (group.single) {
             const ms = group.children[0];
             html += `<tr class="model-group-row">
@@ -1843,12 +1671,12 @@
 
   function toggleDashAccountExpand(bucketKey) {
     expandedDashAccounts[bucketKey] = !expandedDashAccounts[bucketKey];
-    renderDashboardTables();
+    renderAccountUsageTable();
   }
 
   function toggleDashKeyExpand(rawKey) {
     expandedDashKeys[rawKey] = !expandedDashKeys[rawKey];
-    renderDashboardTables();
+    renderDashboardTables(true);
   }
 
   // ==================== TAB 3: DEFAULT POLICY & CREDENTIALS ====================
@@ -1900,7 +1728,6 @@
   function renderHostAuthTable() {
     if (!overviewData) return;
     const files = overviewData.auth_files || [];
-    const keys = overviewData.keys || [];
     const tbody = document.getElementById("hostAuthTableBody");
 
     if (files.length === 0) {
@@ -1910,13 +1737,7 @@
 
     tbody.innerHTML = files.map(af => {
       const idOrName = af.name || af.id || af.auth_index;
-      const boundKeys = keys.filter(kr => {
-        const ub = kr.upstream_binding || {};
-        const list = [].concat(ub.auth_ids || [], ub.credentials || []).map(x => x.toLowerCase());
-        return list.includes((af.name || "").toLowerCase()) ||
-               list.includes((af.id || "").toLowerCase()) ||
-               list.includes((af.auth_index || "").toLowerCase());
-      });
+      const boundKeys = KeyGuardState.boundRules(overviewIndex, af);
 
       const statusOk = !af.disabled && !af.unavailable;
       return `<tr>
@@ -1933,10 +1754,6 @@
 
   // ==================== TAB 0: QUOTA OVERVIEW (local ledger) ====================
   const API_LEDGER = "/v0/management/key-guard/ledger";
-  // Plugin charts/boundaries are pinned to UTC+8 (Asia/Shanghai) regardless
-  // of the browser or server timezone, so "today"/day buckets match every viewer.
-  const OVERVIEW_TZ = "Asia/Shanghai";
-
   const overviewState = {
     granularity: "hour",
     modelDim: "requests",
@@ -1985,65 +1802,11 @@
     return "$" + usd.toFixed(digits);
   }
 
-  // Day boundaries for the overview are pinned to UTC+8 (Asia/Shanghai) so
-  // "today / yesterday / last 7 days" mean the same calendar day everywhere.
-  function shanghaiDateParts(d) {
-    try {
-      const parts = new Intl.DateTimeFormat("en-CA", {
-        timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit"
-      }).formatToParts(d);
-      const get = (t) => Number((parts.find(p => p.type === t) || {}).value || 0);
-      return { y: get("year"), m: get("month"), d: get("day") };
-    } catch (_) {
-      const shifted = new Date(d.getTime() + 8 * 3600 * 1000);
-      return { y: shifted.getUTCFullYear(), m: shifted.getUTCMonth() + 1, d: shifted.getUTCDate() };
-    }
-  }
-  function shanghaiStartOfDay(y, m, d) {
-    // 00:00 in Asia/Shanghai (UTC+8) == 16:00 UTC previous day.
-    return new Date(Date.UTC(y, m - 1, d, -8, 0, 0, 0));
-  }
   function overviewRangeBounds() {
-    const now = new Date();
-    const p = shanghaiDateParts(now);
-    const startOfDay = (d) => { const q = shanghaiDateParts(d); return shanghaiStartOfDay(q.y, q.m, q.d); };
-    const today = startOfDay(now);
-    const minusDays = (d, n) => { const q = shanghaiDateParts(d); return shanghaiStartOfDay(q.y, q.m, q.d - n); };
-    let from, to;
-    switch (overviewState.range) {
-      case "today":
-        from = today;
-        to = new Date(today.getTime() + 24 * 3600 * 1000 - 1);
-        break;
-      case "yesterday":
-        from = minusDays(today, 1);
-        to = new Date(today.getTime() - 1);
-        break;
-      case "30d":
-        from = minusDays(today, 29);
-        to = new Date(today.getTime() + 24 * 3600 * 1000 - 1);
-        break;
-      case "custom": {
-        const fromVal = (document.getElementById("ovFromDate") || {}).value;
-        const toVal = (document.getElementById("ovToDate") || {}).value;
-        const parse = (v, fallback) => {
-          if (!v) return fallback;
-          const parts = String(v).split("-").map(Number);
-          if (parts.length !== 3 || parts.some(x => !Number.isFinite(x))) return fallback;
-          return shanghaiStartOfDay(parts[0], parts[1], parts[2]);
-        };
-        from = parse(fromVal, minusDays(today, 6));
-        to = parse(toVal, today);
-        to = new Date(to.getTime() + 24 * 3600 * 1000 - 1);
-        break;
-      }
-      case "7d":
-      default:
-        from = minusDays(today, 6);
-        to = new Date(today.getTime() + 24 * 3600 * 1000 - 1);
-        break;
-    }
-    return { from: from, to: to };
+    return KeyGuardFormat.rangeBounds(overviewState.range, currentTimezone(), new Date(), {
+      from: (document.getElementById("ovFromDate") || {}).value,
+      to: (document.getElementById("ovToDate") || {}).value
+    });
   }
 
   function overviewQueryParams() {
@@ -2052,7 +1815,7 @@
     params.set("from", bounds.from.toISOString());
     params.set("to", bounds.to.toISOString());
     params.set("granularity", overviewState.granularity);
-    params.set("tz", OVERVIEW_TZ);
+    params.set("tz", currentTimezone());
     // The filter card was removed; the only remaining dimension is the model
     // selected by clicking a row of the distribution list.
     if (overviewState.activeModel) params.set("model", overviewState.activeModel);
@@ -2078,19 +1841,20 @@
 
   async function loadOverviewLedger(showSkeleton, keyOverride = "") {
     if (!activeManagementKey && !keyOverride) return;
-    if (showSkeleton) showOverviewSkeleton();
+    const ticket = requestGate.begin("ledger");
+    if (showSkeleton && !overviewState.data) showOverviewSkeleton();
     overviewState.loading = true;
     try {
       const params = overviewQueryParams();
-      const data = await callManagementAPI(API_LEDGER + "?" + params.toString(), { method: "GET" }, keyOverride || undefined);
+      const data = await callManagementAPI(API_LEDGER + "?" + params.toString(), { method: "GET", signal: ticket.signal }, keyOverride || undefined);
+      if (!ticket.current()) return;
       overviewState.data = data;
       renderOverviewAll();
     } catch (err) {
-      overviewState.data = null;
-      renderOverviewEmpty(err.message);
-    } finally {
-      overviewState.loading = false;
-    }
+      if (isCancelled(err) || !ticket.current()) return;
+      if (overviewState.data) { renderOverviewAll(); showToast("账本更新失败，保留上次数据：" + err.message, true); }
+      else renderOverviewEmpty(err.message);
+    } finally { if (ticket.current()) overviewState.loading = false; ticket.finish(); }
   }
 
   function showOverviewSkeleton() {
@@ -2194,7 +1958,7 @@
     const hit = denom > 0 ? (Number(data.cache_read_tokens || 0) / denom * 100) : 0;
     setText("ovLegendHit", hit.toFixed(1) + "%");
     const zoneName = String(data.timezone || "");
-    const zoneHint = (zoneName === "Asia/Shanghai" || zoneName === "UTC+8") ? `${zoneName} · UTC+8` : zoneName;
+    const zoneHint = zoneName;
     const fmtRange = (raw) => String(raw || "").replace("T", " ").replace(/\.\d+/, "").replace(/([+-]\d{2}:\d{2}|Z)$/, "");
     setText("ovTrendMeta", `${data.active_days || 0} 个有使用记录的自然日 · ${fmtRange(data.from)} ~ ${fmtRange(data.to)}${zoneHint ? " · " + zoneHint : ""}`);
   }
@@ -2274,7 +2038,7 @@
       const x = Math.max(padL, Math.min(left, W - padR - 1));
       const w = Math.max(1, Math.min(width, W - padR - x));
       return `<rect class="ov-hover-zone" x="${x.toFixed(1)}" y="${padT}" width="${w.toFixed(1)}" height="${plotH.toFixed(1)}" ` +
-        `fill="transparent" onmouseenter="showTrendTip(event, ${i})" onmousemove="moveTrendTip(event)" onmouseleave="hideTrendTip()"></rect>`;
+        `fill="transparent" data-tip-index="${i}"></rect>`;
     }).join("");
 
     box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Token 趋势折线图">
@@ -2413,7 +2177,7 @@
       const value = values[i];
       const share = total > 0 ? (value / total * 100) : 0;
       const active = overviewState.activeModel && overviewState.activeModel.toLowerCase() === String(row.model).toLowerCase();
-      return `<div class="ov-model-row${active ? " active" : ""}" onclick="toggleOverviewModel('${escapeHtml(String(row.model).replace(/'/g, "\\'"))}')">
+      return `<div class="ov-model-row${active ? " active" : ""}" data-action="overviewModel" data-value="${escapeHtml(row.model)}">
         <span class="ov-swatch" style="background:${palette[i % palette.length]}"></span>
         <span class="ov-model-name" title="${escapeHtml(row.model)}">${escapeHtml(row.model)}</span>
         <span class="ov-model-share">${share.toFixed(1)}%</span>
@@ -2467,7 +2231,7 @@
       const deletedTag = row.__deleted
         ? `<span class="tag bad" style="font-size:10.5px;padding:1px 6px" title="该密钥已从规则中删除，这里只保留历史用量">已删除</span>`
         : "";
-      const head = `<tr class="ov-key-row${expanded ? " expanded" : ""}${row.__deleted ? " is-deleted" : ""}" onclick="toggleOverviewKey('${escapeHtml(apiKey.replace(/'/g, "\\'"))}')">
+      const head = `<tr class="ov-key-row${expanded ? " expanded" : ""}${row.__deleted ? " is-deleted" : ""}" data-action="overviewKey" data-value="${escapeHtml(apiKey)}">
         <td class="ov-key-toggle">${expanded ? "▾" : "▸"}</td>
         <td class="cell-nowrap">
           <div class="ov-key-cell">
@@ -2570,11 +2334,11 @@
     if (defPrice) {
       defSubEl.innerHTML =
         `兜底价: In <span class="mono">${fmtPriceNum(defPrice.input)}</span> / Out <span class="mono">${fmtPriceNum(defPrice.output)}</span> · ` +
-        `<a href="javascript:void(0)" onclick="openPriceModal('__default__')" style="color:var(--text-primary);text-decoration:underline">修改</a> · ` +
-        `<a href="javascript:void(0)" onclick="deleteCustomModelPrice('__default__')" style="color:var(--error-color);text-decoration:underline">清除</a>`;
+        `<a href="javascript:void(0)" data-action="editPrice" data-value="__default__" style="color:var(--text-primary);text-decoration:underline">修改</a> · ` +
+        `<a href="javascript:void(0)" data-action="deletePrice" data-value="__default__" style="color:var(--error-color);text-decoration:underline">清除</a>`;
     } else {
       defSubEl.innerHTML =
-        `未设置兜底默认价 · <a href="javascript:void(0)" onclick="openPriceModal('__default__')" style="color:var(--text-primary);text-decoration:underline">设置兜底价</a>`;
+        `未设置兜底默认价 · <a href="javascript:void(0)" data-action="editPrice" data-value="__default__" style="color:var(--text-primary);text-decoration:underline">设置兜底价</a>`;
     }
 
     // Build the pricing list from the models the host actually advertises:
@@ -2658,7 +2422,7 @@
             ? `In ${fmtPriceNum(p.input)} / Out ${fmtPriceNum(p.output)}`
             : `-`);
       const resetBtn = item.isExactCustom
-        ? `<button type="button" class="btn btn-sm btn-danger" onclick="deleteCustomModelPrice('${escapeHtml(item.model)}')">恢复默认</button>`
+        ? `<button type="button" class="btn btn-sm btn-danger" data-action="deletePrice" data-value="${escapeHtml(item.model)}">恢复默认</button>`
         : "";
       return `<tr>
         <td class="cell-nowrap">
@@ -2676,7 +2440,7 @@
         <td class="cell-nowrap mono" style="font-size:12px;color:var(--text-tertiary)">${escapeHtml(refText)}</td>
         <td class="cell-nowrap">
           <div class="row-actions">
-            <button type="button" class="btn btn-sm" onclick="openPriceModal('${escapeHtml(item.model)}')">修改价格</button>
+            <button type="button" class="btn btn-sm" data-action="editPrice" data-value="${escapeHtml(item.model)}">修改价格</button>
             ${resetBtn}
           </div>
         </td>
@@ -2705,6 +2469,7 @@
   }
 
   function debouncedSearchModelsDev() {
+    requestGate.cancel("priceSearch");
     if (modelsDevSearchTimer) clearTimeout(modelsDevSearchTimer);
     modelsDevSearchTimer = setTimeout(() => searchModelsDevCatalog(), 240);
   }
@@ -2712,10 +2477,12 @@
   async function searchModelsDevCatalog() {
     const input = document.getElementById("modelsDevSearchInput");
     const q = (input ? input.value : "").trim();
+    const ticket = requestGate.begin("priceSearch");
     const tbody = document.getElementById("modelsDevSearchTableBody");
     try {
       const url = API_PRICING + "?search=" + encodeURIComponent(q) + "&limit=60";
-      const res = await callManagementAPI(url, { method: "GET" });
+      const res = await callManagementAPI(url, { method: "GET", signal: ticket.signal });
+      if (!ticket.current()) return;
       const list = res.reference_models || [];
       if (list.length === 0) {
         tbody.innerHTML = `<tr><td colspan="6" class="cell-empty">未在 models.dev 库中找到匹配的模型</td></tr>`;
@@ -2737,16 +2504,17 @@
           <td class="cell-nowrap mono">${fmtPriceNum(p.cache_read)}</td>
           <td class="cell-nowrap mono">${fmtPriceNum(p.cache_write)}</td>
           <td class="cell-nowrap">
-            <button type="button" class="btn btn-sm" onclick="openPriceModalWithValues('${escapeHtml(m)}', ${Number(p.input || 0)}, ${Number(p.output || 0)}, ${Number(p.cache_read || 0)}, ${Number(p.cache_write || 0)})">载入并修改</button>
+            <button type="button" class="btn btn-sm" data-action="loadPrice" data-value="${escapeHtml(m)}" data-price="${escapeHtml(JSON.stringify(p))}">载入并修改</button>
           </td>
         </tr>`;
       }).join("");
     } catch (err) {
-      tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;color:var(--error-color)">检索失败: ${escapeHtml(err.message)}</td></tr>`;
-    }
+      if (!isCancelled(err) && ticket.current()) tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;color:var(--error-color)">检索失败: ${escapeHtml(err.message)}</td></tr>`;
+    } finally { ticket.finish(); }
   }
 
-  async function openPriceModal(modelName) {
+  function openPriceModal(modelName) {
+    priceModalEpoch++; requestGate.cancel("modalPrice");
     const norm = String(modelName || "").trim();
     const titleEl = document.getElementById("priceModalTitle");
     const modelInput = document.getElementById("pmModelInput");
@@ -2768,7 +2536,7 @@
       if (customMap[low]) {
         p = customMap[low];
       } else {
-        const am = ((overviewData && overviewData.available_models) || []).find(x => String(x.id).toLowerCase() === low);
+        const am = overviewIndex.models.get(low);
         if (am && am.price) p = am.price;
       }
     } else {
@@ -2783,6 +2551,7 @@
   }
 
   function openPriceModalWithValues(modelName, input, output, cacheRead, cacheWrite) {
+    priceModalEpoch++; requestGate.cancel("modalPrice");
     document.getElementById("priceModalTitle").textContent = "修改模型价格: " + modelName;
     document.getElementById("pmModelInput").value = modelName;
     document.getElementById("pmInputPrice").value = Number(input || 0);
@@ -2794,18 +2563,23 @@
   }
 
   function closePriceModal() {
+    priceModalEpoch++; requestGate.cancel("modalPrice");
     document.getElementById("priceModalBackdrop").classList.remove("open");
   }
 
   async function fillPriceModalFromModelsDev() {
     const model = (document.getElementById("pmModelInput").value || "").trim();
     const refHint = document.getElementById("pmRefHint");
+    const modalVersion = priceModalEpoch;
+    const ticket = requestGate.begin("modalPrice");
     if (!model || model === "__default__") {
       showToast("请先输入具体的模型名称", true);
+      ticket.finish();
       return;
     }
     try {
-      const res = await callManagementAPI(API_PRICING + "?model=" + encodeURIComponent(model), { method: "GET" });
+      const res = await callManagementAPI(API_PRICING + "?model=" + encodeURIComponent(model), { method: "GET", signal: ticket.signal });
+      if (!ticket.current() || modalVersion !== priceModalEpoch || document.getElementById("pmModelInput").value.trim() !== model || !document.getElementById("priceModalBackdrop").classList.contains("open")) return;
       const q = res.query || {};
       const p = q.price || {};
       if (!q.found) {
@@ -2818,8 +2592,8 @@
       document.getElementById("pmCacheWritePrice").value = Number(p.cache_write || 0);
       refHint.textContent = `已填入基准价格（来源: ${p.source || "models.dev"}）`;
     } catch (err) {
-      showToast("查询基准价格失败: " + err.message, true);
-    }
+      if (!isCancelled(err) && ticket.current()) showToast("查询基准价格失败: " + err.message, true);
+    } finally { ticket.finish(); }
   }
 
   async function submitPriceModal() {
@@ -2834,6 +2608,7 @@
       cache_read: Math.max(0, Number(document.getElementById("pmCacheReadPrice").value || 0)),
       cache_write: Math.max(0, Number(document.getElementById("pmCacheWritePrice").value || 0))
     };
+    if (Object.values(price).some(value => !Number.isFinite(value) || value < 0)) { showToast("价格必须是有效的非负数", true); return; }
     try {
       const res = await callManagementAPI(API_PRICING_CUSTOM, {
         method: "POST",
@@ -2860,6 +2635,34 @@
       showToast("恢复默认价格失败: " + err.message, true);
     }
   }
+
+  KeyGuardEvents.bind(document, {
+    actions: {
+      provider: (value, el) => setProviderFilter(el.dataset.prefix, value),
+      entityPopover: (_value, el, event) => openEntityPopover(event, el),
+      closePopover: () => closeModelPopover(), copyPopover: () => copyPopoverItems(),
+      editPopover: value => editFromPopover(value), toggleKey: value => quickToggleKeyEnabled(value),
+      copy: value => copyText(value), editKey: value => openKeyModalByKey(value),
+      resetQuota: value => resetKeyQuota(value), deleteKey: value => deleteKeyRule(value),
+      expandKey: value => toggleDashKeyExpand(value), resetUsage: value => resetUsageStats(value),
+      expandAccount: value => toggleDashAccountExpand(value),
+      overviewModel: value => toggleOverviewModel(value), overviewKey: value => toggleOverviewKey(value),
+      editPrice: value => openPriceModal(value), deletePrice: value => deleteCustomModelPrice(value),
+      loadPrice: (value, el) => { const p = JSON.parse(el.dataset.price); openPriceModalWithValues(value, p.input, p.output, p.cache_read, p.cache_write); }
+    },
+    change: {
+      modelCheck: (value, el) => toggleModelCheckItem(el.dataset.prefix, value, el.checked),
+      credCheck: (value, el) => toggleCredCheckItem(el.dataset.prefix, value, el.checked)
+    },
+    input: { popoverSearch: (_value, el) => renderEntityPopover(el.value, true) },
+    drag: { dragstart: onKeyRowDragStart, dragover: onKeyRowDragOver, drop: onKeyRowDrop, dragend: onKeyRowDragEnd },
+    tip: { pointerover: showTrendTip, pointermove: moveTrendTip, pointerout: hideTrendTip }
+  }, error => { if (!isCancelled(error)) showToast(error.message || "操作失败", true); });
+
+  window.addEventListener("storage", event => {
+    if (event.key === "cli-proxy-auth" && activeManagementKey && !readStoredManagementKeyFromStorage(window.localStorage)) lockAdminWorkspace("管理中心会话已退出，请重新验证");
+  });
+  window.addEventListener("pagehide", () => { requestGate.cancelAll(); apiClient.cancelAll(); });
 
   restoreAdminTabFromUrl();
   loadAdminOverview().catch(() => {});
