@@ -22,8 +22,7 @@ func TestQueryLedgerUsesConfiguredTimezone(t *testing.T) {
 
 	cfgYAML := `enabled: true
 storage:
-  usage_file: "` + filepath.ToSlash(filepath.Join(tmpDir, "usage.json")) + `"
-  rules_file: "` + filepath.ToSlash(filepath.Join(tmpDir, "rules.json")) + `"
+  usage_db_file: "` + filepath.ToSlash(filepath.Join(tmpDir, "key_usage.db")) + `"
 `
 	regReq, _ := json.Marshal(lifecycleRequest{ConfigYAML: []byte(cfgYAML), SchemaVersion: pluginabi.SchemaVersion})
 	if _, err := mgr.HandleRPC(pluginabi.MethodPluginRegister, regReq); err != nil {

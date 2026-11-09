@@ -68,7 +68,6 @@ func (m *Manager) AuditKeyOptions() []map[string]string {
 	for _, rule := range m.cfg.Keys {
 		keys = append(keys, optionKey{key: rule.APIKey, name: rule.Name})
 	}
-	adminToken := m.cfg.AdminToken
 	m.mu.RUnlock()
 	options := make([]map[string]string, 0, len(keys))
 	seen := make(map[string]struct{}, len(keys))
@@ -87,7 +86,7 @@ func (m *Manager) AuditKeyOptions() []map[string]string {
 		if len(key) > 2 {
 			masked = usage.MaskAPIKey(key)
 		}
-		name := auditSafeLabel(item.name, key, adminToken)
+		name := auditSafeLabel(item.name, key)
 		label := masked
 		if name != "" {
 			label = name + " · " + masked

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
@@ -82,5 +83,61 @@ func TestAuditMediaPayloadDoesNotReachPersistence(t *testing.T) {
 	}
 	if len(detail.RequestBody) >= len(body) {
 		t.Fatal("media filtering did not reduce retained size")
+	}
+}
+
+func TestRemovedLegacyTokenNeverElevatesCallerPrivileges(t *testing.T) {
+	m := NewManager(nil)
+	// A stale YAML token is intentionally ignored by the current config parser.
+	configured, err := ParseConfigYAML([]byte("admin_token: former-plugin-admin\nenabled: true\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	m.cfg = configured
+	m.mu.Unlock()
+	for _, tc := range []struct {
+		headers http.Header
+		query   url.Values
+		want    string
+	}{
+		{headers: http.Header{"Authorization": {"Bearer former-plugin-admin"}}, want: "former-plugin-admin"},
+		{headers: http.Header{"X-Api-Key": {"client-key"}}, want: "client-key"},
+		{query: url.Values{"api_key": {"query-client"}}, want: "query-client"},
+		{},
+	} {
+		key, admin := m.ExtractCallerAPIKey(pluginapi.ManagementRequest{Headers: tc.headers, Query: tc.query})
+		if admin || key != tc.want {
+			t.Fatalf("caller privilege changed: key=%q admin=%v", key, admin)
+		}
+	}
+}
+
+func TestBootstrapHTTPRejectsRemovedTokenFieldsAndNeverEchoesLegacyState(t *testing.T) {
+	m, _ := bootstrapFixture(t, "plugins:\n  configs:\n    cpa-plugin-key-manager:\n      admin_token: former-plugin-admin\n      storage: {usage_file: old-usage.json, rules_file: old-rules.json}\n      audit: {trusted_proxies: [127.0.0.1/32]}\n")
+	response := settingsHTTP(t, m, "GET", "/v0/management/key-guard/settings/bootstrap", nil, true, "")
+	if response.StatusCode != 200 {
+		t.Fatalf("GET=%d", response.StatusCode)
+	}
+	for _, removed := range []string{"admin_token", "former-plugin-admin", "deprecated", "usage_file", "rules_file", "trusted_proxies"} {
+		if strings.Contains(string(response.Body), removed) {
+			t.Fatalf("GET exposed removed field %s", removed)
+		}
+	}
+	for _, field := range []string{"admin_token", "clear_admin_token"} {
+		body := bootstrapBody(t, m, func(request map[string]any) {
+			if field == "admin_token" {
+				request["bootstrap"].(map[string]any)[field] = "new-secret"
+			} else {
+				request["bootstrap"].(map[string]any)[field] = true
+			}
+		})
+		response = settingsHTTP(t, m, "PUT", "/v0/management/key-guard/settings/bootstrap", body, true, "")
+		if response.StatusCode != 400 {
+			t.Fatalf("removed PUT field %s accepted: %d %s", field, response.StatusCode, response.Body)
+		}
+		if strings.Contains(string(response.Body), "new-secret") {
+			t.Fatal("old field error echoed value")
+		}
 	}
 }

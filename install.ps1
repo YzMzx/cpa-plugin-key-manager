@@ -4,8 +4,8 @@
 .DESCRIPTION
     Downloads the latest (or specified) cpa-plugin-key-manager Windows DLL from GitHub Releases,
     verifies its SHA256 checksum, installs it into .\plugins\cpa-plugin-key-manager.dll,
-    and initializes .\data\key_guard_rules.json, .\data\key_usage_stats.json,
-    .\data\models_dev.json, and config.yaml.
+    and initializes the SQLite data directory, .\data\models_dev.json pricing cache,
+    and config.yaml.
 .EXAMPLE
     irm https://raw.githubusercontent.com/YzMzx/cpa-plugin-key-manager/main/install.ps1 | iex
 .EXAMPLE
@@ -102,17 +102,14 @@ if (-not $InitOnly) {
 
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 
-# v0.9.x keeps everything (rules, usage, ledger) in a single SQLite database.
-# The installer never creates the legacy JSON stores any more; it only adopts
-# existing ones so the plugin can import them once on first start.
-$LegacyJsonNames = @("key_guard_rules.json", "key_usage_stats.json")
+# Runtime records live only in SQLite; the plugin creates its database on first start.
 $DbFiles = @("key_usage.db", "key_usage.db-wal", "key_usage.db-shm", "key_usage.db.lock")
 
 if ($ResetData) {
     $BackupDir = Join-Path $DataDir ("backup-" + (Get-Date).ToUniversalTime().ToString("yyyyMMdd-HHmmss"))
     New-Item -ItemType Directory -Force -Path $BackupDir | Out-Null
     $Moved = 0
-    foreach ($name in ($DbFiles + $LegacyJsonNames)) {
+    foreach ($name in $DbFiles) {
         $path = Join-Path $DataDir $name
         if (Test-Path $path) {
             Move-Item -Force -Path $path -Destination $BackupDir
@@ -124,16 +121,6 @@ if ($ResetData) {
         Write-Info "A fresh database will be created on the next start."
     } else {
         Write-Info "Nothing to reset in $DataDir"
-    }
-} else {
-    foreach ($name in $LegacyJsonNames) {
-        $Target = Join-Path $DataDir $name
-        if (Test-Path $Target) {
-            Write-Info "Found legacy JSON store (imported once into SQLite on next start): $Target"
-        } else {
-            Write-Info "No legacy JSON store present; the plugin will create data\key_usage.db on first start."
-            break
-        }
     }
 }
 
@@ -162,12 +149,6 @@ if (-not (Test-Path $ConfigFile)) {
     $RawCfg = Get-Content -Path $ConfigFile -Raw
     if ($RawCfg -match "cpa-plugin-key-manager") {
         Write-Info "Detected existing cpa-plugin-key-manager configuration in $ConfigFile"
-    } elseif ($RawCfg -match "cpa-plugin-key:") {
-        Write-Info "Migrating legacy cpa-plugin-key configuration to cpa-plugin-key-manager in $ConfigFile"
-        Copy-Item -Path $ConfigFile -Destination "$ConfigFile.bak" -Force
-        $MigratedCfg = $RawCfg -replace "cpa-plugin-key:", "cpa-plugin-key-manager:"
-        [System.IO.File]::WriteAllText($ConfigFile, $MigratedCfg, (New-Object System.Text.UTF8Encoding($false)))
-        Write-Info "Updated config.yaml to cpa-plugin-key-manager (backup saved to $ConfigFile.bak)"
     } elseif ($RawCfg -notmatch "(?m)^plugins:") {
         Copy-Item -Path $ConfigFile -Destination "$ConfigFile.bak" -Force
         Add-Content -Path $ConfigFile -Value $PluginYamlBlock -Encoding UTF8

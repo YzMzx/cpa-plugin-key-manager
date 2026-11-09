@@ -18,9 +18,6 @@ func (m *Manager) beginAudit(req pluginapi.RequestInterceptRequest, apiKey, keyL
 	if store == nil || !cfg.isEnabled() || strings.TrimSpace(req.RequestID) == "" {
 		return
 	}
-	m.mu.RLock()
-	adminToken := m.cfg.AdminToken
-	m.mu.RUnlock()
 	contentType := req.Headers.Get("Content-Type")
 	// Model executors may omit client headers; known JSON protocols can still be
 	// parsed safely without guessing media/binary formats.
@@ -54,7 +51,7 @@ func (m *Manager) beginAudit(req pluginapi.RequestInterceptRequest, apiKey, keyL
 		sum := sha256.Sum256([]byte(apiKey))
 		fingerprint = hex.EncodeToString(sum[:])
 	}
-	rec := audit.Record{RequestID: auditCorrelationID(req.RequestID), TraceID: auditCorrelationID(req.TraceID), StartedAt: time.Now().UTC().UnixMilli(), Method: method, Path: auditSafeLabel(path, apiKey, adminToken), KeyLabel: auditSafeLabel(keyLabel, apiKey, adminToken), KeyFingerprint: fingerprint, RequestedModel: auditSafeLabel(req.RequestedModel, apiKey, adminToken), ServedModel: auditSafeLabel(req.Model, apiKey, adminToken), Protocol: auditSafeLabel(req.SourceFormat), Stream: req.Stream, Outcome: "running", BodyState: body.State, BodyTruncated: body.Truncated, RequestBody: body.Body, BodySHA256: body.SHA256}
+	rec := audit.Record{RequestID: auditCorrelationID(req.RequestID), TraceID: auditCorrelationID(req.TraceID), StartedAt: time.Now().UTC().UnixMilli(), Method: method, Path: auditSafeLabel(path, apiKey), KeyLabel: auditSafeLabel(keyLabel, apiKey), KeyFingerprint: fingerprint, RequestedModel: auditSafeLabel(req.RequestedModel, apiKey), ServedModel: auditSafeLabel(req.Model, apiKey), Protocol: auditSafeLabel(req.SourceFormat), Stream: req.Stream, Outcome: "running", BodyState: body.State, BodyTruncated: body.Truncated, RequestBody: body.Body, BodySHA256: body.SHA256}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := store.Begin(ctx, rec); err != nil {
@@ -82,7 +79,6 @@ func (m *Manager) completeAudit(completion audit.Completion) {
 }
 func (m *Manager) completeRequestAudit(completion pluginapi.RequestCompletion, apiKey string) {
 	m.mu.RLock()
-	adminToken := m.cfg.AdminToken
 	m.mu.RUnlock()
 	finished := completion.CompletedAt
 	if finished.IsZero() {
@@ -98,11 +94,8 @@ func (m *Manager) completeRequestAudit(completion pluginapi.RequestCompletion, a
 	default:
 		outcome = "unknown"
 	}
-	m.completeAudit(audit.Completion{RequestID: completion.RequestID, TraceID: completion.TraceID, CompletedAt: finished.UnixMilli(), ServedModel: auditSafeLabel(completion.Model, apiKey, adminToken), Outcome: outcome, StatusCode: completion.StatusCode, DurationMS: duration})
+	m.completeAudit(audit.Completion{RequestID: completion.RequestID, TraceID: completion.TraceID, CompletedAt: finished.UnixMilli(), ServedModel: auditSafeLabel(completion.Model, apiKey), Outcome: outcome, StatusCode: completion.StatusCode, DurationMS: duration})
 }
 func (m *Manager) auditUsage(rec pluginapi.UsageRecord) {
-	m.mu.RLock()
-	adminToken := m.cfg.AdminToken
-	m.mu.RUnlock()
-	m.completeAudit(audit.Completion{RequestID: rec.RequestID, TraceID: rec.TraceID, ServedModel: auditSafeLabel(rec.ResponseModel, rec.APIKey, adminToken), InputTokens: rec.Detail.InputTokens, OutputTokens: rec.Detail.OutputTokens, TotalTokens: rec.Detail.TotalTokens})
+	m.completeAudit(audit.Completion{RequestID: rec.RequestID, TraceID: rec.TraceID, ServedModel: auditSafeLabel(rec.ResponseModel, rec.APIKey), InputTokens: rec.Detail.InputTokens, OutputTokens: rec.Detail.OutputTokens, TotalTokens: rec.Detail.TotalTokens})
 }

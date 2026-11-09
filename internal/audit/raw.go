@@ -41,7 +41,8 @@ func CaptureRawJSON(body []byte, contentType, contentEncoding string, maxBytes i
 	if len(trimmed) == 0 || (trimmed[0] != '{' && trimmed[0] != '[') {
 		return BodyResult{State: "omitted_non_container"}
 	}
-	filtered, mediaFiltered := FilterRequestMedia(body)
+	withoutSystem, systemFiltered := FilterSystemMessages(body)
+	filtered, mediaFiltered := FilterRequestMedia(withoutSystem)
 	// Never fall back to an unfiltered payload if explanatory markers grow output.
 	if len(filtered) > maxBytes {
 		return BodyResult{State: "omitted_output_limit", Truncated: true}
@@ -49,7 +50,11 @@ func CaptureRawJSON(body []byte, contentType, contentEncoding string, maxBytes i
 	formatted := FormatJSON(filtered, maxBytes)
 	hash := sha256.Sum256(formatted)
 	state := "stored_raw"
-	if mediaFiltered {
+	if systemFiltered && mediaFiltered {
+		state = "stored_raw_system_media_filtered"
+	} else if systemFiltered {
+		state = "stored_raw_system_filtered"
+	} else if mediaFiltered {
 		state = "stored_raw_media_filtered"
 	}
 	return BodyResult{Body: string(formatted), State: state, SHA256: hex.EncodeToString(hash[:])}

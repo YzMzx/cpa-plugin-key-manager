@@ -47,10 +47,9 @@ func (m *Manager) GetRuntimeSettings() map[string]any {
 	}
 	return map[string]any{
 		"settings": current, "rules_revision": revision,
-		"readonly":   map[string]any{"bootstrap": map[string]any{"enabled": cfg.Enabled, "priority": cfg.Priority, "usage_db_file": cfg.Storage.UsageDBFile}, "needs_restart": []string{"enabled", "priority", "storage.usage_db_file"}, "management_credentials": "managed by CPA; never returned or changed here"},
-		"deprecated": []string{"admin_token", "storage.usage_file", "storage.rules_file", "audit.trusted_proxies"},
-		"capture":    map[string]any{"mode": "plaintext_json_without_media", "credentials_in_body_may_be_retained": true},
-		"limits":     settingsLimits(), "apply_status": map[string]any{"ok": applyError == "", "error": applyError},
+		"readonly": map[string]any{"bootstrap": map[string]any{"enabled": cfg.Enabled, "priority": cfg.Priority, "usage_db_file": cfg.Storage.UsageDBFile}, "needs_restart": []string{"enabled", "priority", "storage.usage_db_file"}, "management_credentials": "managed by CPA; never returned or changed here"},
+		"capture":  map[string]any{"mode": "plaintext_json_without_media", "credentials_in_body_may_be_retained": true},
+		"limits":   settingsLimits(), "apply_status": map[string]any{"ok": applyError == "", "error": applyError},
 	}
 }
 func settingsLimits() map[string]any {
@@ -261,7 +260,7 @@ func settingsMayPrune(old, next RuntimeSettings) bool {
 
 func settingsCacheConflicts(settings RuntimeSettings, cfg Config) bool {
 	path := filepath.Clean(settings.Storage.PricingCacheFile)
-	for _, protected := range []string{cfg.Storage.UsageDBFile, cfg.Storage.UsageDBFile + "-wal", cfg.Storage.UsageDBFile + "-shm", cfg.Storage.UsageDBFile + ".lock", cfg.Storage.RulesFile, cfg.Storage.UsageFile, FindHostConfigFile("")} {
+	for _, protected := range []string{cfg.Storage.UsageDBFile, cfg.Storage.UsageDBFile + "-wal", cfg.Storage.UsageDBFile + "-shm", cfg.Storage.UsageDBFile + ".lock", FindHostConfigFile("")} {
 		if protected != "" && settingsSamePath(path, protected) {
 			return true
 		}

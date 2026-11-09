@@ -13,12 +13,9 @@ type AuditConfig struct {
 	MaxRecords    int   `yaml:"max_records" json:"max_records"`
 	MaxBodyBytes  int   `yaml:"max_body_bytes" json:"max_body_bytes"`
 	MaxTotalBytes int64 `yaml:"max_total_bytes" json:"max_total_bytes"`
-	// Accepted only for old configuration compatibility; IP monitoring is removed.
-	TrustedProxies []string `yaml:"trusted_proxies" json:"-"`
 }
 
 func (c *AuditConfig) normalize() {
-	c.TrustedProxies = nil
 	if c.Enabled == nil {
 		enabled := true
 		c.Enabled = &enabled

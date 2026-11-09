@@ -18,9 +18,11 @@ const tick = () => new Promise(done => setImmediate(done));
 
 function environment(fetchImpl = async () => response(overview())) {
   const elements = new Map();
+  const htmlIds = new Set([...fs.readFileSync(path.join(__dirname, "index.html"), "utf8").matchAll(/id="([^"]+)"/g)].map(match => match[1]));
   const listeners = new Map();
   const classes = () => { const set = new Set(); return { add: (...items) => items.forEach(item => set.add(item)), remove: (...items) => items.forEach(item => set.delete(item)), contains: item => set.has(item), toggle: (item, force) => { const add = force === undefined ? !set.has(item) : force; if (add) set.add(item); else set.delete(item); return add; } }; };
   const element = id => {
+    if (/^(?:setting|settings)/.test(id)) assert.ok(htmlIds.has(id), "page accessed missing settings DOM: " + id);
     if (!elements.has(id)) elements.set(id, { id, value: "", textContent: "", innerHTML: "", disabled: false, checked: false, style: {}, dataset: {}, classList: classes(), focus() {}, setSelectionRange() {}, getAttribute() { return null; }, setAttribute() {}, addEventListener(type, handler) { (this.listeners ||= {})[type] = handler; }, replaceChildren() { this.textContent = ""; this.children = []; }, appendChild(child) { (this.children ||= []).push(child); return child; }, remove() {} });
     return elements.get(id);
   };
@@ -395,10 +397,10 @@ test("production API client accepts audit cleanup preview then confirmed apply",
 
 test("settings tab retains dirty unit draft on global refresh, saves with fresh CAS and clears on lock",async()=>{
  const setting={audit:{enabled:true,retention_days:7,max_records:10000,max_body_bytes:10485760,max_total_bytes:67108864},storage:{flush_interval_seconds:10,ledger_retention_days:90,timezone:"Asia/Shanghai",pricing_cache_file:"data/prices.json"},pricing:{sync_url:"https://models.dev/api.json",sync_interval_hours:24,http_timeout_seconds:30,auto_inject_include_usage:true}};
- const calls=[];let version=7;const env=environment(async(url,options)=>{calls.push({url,options});if(url.endsWith("/settings")){if(options.method==="PUT"){const body=JSON.parse(options.body);assert.equal(body.expected_revision,7);assert.equal(options.headers.get("X-Key-Guard-Revision"),"7");version=8;return response({ok:true,settings:body.settings,rules_revision:version});}return response({settings:setting,rules_revision:version,deprecated:[]});}if(url.includes("/ledger"))return response(ledger());return response(overview({rules_revision:version}));});
+ const calls=[];let version=7;const env=environment(async(url,options)=>{calls.push({url,options});if(url.endsWith("/settings")){if(options.method==="PUT"){const body=JSON.parse(options.body);assert.equal(body.expected_revision,7);assert.equal(options.headers.get("X-Key-Guard-Revision"),"7");version=8;return response({ok:true,settings:body.settings,rules_revision:version});}return response({settings:setting,rules_revision:version});}if(url.includes("/ledger"))return response(ledger());return response(overview({rules_revision:version}));});
  env.run('switchAdminTab("tab-settings")');await tick();await tick();assert.equal(env.element("settingAuditTotalMiB").value,"64");
  env.element("settingAuditTotalMiB").value="512";env.element("settingAuditTotalMiB").listeners.input();assert.equal(env.run("settingsView.isDirty()"),true);
  const readCount=calls.filter(call=>call.url.endsWith("/settings")&&call.options.method==="GET").length;await env.run("refreshAllData()");assert.equal(env.element("settingAuditTotalMiB").value,"512");assert.equal(calls.filter(call=>call.url.endsWith("/settings")&&call.options.method==="GET").length,readCount);
  await env.run("settingsView.save()");assert.equal(env.run("settingsView.isDirty()"),false);assert.ok(calls.some(call=>call.url.endsWith("/settings")&&call.options.method==="PUT"));
- env.element("settingBootstrapAdminToken").value="sensitive-draft";env.run('lockAdminWorkspace("expired")');assert.equal(env.element("settingBootstrapAdminToken").value,"");assert.equal(env.element("settingTimezone").value,"");assert.equal(env.element("settingsSave").disabled,true);
+ env.element("settingBootstrapDB").value="unsaved-path";env.run('lockAdminWorkspace("expired")');assert.equal(env.element("settingBootstrapDB").value,"");assert.equal(env.element("settingTimezone").value,"");assert.equal(env.element("settingsSave").disabled,true);
 });

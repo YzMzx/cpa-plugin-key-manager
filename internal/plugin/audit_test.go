@@ -386,10 +386,6 @@ func TestAuditNoLongerCapturesOrExposesNetworkMetadata(t *testing.T) {
 			t.Fatalf("removed network monitoring still visible: %s", field)
 		}
 	}
-	cfg, err := ParseConfigYAML([]byte("audit: {trusted_proxies: [legacy-unused]}"))
-	if err != nil || len(cfg.Audit.TrustedProxies) != 0 {
-		t.Fatal("legacy proxy settings must be ignored")
-	}
 	apiRequest, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodGet, Path: "/v0/management/key-guard/audit", Headers: http.Header{"Authorization": {"Bearer admin"}}, Query: url.Values{"ip": {"203.0.113.42"}}})
 	response, err := m.handleManagement(apiRequest)
 	if err != nil {
@@ -460,5 +456,37 @@ func TestAuditRawBodyOverExplicitSmallerLimitIsNotPartiallySaved(t *testing.T) {
 	}
 	if body, ok := record["request_body"].(string); ok && body != "" {
 		t.Fatal("raw partial body saved")
+	}
+}
+
+func TestAuditFiltersSystemAndDeveloperWithoutChangingUpstreamRequest(t *testing.T) {
+	m := transactionManager(t)
+	req := pluginapi.RequestInterceptRequest{RequestID: "role-filter-persistence", SourceFormat: "openai", Model: "m", Body: []byte(`{"messages":[{"role":"system","content":"PRIVATE-SYSTEM-PROMPT"},{"role":"developer","content":"PRIVATE-DEVELOPER-PROMPT"},{"role":"user","content":"保留用户消息"},{"role":"assistant","content":"保留助手消息"},{"role":"tool","content":"保留工具消息"}],"model":"m"}`)}
+	original := append([]byte(nil), req.Body...)
+	m.beginAudit(req, "", "")
+	if string(req.Body) != string(original) {
+		t.Fatal("upstream request was modified")
+	}
+	records := auditRecords(t, m)
+	if len(records) != 1 {
+		t.Fatal("request audit record missing")
+	}
+	store, _ := m.auditSnapshot()
+	saved, err := store.Detail(context.Background(), records[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.BodyState != "stored_raw_system_filtered" || saved.BodyTruncated || saved.BodySHA256 == "" {
+		t.Fatal("filtered request body not persisted")
+	}
+	for _, secret := range []string{"PRIVATE-SYSTEM-PROMPT", "PRIVATE-DEVELOPER-PROMPT"} {
+		if strings.Contains(saved.RequestBody, secret) {
+			t.Fatal("excluded role body reached database")
+		}
+	}
+	for _, text := range []string{"保留用户消息", "保留助手消息", "保留工具消息"} {
+		if !strings.Contains(saved.RequestBody, text) {
+			t.Fatal("allowed role body lost")
+		}
 	}
 }

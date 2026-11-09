@@ -11,9 +11,9 @@ import (
 
 func ledgerTestStore(t *testing.T) (*Store, string) {
 	t.Helper()
-	file := filepath.Join(t.TempDir(), "usage.json")
+	file := filepath.Join(t.TempDir(), "usage.db")
 	store := NewStore(pricing.NewEngine())
-	if err := store.ConfigurePersistence(file, time.Hour); err != nil {
+	if err := store.ConfigureSQLite(file, time.Hour); err != nil {
 		t.Fatalf("configure store: %v", err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
@@ -126,7 +126,7 @@ func TestLedgerPersistsAcrossReload(t *testing.T) {
 	_ = store.Close()
 
 	reloaded := NewStore(pricing.NewEngine())
-	if err := reloaded.ConfigurePersistence(file, time.Hour); err != nil {
+	if err := reloaded.ConfigureSQLite(file, time.Hour); err != nil {
 		t.Fatalf("reload: %v", err)
 	}
 	defer reloaded.Close()

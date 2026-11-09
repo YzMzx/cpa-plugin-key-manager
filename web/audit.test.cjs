@@ -261,3 +261,8 @@ test("media-filtered plaintext JSON remains visible and identifies only the omit
  const value=Audit.bodyView(record("media",{body_state:"stored_raw_media_filtered",body_truncated:false,request_body:raw,body_sha256:"saved-filtered-hash"}));
  assert.match(value.state,/文件载荷已过滤/);assert.match(value.json,/保留文字/);assert.match(value.json,/still-plaintext/);assert.match(value.json,/OMITTED:media/);assert.equal(value.retainedBytes,Buffer.byteLength(raw));
 });
+
+test("system/developer filtered audit states remain readable with saved hash",()=>{
+ const raw='{"messages":[{"role":"user","content":"保留文字"}]}';
+ for(const state of ["stored_raw_system_filtered","stored_raw_system_media_filtered"]){const value=Audit.bodyView(record("roles",{body_state:state,request_body:raw,body_sha256:"saved-filtered-hash",body_truncated:false}));assert.ok(value.state.includes("system / developer"));assert.match(value.json,/保留文字/);assert.ok(value.retainedBytes>0);assert.equal(Audit.bodyView(record("roles",{body_state:state,request_body:raw}),"original").json,raw);}
+});

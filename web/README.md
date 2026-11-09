@@ -39,7 +39,7 @@ No parent-side bridge is added by this project. Without saved/shared state or an
 Run from repository root, without npm installation:
 
 ~~~text
-node --test web/runtime.test.cjs web/audit.test.cjs
+node --test web/runtime.test.cjs web/audit.test.cjs web/settings.test.cjs
 go test ./web
 ~~~
 
@@ -67,8 +67,10 @@ The audit table has eight columns after removal of the two network columns. The 
 
 The `tab-settings` page uses the administrator-only settings API. Hot settings are grouped into redacted-safe runtime configuration: audit collection/retention/record and byte limits, usage flush interval/ledger retention/timezone, and pricing URL/interval/timeout/include-usage/cache path. MiB inputs convert exactly to integer bytes; 1024 MiB is 1 GiB. Invalid, non-finite or fractional integer values never reach a PUT. Price URL must be HTTP(S) without userinfo, query (including an empty trailing `?`) or fragment.
 
-- GET `/v0/management/key-guard/settings` supplies `settings,rules_revision,limits,readonly,deprecated,apply_status,bootstrap`. The editor renders only explicit safe fields; it never displays arbitrary secret values.
+- GET `/v0/management/key-guard/settings` supplies `settings,rules_revision,limits,apply_status,bootstrap`. The editor renders only the current explicit runtime groups and startup fields, never arbitrary backend fields.
 - PUT to that endpoint sends the complete hot `settings` object, matching `expected_revision` and explicit `X-Key-Guard-Revision`, plus `ack_prune`. Lower retention/count/total capacity or ledger retention requires a separate checkbox. Saved success is rebased only after backend confirmation; a post-save overview refresh failure is reported separately. `apply_status.ok:false` remains visible as saved but not fully applied.
-- Bootstrap edits use a separate PUT `/settings/bootstrap` with `expected_file_revision,bootstrap,ack_restart,ack_storage_path_change`. Current effective values and staged disk values are distinct. Database path is disabled if environment-locked. New legacy `admin_token` is password-only/write-only, blank preserves it, and set/clear are mutually exclusive. It is not the CPA Management Key. The form warns to back up and that host watching may apply changes early or invalidate the current page; a database path change needs restart and never migrates data automatically.
+- Bootstrap edits use a separate PUT `/settings/bootstrap` with `expected_file_revision,bootstrap,ack_restart,ack_storage_path_change`. Only `enabled,priority,usage_db_file` are accepted and sent as startup values. Current effective values and staged disk values are distinct. Database path is disabled if environment-locked. The form warns to back up and that host watching may apply changes early or invalidate the current page; a database path change needs restart and never migrates data automatically.
 
-Drafts are independent from overview snapshots. Refresh and late GET responses cannot overwrite dirty edits; conflicts retain the draft and require reload/discard before retry. Tab exit cancels settings reads/writes and clears the new-token input. Authentication lock cancels work and clears every field, baseline and draft. Navigation cards open the existing key, default-policy and price editors rather than rebuilding those mechanisms. All content is text nodes and existing event bindings; the settings module is inlined before page startup in the same two-script standalone HTML.
+Drafts are independent from overview snapshots. Refresh and late GET responses cannot overwrite dirty edits; conflicts retain the draft and require reload/discard before retry. Tab exit cancels settings reads/writes while preserving the current ordinary draft. Authentication lock cancels work and clears every field, baseline and draft. Navigation cards open the existing key, default-policy and price editors rather than rebuilding those mechanisms. All content is text nodes and existing event bindings; the settings module is inlined before page startup in the same two-script standalone HTML.
+
+Before audit persistence, root request message arrays (`messages`, `input`, `contents` or a root array) omit complete entries with role `system` or `developer`. This does not edit the upstream request or recursively reinterpret business/tool output JSON. `stored_raw_system_filtered` and `stored_raw_system_media_filtered` are plaintext display states, with role/media filter labels and hashes over the retained formatted content. Historical rows are not rewritten by this change.

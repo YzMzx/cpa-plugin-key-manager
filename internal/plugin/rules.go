@@ -59,7 +59,6 @@ func (m *Manager) ListKeyRulesAndDefaultPolicy() map[string]any {
 	return map[string]any{
 		"keys":           keysCopy,
 		"default_policy": m.cfg.DefaultPolicy,
-		"rules_file":     m.cfg.Storage.RulesFile,
 	}
 }
 

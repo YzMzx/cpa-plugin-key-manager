@@ -30,7 +30,7 @@ func assertNoNetworkFields(t *testing.T, r Record) {
 
 func TestAuditDiscardsEveryLegacyNetworkInputAndNeverReturnsIt(t *testing.T) {
 	db, _ := openAuditDB(t)
-	store := NewStore(db, Config{Enabled: true, TrustedProxies: []string{"secret-invalid-proxy"}})
+	store := NewStore(db, Config{Enabled: true})
 	rec := auditRecord("discard-network")
 	rec.ClientIP = "invalid\x00"
 	rec.PeerIP = strings.Repeat("private-peer", 1000)
@@ -60,10 +60,7 @@ func TestAuditDiscardsEveryLegacyNetworkInputAndNeverReturnsIt(t *testing.T) {
 	if _, err := store.List(context.Background(), Query{IP: "203.0.113.7"}); !errors.Is(err, ErrInvalidQuery) {
 		t.Fatal("deprecated IP query accepted")
 	}
-	raw, err := json.Marshal(Config{TrustedProxies: []string{"private-proxy"}})
-	if err != nil || strings.Contains(string(raw), "private-proxy") || strings.Contains(string(raw), "trusted_proxies") {
-		t.Fatal("deprecated proxy config serialized")
-	}
+
 }
 
 func TestAuditMigration3PurgesNetworkBytesAndPreservesHistory(t *testing.T) {

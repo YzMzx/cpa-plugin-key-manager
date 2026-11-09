@@ -3,9 +3,6 @@ package plugin
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
-	"errors"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -23,7 +20,6 @@ import (
 type Config struct {
 	Enabled       bool                `yaml:"enabled" json:"enabled"`
 	Priority      int                 `yaml:"priority" json:"priority"`
-	AdminToken    string              `yaml:"admin_token" json:"admin_token,omitempty"`
 	Audit         AuditConfig         `yaml:"audit" json:"audit"`
 	Storage       StorageConfig       `yaml:"storage" json:"storage"`
 	Pricing       PricingConfig       `yaml:"pricing" json:"pricing"`
@@ -38,15 +34,10 @@ type Config struct {
 
 // StorageConfig defines persistence file paths and intervals.
 type StorageConfig struct {
-	UsageFile            string `yaml:"usage_file" json:"usage_file"`
 	FlushIntervalSeconds int    `yaml:"flush_interval_seconds" json:"flush_interval_seconds"`
 	PricingCacheFile     string `yaml:"pricing_cache_file" json:"pricing_cache_file"`
-	RulesFile            string `yaml:"rules_file" json:"rules_file"`
 	// UsageDBFile is the SQLite database used as the authoritative usage store.
 	UsageDBFile string `yaml:"usage_db_file" json:"usage_db_file"`
-	// LegacyUsageDBFile is the database location earlier builds derived from
-	// `usage_file`. It is imported once when the durable database does not exist yet.
-	LegacyUsageDBFile string `yaml:"-" json:"legacy_usage_db_file,omitempty"`
 	// LedgerRetentionDays controls how long the overview ledger keeps hourly slices.
 	LedgerRetentionDays int `yaml:"ledger_retention_days" json:"ledger_retention_days"`
 	// Timezone is the IANA name used for overview bucketing/boundaries.
@@ -172,7 +163,6 @@ func DefaultConfig() Config {
 		Enabled:  true,
 		Priority: 100,
 		Storage: StorageConfig{
-			UsageFile:            "./data/key_usage_stats.json",
 			UsageDBFile:          "./data/key_usage.db",
 			FlushIntervalSeconds: 10,
 			PricingCacheFile:     "./data/models_dev.json",
@@ -274,23 +264,8 @@ func FindCPARootDir() string {
 	return "."
 }
 
-// ResolveStoragePath converts a configured relative path (e.g. "./data/key_guard_rules.json")
-// to a robust absolute path. It anchors uncreated paths to the canonical CPA root directory,
-// while also discovering existing files across potential CWD, exeDir, and container locations
-// so that differences in CWD across CLIProxyAPI restarts never cause data loss.
-// legacyUsageDBPath mirrors the database location earlier experimental builds
-// derived from `usage_file`, so an upgrade can import the existing rows once.
-func legacyUsageDBPath(usageFile string) string {
-	clean := strings.TrimSpace(usageFile)
-	if clean == "" {
-		return ""
-	}
-	clean = filepath.Clean(clean)
-	if strings.HasSuffix(strings.ToLower(clean), ".db") {
-		return clean
-	}
-	return strings.TrimSuffix(clean, filepath.Ext(clean)) + ".db"
-}
+// ResolveStoragePath resolves relative SQLite/cache paths only against the CPA
+// root. Existing similarly named files in other locations are never adopted.
 func ResolveStoragePath(rawPath string) string {
 	cleaned := strings.TrimSpace(rawPath)
 	if cleaned == "" {
@@ -299,50 +274,7 @@ func ResolveStoragePath(rawPath string) string {
 	if filepath.IsAbs(cleaned) {
 		return filepath.Clean(cleaned)
 	}
-
-	cpaRoot := FindCPARootDir()
-	canonicalPath := filepath.Clean(filepath.Join(cpaRoot, cleaned))
-
-	// 1. If it already exists at the canonical CPA root, use it immediately
-	if _, err := os.Stat(canonicalPath); err == nil {
-		return canonicalPath
-	}
-
-	// 2. Check candidate locations where previous runs may have stored it
-	candidates := make([]string, 0, 8)
-
-	// Relative to CWD
-	if wd, err := os.Getwd(); err == nil && wd != "" {
-		candidates = append(candidates, filepath.Clean(filepath.Join(wd, cleaned)))
-	}
-
-	// Relative to executable directory
-	if exe, errExe := os.Executable(); errExe == nil && exe != "" {
-		exeDir := filepath.Dir(exe)
-		candidates = append(candidates, filepath.Clean(filepath.Join(exeDir, cleaned)))
-		candidates = append(candidates, filepath.Clean(filepath.Join(filepath.Dir(exeDir), cleaned)))
-	}
-
-	// User home directory (.cli-proxy-api)
-	if home, errHome := os.UserHomeDir(); errHome == nil && home != "" {
-		candidates = append(candidates, filepath.Clean(filepath.Join(home, ".cli-proxy-api", cleaned)))
-		candidates = append(candidates, filepath.Clean(filepath.Join(home, cleaned)))
-	}
-
-	// Common Unix container path
-	candidates = append(candidates, filepath.Clean(filepath.Join("/CLIProxyAPI", cleaned)))
-
-	for _, cand := range candidates {
-		if cand == canonicalPath {
-			continue
-		}
-		if info, err := os.Stat(cand); err == nil && !info.IsDir() {
-			return cand
-		}
-	}
-
-	// 3. File does not exist anywhere yet: ALWAYS anchor to canonical CPA root directory
-	return canonicalPath
+	return filepath.Clean(filepath.Join(FindCPARootDir(), cleaned))
 }
 
 // FindHostConfigFile locates CLIProxyAPI's config.yaml on disk by checking:
@@ -438,11 +370,6 @@ func FindHostConfigFile(preferredPath string) string {
 // Normalize fills in missing defaults and builds fast lookup maps.
 func (c *Config) Normalize() {
 	c.Audit.normalize()
-	if strings.TrimSpace(c.Storage.UsageFile) == "" {
-		c.Storage.UsageFile = "./data/key_usage_stats.json"
-	}
-	c.Storage.UsageFile = ResolveStoragePath(c.Storage.UsageFile)
-
 	// SQLite only: the database is the single source of truth and lives in the CPA
 	// root's `data` directory by default (explicit configuration always wins).
 	// CPA_KEY_MANAGER_USAGE_DB pins it explicitly, which tests and multi-instance
@@ -453,10 +380,6 @@ func (c *Config) Normalize() {
 	if strings.TrimSpace(c.Storage.UsageDBFile) == "" {
 		c.Storage.UsageDBFile = filepath.Join(FindCPARootDir(), "data", "key_usage.db")
 	}
-	// Database files written by earlier experimental builds were derived from
-	// `usage_file`; that location is adopted once when the default is missing.
-	c.Storage.LegacyUsageDBFile = legacyUsageDBPath(c.Storage.UsageFile)
-
 	if c.Storage.FlushIntervalSeconds <= 0 {
 		c.Storage.FlushIntervalSeconds = 10
 	}
@@ -471,15 +394,6 @@ func (c *Config) Normalize() {
 	}
 	c.Storage.PricingCacheFile = ResolveStoragePath(c.Storage.PricingCacheFile)
 
-	if strings.TrimSpace(c.Storage.RulesFile) == "" {
-		dir := filepath.Dir(filepath.Clean(c.Storage.UsageFile))
-		if dir == "" || dir == "." {
-			c.Storage.RulesFile = "./data/key_guard_rules.json"
-		} else {
-			c.Storage.RulesFile = filepath.Join(dir, "key_guard_rules.json")
-		}
-	}
-	c.Storage.RulesFile = ResolveStoragePath(c.Storage.RulesFile)
 	if strings.TrimSpace(c.Storage.UsageDBFile) != "" {
 		c.Storage.UsageDBFile = ResolveStoragePath(c.Storage.UsageDBFile)
 	}
@@ -569,325 +483,6 @@ func (c *Config) ResolveKeyRule(apiKey string) (rule KeyRuleConfig, listed bool)
 		AllowedModels:   c.DefaultPolicy.AllowedModels,
 		UpstreamBinding: c.DefaultPolicy.UpstreamBinding,
 	}, false
-}
-
-// AuthDirCandidates returns candidate CLIProxyAPI auth-token directories.
-// These directories hold OAuth credentials, so they are guaranteed to be on a
-// persistent volume that survives CLIProxyAPI restarts and container recreation.
-func AuthDirCandidates() []string {
-	out := make([]string, 0, 6)
-	add := func(dir string) {
-		dir = strings.TrimSpace(dir)
-		if dir == "" {
-			return
-		}
-		if strings.HasPrefix(dir, "~/") || dir == "~" {
-			home, errHome := os.UserHomeDir()
-			if errHome != nil || home == "" {
-				return
-			}
-			if dir == "~" {
-				dir = home
-			} else {
-				dir = filepath.Join(home, strings.TrimPrefix(dir, "~/"))
-			}
-		}
-		dir = filepath.Clean(dir)
-		for _, existing := range out {
-			if existing == dir {
-				return
-			}
-		}
-		out = append(out, dir)
-	}
-
-	for _, envName := range []string{"CPA_AUTH_DIR", "AUTH_DIR", "CLI_PROXY_AUTH_DIR"} {
-		add(os.Getenv(envName))
-	}
-	if home, errHome := os.UserHomeDir(); errHome == nil && home != "" {
-		add(filepath.Join(home, ".cli-proxy-api"))
-		add(filepath.Join(home, ".cli-proxy-api", "auths"))
-	}
-	add("/root/.cli-proxy-api")
-	add("/home/cliproxy/.cli-proxy-api")
-	return out
-}
-
-// existingAuthDirs returns only the auth directory candidates that exist on disk.
-func existingAuthDirs() []string {
-	out := make([]string, 0, 4)
-	for _, dir := range AuthDirCandidates() {
-		if info, err := os.Stat(dir); err == nil && info.IsDir() {
-			out = append(out, dir)
-		}
-	}
-	return out
-}
-
-// StateDirs returns the directories (in priority order) where the dynamic rules
-// JSON may be persisted. Persistent auth directories come first so that state
-// survives container recreation even when the working directory is ephemeral.
-//
-// Mirrors are stored in a dedicated `key-manager` subdirectory of the auth dir so
-// CLIProxyAPI never mistakes them for OAuth credential files.
-//
-// The `CPA_KEY_MANAGER_STATE_DIRS` environment variable (comma separated) can be
-// used to pin the mirror locations explicitly; those directories are always used
-// and are created on demand.
-func StateDirs() []string {
-	out := make([]string, 0, 10)
-	add := func(dir string, mustExist bool) {
-		dir = strings.TrimSpace(dir)
-		if dir == "" {
-			return
-		}
-		dir = filepath.Clean(dir)
-		if mustExist {
-			if info, err := os.Stat(dir); err != nil || !info.IsDir() {
-				return
-			}
-		}
-		for _, existing := range out {
-			if existing == dir {
-				return
-			}
-		}
-		out = append(out, dir)
-	}
-
-	if raw := strings.TrimSpace(os.Getenv("CPA_KEY_MANAGER_STATE_DIRS")); raw != "" {
-		for _, part := range strings.Split(raw, ",") {
-			add(part, false)
-		}
-		return out
-	}
-
-	for _, authDir := range existingAuthDirs() {
-		add(filepath.Join(authDir, stateSubdirName), false)
-	}
-	if cfgPath := FindHostConfigFile(""); cfgPath != "" {
-		if info, errStat := os.Stat(cfgPath); errStat == nil && !info.IsDir() {
-			add(filepath.Dir(cfgPath), true)
-		}
-	}
-	root := FindCPARootDir()
-	add(filepath.Join(root, "data"), true)
-	add(root, true)
-	if wd, errWD := os.Getwd(); errWD == nil && wd != "" {
-		add(wd, true)
-	}
-	if exe, errExe := os.Executable(); errExe == nil && exe != "" {
-		exeDir := filepath.Dir(exe)
-		add(filepath.Join(exeDir, "data"), true)
-	}
-	return out
-}
-
-// stateSubdirName is the dedicated directory created inside CLIProxyAPI's auth
-// directory for plugin state.
-const stateSubdirName = "key-manager"
-
-// stateFileExtension is used for mirrors that live inside CLIProxyAPI's auth
-// directory. CLIProxyAPI walks that directory RECURSIVELY and treats every
-// `*.json` file as an OAuth credential (and its ID then contains a path
-// separator, which the management API refuses to delete). Mirrors therefore use
-// a non-`.json` extension so they are invisible to the credential scanner.
-const stateFileExtension = ".state"
-
-// isInsideAuthDir reports whether dir is an CLIProxyAPI auth directory (or a
-// subdirectory of one).
-func isInsideAuthDir(dir string) bool {
-	dir = filepath.Clean(dir)
-	for _, authDir := range existingAuthDirs() {
-		authDir = filepath.Clean(authDir)
-		if dir == authDir || strings.HasPrefix(dir, authDir+string(os.PathSeparator)) {
-			return true
-		}
-	}
-	return false
-}
-
-// mirrorNameInDir maps a JSON base name to the file name used inside dir: files
-// placed under the auth directory must not end in `.json`.
-func mirrorNameInDir(dir, baseName string) string {
-	if !isInsideAuthDir(dir) {
-		return baseName
-	}
-	return strings.TrimSuffix(baseName, ".json") + stateFileExtension
-}
-
-// legacyAuthMirrorPaths returns the mirror locations used by older releases
-// (auth-dir root and the key-manager subdirectory, both ending in `.json`).
-// They are still read once for migration but never written again.
-func legacyAuthMirrorPaths(baseName string) []string {
-	if strings.TrimSpace(os.Getenv("CPA_KEY_MANAGER_STATE_DIRS")) != "" {
-		return nil
-	}
-	out := make([]string, 0, 8)
-	for _, authDir := range existingAuthDirs() {
-		out = append(out,
-			filepath.Clean(filepath.Join(authDir, baseName)),
-			filepath.Clean(filepath.Join(authDir, stateSubdirName, baseName)),
-		)
-	}
-	return out
-}
-
-// RulesFileCandidates returns every path where the dynamic rules file may live,
-// starting with the canonical primary path.
-func RulesFileCandidates(primary string) []string {
-	out := make([]string, 0, 12)
-	add := func(path string) {
-		path = strings.TrimSpace(path)
-		if path == "" {
-			return
-		}
-		path = filepath.Clean(path)
-		for _, existing := range out {
-			if existing == path {
-				return
-			}
-		}
-		out = append(out, path)
-	}
-
-	add(primary)
-	baseName := "key_guard_rules.json"
-	if strings.TrimSpace(primary) != "" {
-		baseName = filepath.Base(filepath.Clean(primary))
-	}
-	for _, dir := range StateDirs() {
-		add(filepath.Join(dir, mirrorNameInDir(dir, baseName)))
-	}
-	// Older releases wrote mirrors ending in `.json` into the auth directory.
-	// They are still read so upgrades never lose the administrator's rules.
-	for _, legacy := range legacyAuthMirrorPaths(baseName) {
-		add(legacy)
-	}
-	return out
-}
-
-// isLegacyAuthMirror reports whether path is a stale mirror that lives inside the
-// CLIProxyAPI auth directory and would be picked up as an OAuth credential file.
-// Such files must never be written again and are removed after migration.
-func isLegacyAuthMirror(path string) bool {
-	if !strings.HasSuffix(strings.ToLower(path), ".json") {
-		return false
-	}
-	return isInsideAuthDir(filepath.Dir(path))
-}
-
-// readDynamicRulesFile reads and decodes a DynamicRulesState from an explicit path.
-func readDynamicRulesFile(path string) (*DynamicRulesState, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	if len(strings.TrimSpace(string(raw))) == 0 {
-		return nil, io.EOF
-	}
-	var state DynamicRulesState
-	if err := json.Unmarshal(raw, &state); err != nil {
-		return nil, err
-	}
-	if state.Version == 0 {
-		state.Version = 1
-	}
-	if state.CustomPrices == nil {
-		state.CustomPrices = make(map[string]pricing.ModelPrice)
-	}
-	return &state, nil
-}
-
-// LoadDynamicRulesFile loads the persisted DynamicRulesState from disk.
-// It inspects every candidate location and adopts the most recently written
-// non-empty state, so that an ephemeral `./data` directory (recreated by a
-// container restart) can never wipe the administrator's configured rules.
-func LoadDynamicRulesFile(filePath string) (*DynamicRulesState, error) {
-	cleanPath := strings.TrimSpace(filePath)
-	if cleanPath == "" {
-		cleanPath = "key_guard_rules.json"
-	}
-
-	type candidateState struct {
-		path  string
-		state *DynamicRulesState
-		score int
-	}
-	best := (*candidateState)(nil)
-	var firstErr error
-
-	for _, path := range RulesFileCandidates(cleanPath) {
-		state, errRead := readDynamicRulesFile(path)
-		if errRead != nil {
-			if firstErr == nil && !os.IsNotExist(errRead) && !errors.Is(errRead, io.EOF) {
-				firstErr = errRead
-			}
-			continue
-		}
-		score := len(state.Keys) * 1000
-		if state.DefaultPolicy != nil {
-			score++
-		}
-		cand := &candidateState{path: path, state: state, score: score}
-		if best == nil {
-			best = cand
-			continue
-		}
-		if state.UpdatedAt != best.state.UpdatedAt {
-			if state.UpdatedAt > best.state.UpdatedAt {
-				best = cand
-			}
-			continue
-		}
-		if score > best.score {
-			best = cand
-		}
-	}
-
-	if best == nil {
-		if firstErr != nil {
-			return nil, firstErr
-		}
-		return &DynamicRulesState{Version: 1, CustomPrices: make(map[string]pricing.ModelPrice)}, nil
-	}
-
-	// Read-only on purpose: this is only used to import legacy JSON rules into
-	// SQLite once. Rewriting the mirrors here would resurrect files the SQLite
-	// backend is supposed to have retired.
-	return best.state, nil
-}
-
-// UsageFileCandidates returns where a token-usage snapshot may live: the
-// configured path first, then every durable mirror location.
-func UsageFileCandidates(configured string) []string {
-	out := make([]string, 0, 10)
-	seen := make(map[string]struct{}, 10)
-	add := func(path string) {
-		path = strings.TrimSpace(path)
-		if path == "" {
-			return
-		}
-		path = filepath.Clean(path)
-		if _, ok := seen[path]; ok {
-			return
-		}
-		seen[path] = struct{}{}
-		out = append(out, path)
-	}
-
-	add(configured)
-	baseName := "key_usage_stats.json"
-	if strings.TrimSpace(configured) != "" {
-		baseName = filepath.Base(filepath.Clean(configured))
-	}
-	for _, dir := range StateDirs() {
-		add(filepath.Join(dir, mirrorNameInDir(dir, baseName)))
-	}
-	for _, legacy := range legacyAuthMirrorPaths(baseName) {
-		add(legacy)
-	}
-	return out
 }
 
 // MergeDynamicState combines CPA's global `api-keys`, the base config.yaml seed, and dynamic Web UI changes from DynamicRulesState.

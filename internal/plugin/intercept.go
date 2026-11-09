@@ -376,18 +376,8 @@ func (m *Manager) handleCommandLineExecute(raw []byte) ([]byte, error) {
 	})
 }
 
-// ExtractCallerAPIKey extracts the caller's API key from a self-service resource request and checks if it matches AdminToken.
+// ExtractCallerAPIKey returns only a client key. Administrative authorization is
+// exclusively provided by CPA native management middleware, never by plugin data.
 func (m *Manager) ExtractCallerAPIKey(req pluginapi.ManagementRequest) (apiKey string, isAdmin bool) {
-	m.mu.RLock()
-	adminToken := strings.TrimSpace(m.cfg.AdminToken)
-	m.mu.RUnlock()
-
-	token := ExtractAPIKeyFromHeadersAndQuery(req.Headers, req.Query)
-	if adminToken != "" && token == adminToken {
-		return "", true
-	}
-	if adminToken == "" && token == "" {
-		return "", true
-	}
-	return token, false
+	return ExtractAPIKeyFromHeadersAndQuery(req.Headers, req.Query), false
 }

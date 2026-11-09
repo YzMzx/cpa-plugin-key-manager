@@ -11,7 +11,7 @@
   const own = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
   const FILTERS = { key_fingerprint: "auditKey", key_label: "auditKeyLabel", model: "auditModel", outcome: "auditOutcome" };
   const OUTCOMES = { unknown: "未知", succeeded: "成功", success: "成功", failed: "失败", cancelled: "取消", canceled: "取消", running: "进行中", in_progress: "进行中", pending: "进行中", rejected: "已拒绝" };
-  const BODY_STATES = { omitted_busy: "大正文脱敏繁忙，正文已略过", omitted_unknown_schema: "未知请求结构，正文已略过", omitted_secret_collision: "敏感内容无法安全替换，正文已略过", omitted_secret_limit: "敏感内容校验超限，正文已略过", omitted_encoding: "编码不支持，正文已略过", omitted_non_json: "非 JSON 正文，已略过", omitted_invalid_json: "JSON 无效，正文已略过", omitted_input_limit: "输入正文超限，已略过", omitted_non_container: "非对象或数组 JSON，已略过", omitted_depth_limit: "JSON 嵌套深度超限，已略过", omitted_element_limit: "旧版数量限制未保存正文（无法恢复）", omitted_string_limit: "JSON 字符串超限，已略过", omitted_number_limit: "JSON 数字超限，已略过", omitted_ambiguous_json: "JSON 存在歧义，已略过", omitted_output_limit: "脱敏后正文超限，已略过", redacted: "旧版脱敏 JSON", captured: "旧版脱敏 JSON", stored: "旧版脱敏 JSON", stored_partial: "旧版部分脱敏 JSON · 含 [OMITTED:...] 占位", stored_raw: "已保存 JSON 明文原文", stored_raw_media_filtered:"已保存 JSON 明文 · 文件载荷已过滤", omitted: "正文已略过", non_json: "非 JSON 正文，已略过", too_large: "正文超过限制，已略过", empty: "无正文", disabled: "未保存正文", invalid_json: "无法解码 JSON，已略过", unavailable: "正文不可用" };
+  const BODY_STATES = { omitted_busy: "大正文脱敏繁忙，正文已略过", omitted_unknown_schema: "未知请求结构，正文已略过", omitted_secret_collision: "敏感内容无法安全替换，正文已略过", omitted_secret_limit: "敏感内容校验超限，正文已略过", omitted_encoding: "编码不支持，正文已略过", omitted_non_json: "非 JSON 正文，已略过", omitted_invalid_json: "JSON 无效，正文已略过", omitted_input_limit: "输入正文超限，已略过", omitted_non_container: "非对象或数组 JSON，已略过", omitted_depth_limit: "JSON 嵌套深度超限，已略过", omitted_element_limit: "旧版数量限制未保存正文（无法恢复）", omitted_string_limit: "JSON 字符串超限，已略过", omitted_number_limit: "JSON 数字超限，已略过", omitted_ambiguous_json: "JSON 存在歧义，已略过", omitted_output_limit: "脱敏后正文超限，已略过", redacted: "旧版脱敏 JSON", captured: "旧版脱敏 JSON", stored: "旧版脱敏 JSON", stored_partial: "旧版部分脱敏 JSON · 含 [OMITTED:...] 占位", stored_raw: "已保存 JSON 明文原文", stored_raw_media_filtered:"已保存 JSON 明文 · 文件载荷已过滤", stored_raw_system_filtered:"已保存 JSON 明文 · system / developer 消息已过滤", stored_raw_system_media_filtered:"已保存 JSON 明文 · system / developer 消息和文件载荷已过滤", omitted: "正文已略过", non_json: "非 JSON 正文，已略过", too_large: "正文超过限制，已略过", empty: "无正文", disabled: "未保存正文", invalid_json: "无法解码 JSON，已略过", unavailable: "正文不可用" };
   function validateStatus(value) {
     if (!object(value) || typeof value.enabled !== "boolean" || !["retention_days", "max_records", "max_body_bytes", "max_total_bytes"].every(key => integer(value[key]))) throw new Error("审计状态响应格式无效");
     return value;
@@ -79,8 +79,8 @@
   }
   function bodyView(record, mode = "formatted") {
     const partial = record.body_state === "stored_partial";
-    const plaintext = ["stored_raw","stored_raw_media_filtered"].includes(record.body_state) && !record.body_truncated;
-    const accepted = partial || ["stored_raw", "stored_raw_media_filtered", "stored", "redacted", "captured"].includes(record.body_state) && !record.body_truncated;
+    const plaintext = ["stored_raw","stored_raw_media_filtered","stored_raw_system_filtered","stored_raw_system_media_filtered"].includes(record.body_state) && !record.body_truncated;
+    const accepted = partial || ["stored_raw", "stored_raw_media_filtered", "stored_raw_system_filtered", "stored_raw_system_media_filtered", "stored", "redacted", "captured"].includes(record.body_state) && !record.body_truncated;
     const bodyLabel = label(BODY_STATES, record.body_state, "未知正文状态");
     const raw = record.request_body;
     const empty = { state: bodyLabel + (!partial && record.body_truncated ? " · 未保存正文" : ""), json: record.body_state === "omitted_element_limit" ? "此记录由旧版数量限制整段略过，历史正文未保存，无法恢复。新请求不再使用此数量上限。" : "正文已略过或未确认可展示的 JSON。", retainedBytes: 0, completeness: "未保存" };

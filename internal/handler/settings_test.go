@@ -27,7 +27,7 @@ func (s *settingsStub) SaveRuntimeSettings([]byte) (map[string]any, error) {
 	return map[string]any{"ok": true, "settings": map[string]any{}, "rules_revision": 8}, nil
 }
 func (s *settingsStub) BootstrapSettings() map[string]any {
-	return map[string]any{"available": true, "effective": map[string]any{"admin_token_configured": true}}
+	return map[string]any{"available": true, "effective": map[string]any{"enabled": true, "priority": 100, "usage_db_file": "data/usage.db"}}
 }
 func (s *settingsStub) SaveBootstrapSettings([]byte) (map[string]any, error) {
 	s.bootstrapSaved++

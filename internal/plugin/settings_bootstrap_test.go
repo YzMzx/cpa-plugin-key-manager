@@ -28,7 +28,6 @@ func bootstrapFixture(t *testing.T, raw string) (*Manager, string) {
 	m.cfg.Enabled = true
 	m.cfg.Priority = 100
 	m.cfg.Storage.UsageDBFile = "active-storage.db"
-	m.cfg.AdminToken = "active-plugin-secret"
 	m.mu.Unlock()
 	return m, path
 }
@@ -78,7 +77,7 @@ func TestBootstrapSettingsStagesOnlySelectedPluginFields(t *testing.T) {
 	}
 	effective := bootstrapPublicValues(t, before["effective"])
 	configured := bootstrapPublicValues(t, before["configured"])
-	if effective["usage_db_file"] != "active-storage.db" || configured["usage_db_file"] != "./data/key_usage.db" || configured["admin_token_configured"] != true {
+	if effective["usage_db_file"] != "active-storage.db" || configured["usage_db_file"] != "./data/key_usage.db" {
 		t.Fatal("effective/configured not separated")
 	}
 	body := bootstrapBody(t, m, func(input map[string]any) {
@@ -86,7 +85,6 @@ func TestBootstrapSettingsStagesOnlySelectedPluginFields(t *testing.T) {
 		b["enabled"] = false
 		b["priority"] = 250
 		b["usage_db_file"] = "./new/history.db"
-		b["admin_token"] = "new-plugin-secret"
 		input["ack_storage_path_change"] = true
 	})
 	result, err := m.SaveBootstrapSettings(body)
@@ -112,7 +110,7 @@ func TestBootstrapSettingsStagesOnlySelectedPluginFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, fragment := range []string{"# host comment", "# port comment", "# keep enabled comment", "# keep path comment", "# keep token comment", "native-private-key", "other-plugin:", "custom: retained", "unknown: keep-this", "timezone: Asia/Shanghai"} {
+	for _, fragment := range []string{"# host comment", "# port comment", "# keep enabled comment", "# keep path comment", "native-private-key", "other-plugin:", "custom: retained", "unknown: keep-this", "timezone: Asia/Shanghai"} {
 		if !strings.Contains(string(out), fragment) {
 			t.Fatalf("lost unrelated config or comment: %s", fragment)
 		}
@@ -227,38 +225,49 @@ func TestBootstrapEnvironmentLocksStorageAndRequiresExplicitAcknowledgments(t *t
 	assertBootstrapCode(t, err, "invalid")
 }
 
-func TestBootstrapBlankTokenPreservesAndExplicitClearDoesNotEcho(t *testing.T) {
-	m, path := bootstrapFixture(t, "plugins:\n  configs:\n    cpa-plugin-key-manager:\n      admin_token: existing-private-secret\n")
-	if _, err := m.SaveBootstrapSettings(bootstrapBody(t, m, func(input map[string]any) { input["bootstrap"].(map[string]any)["admin_token"] = "   " })); err != nil {
-		t.Fatal(err)
+func TestBootstrapLegacyFieldsAreIgnoredAndRemovedOnSave(t *testing.T) {
+	raw := "server: {port: 8317}\nadmin_token: host-global-unknown\nplugins:\n  configs:\n    other-plugin: {admin_token: other-secret, custom: retained}\n    cpa-plugin-key-manager:\n      enabled: true\n      priority: 100\n      admin_token: {nested: existing-private-secret}\n      storage: {usage_db_file: ./data/key_usage.db, usage_file: old-usage.json, rules_file: old-rules.json, unknown: storage-kept}\n      audit: {trusted_proxies: [127.0.0.1/32], retention_days: 7, unknown: audit-kept}\n      unknown: plugin-kept\n"
+	m, path := bootstrapFixture(t, raw)
+	before := m.BootstrapSettings()
+	if before["available"] != true {
+		t.Fatal("legacy token value was parsed as an active field")
 	}
-	raw, _ := os.ReadFile(path)
-	if !bytes.Contains(raw, []byte("existing-private-secret")) {
-		t.Fatal("blank token erased credential")
+	output, _ := json.Marshal(before)
+	for _, removed := range []string{"admin_token", "admin_token_configured", "admin_token_note", "deprecated", "existing-private-secret"} {
+		if bytes.Contains(output, []byte(removed)) {
+			t.Fatalf("legacy data in response: %s", removed)
+		}
 	}
-	_, err := m.SaveBootstrapSettings(bootstrapBody(t, m, func(input map[string]any) {
-		b := input["bootstrap"].(map[string]any)
-		b["admin_token"] = "new-private-secret"
-		b["clear_admin_token"] = true
-	}))
-	assertBootstrapCode(t, err, "invalid")
-	result, err := m.SaveBootstrapSettings(bootstrapBody(t, m, func(input map[string]any) { input["bootstrap"].(map[string]any)["clear_admin_token"] = true }))
+	result, err := m.SaveBootstrapSettings(bootstrapBody(t, m, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
-	configured := bootstrapPublicValues(t, m.BootstrapSettings()["configured"])
-	if configured["admin_token_configured"] != false {
-		t.Fatal("explicit token clear failed")
+	saved, _ := os.ReadFile(path)
+	var root map[string]any
+	if yaml.Unmarshal(saved, &root) != nil {
+		t.Fatal("invalid YAML")
 	}
-	effective := bootstrapPublicValues(t, m.BootstrapSettings()["effective"])
-	if effective["admin_token_configured"] != true {
-		t.Fatal("token unexpectedly changed active configuration")
+	plugins := root["plugins"].(map[string]any)["configs"].(map[string]any)
+	own := plugins[PluginID].(map[string]any)
+	if _, present := own["admin_token"]; present {
+		t.Fatal("obsolete token retained")
 	}
-	payload, _ := json.Marshal(result)
-	for _, secret := range []string{"existing-private-secret", "new-private-secret", "active-plugin-secret"} {
-		if bytes.Contains(payload, []byte(secret)) {
-			t.Fatal("token leaked through response")
+	storage := own["storage"].(map[string]any)
+	for _, key := range []string{"usage_file", "rules_file"} {
+		if _, present := storage[key]; present {
+			t.Fatal("legacy storage retained")
 		}
+	}
+	audit := own["audit"].(map[string]any)
+	if _, present := audit["trusted_proxies"]; present {
+		t.Fatal("legacy proxy retained")
+	}
+	if storage["unknown"] != "storage-kept" || audit["unknown"] != "audit-kept" || own["unknown"] != "plugin-kept" || root["admin_token"] != "host-global-unknown" || plugins["other-plugin"].(map[string]any)["admin_token"] != "other-secret" {
+		t.Fatal("cleanup changed another configuration domain")
+	}
+	response, _ := json.Marshal(result)
+	if bytes.Contains(response, []byte("admin_token")) || bytes.Contains(response, []byte("existing-private-secret")) {
+		t.Fatal("save response exposes removed feature")
 	}
 }
 
@@ -277,7 +286,11 @@ func TestBootstrapStrictRequestValidationNeverWritesInvalidInputs(t *testing.T) 
 		func(input map[string]any) {
 			input["bootstrap"].(map[string]any)["usage_db_file"] = "bad" + string(rune(0)) + "path"
 		},
-		func(input map[string]any) { input["bootstrap"].(map[string]any)["admin_token"] = "bad\ttoken" },
+		func(input map[string]any) {
+			input["bootstrap"].(map[string]any)["admin_token"] = "old-token-no-longer-supported"
+		},
+		func(input map[string]any) { input["bootstrap"].(map[string]any)["clear_admin_token"] = false },
+		func(input map[string]any) { input["bootstrap"].(map[string]any)["clear_admin_token"] = true },
 		func(input map[string]any) {
 			input["bootstrap"].(map[string]any)["admin_token"] = strings.Repeat("x", 4097)
 		},
@@ -346,5 +359,19 @@ func TestBootstrapRejectsAmbiguousOrSharedTargetStructures(t *testing.T) {
 		if !bytes.Equal(before, after) {
 			t.Fatal("unsafe target modified file")
 		}
+	}
+}
+
+func TestBootstrapDoesNotBreakUnrelatedAliasWhenRemovingLegacyField(t *testing.T) {
+	raw := "plugins:\n  configs:\n    cpa-plugin-key-manager:\n      admin_token: &legacy_token secret-value\nunknown_host_field: *legacy_token\n"
+	m, path := bootstrapFixture(t, raw)
+	if m.BootstrapSettings()["available"] != true {
+		t.Fatal("GET should not parse a removed legacy value")
+	}
+	if _, err := m.SaveBootstrapSettings(bootstrapBody(t, m, nil)); err == nil {
+		t.Fatal("save would remove a referenced anchor")
+	}
+	if after, _ := os.ReadFile(path); string(after) != raw {
+		t.Fatal("failed legacy cleanup changed unrelated alias")
 	}
 }

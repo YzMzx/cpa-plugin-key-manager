@@ -12,7 +12,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 
 	"gopkg.in/yaml.v3"
 )
@@ -43,38 +42,34 @@ const (
 )
 
 type bootstrapValues struct {
-	Enabled              bool   `json:"enabled"`
-	Priority             int    `json:"priority"`
-	UsageDBFile          string `json:"usage_db_file"`
-	AdminTokenConfigured bool   `json:"admin_token_configured"`
+	Enabled     bool   `json:"enabled"`
+	Priority    int    `json:"priority"`
+	UsageDBFile string `json:"usage_db_file"`
 }
 
 type bootstrapSaveRequest struct {
 	Revision  string `json:"expected_file_revision"`
 	Bootstrap struct {
-		Enabled         *bool   `json:"enabled"`
-		Priority        *int    `json:"priority"`
-		UsageDBFile     *string `json:"usage_db_file"`
-		AdminToken      *string `json:"admin_token"`
-		ClearAdminToken *bool   `json:"clear_admin_token"`
+		Enabled     *bool   `json:"enabled"`
+		Priority    *int    `json:"priority"`
+		UsageDBFile *string `json:"usage_db_file"`
 	} `json:"bootstrap"`
 	AckRestart           bool `json:"ack_restart"`
 	AckStoragePathChange bool `json:"ack_storage_path_change"`
 }
 
 // BootstrapSettings reports active values separately from restart-staged disk values.
-// admin_token is a legacy plugin credential, not the CPA Management Key. No token
-// value, YAML content, low-level error or arbitrary path error is returned.
+// YAML content, removed legacy fields and low-level errors are never returned.
 func (m *Manager) BootstrapSettings() map[string]any {
 	m.mu.RLock()
-	effective := bootstrapValues{Enabled: m.cfg.Enabled, Priority: m.cfg.Priority, UsageDBFile: m.cfg.Storage.UsageDBFile, AdminTokenConfigured: strings.TrimSpace(m.cfg.AdminToken) != ""}
+	effective := bootstrapValues{Enabled: m.cfg.Enabled, Priority: m.cfg.Priority, UsageDBFile: m.cfg.Storage.UsageDBFile}
 	m.mu.RUnlock()
 	bootstrapFileMu.Lock()
 	defer bootstrapFileMu.Unlock()
 	return bootstrapSettingsView(effective)
 }
 func bootstrapSettingsView(effective bootstrapValues) map[string]any {
-	result := map[string]any{"effective": effective, "configured": effective, "file_revision": "", "db_path_locked_by_env": strings.TrimSpace(os.Getenv("CPA_KEY_MANAGER_USAGE_DB")) != "", "available": false, "admin_token_note": "Legacy plugin admin_token; not the CPA Management Key. Blank preserves the saved value."}
+	result := map[string]any{"effective": effective, "configured": effective, "file_revision": "", "db_path_locked_by_env": strings.TrimSpace(os.Getenv("CPA_KEY_MANAGER_USAGE_DB")) != "", "available": false}
 	raw, _, err := readBootstrapFile(FindHostConfigFile(""))
 	if err != nil {
 		result["error"] = bootstrapUnavailable.Error()
@@ -96,7 +91,7 @@ func bootstrapSettingsView(effective bootstrapValues) map[string]any {
 	return result
 }
 
-// SaveBootstrapSettings changes only four plugin-local YAML settings. It does not
+// SaveBootstrapSettings changes only three active plugin-local YAML settings. It does not
 // call Configure, move/copy databases, mutate the effective configuration or change
 // global plugins.enabled/plugins.dir. Host file watching may reload these staged
 // values; loading a different database path still requires a host restart.
@@ -157,12 +152,17 @@ func (m *Manager) SaveBootstrapSettings(rawBody []byte) (map[string]any, error) 
 	if err := bootstrapSet(storage, "usage_db_file", "!!str", wantedPath); err != nil {
 		return nil, err
 	}
-	if request.Bootstrap.ClearAdminToken != nil && *request.Bootstrap.ClearAdminToken {
-		if err := bootstrapSet(plugin, "admin_token", "!!str", ""); err != nil {
-			return nil, err
-		}
-	} else if request.Bootstrap.AdminToken != nil && strings.TrimSpace(*request.Bootstrap.AdminToken) != "" {
-		if err := bootstrapSet(plugin, "admin_token", "!!str", *request.Bootstrap.AdminToken); err != nil {
+	// Remove obsolete fields only inside this plugin's own YAML subtree.
+	if err := bootstrapRemove(plugin, "admin_token"); err != nil {
+		return nil, err
+	}
+	if err := bootstrapRemove(storage, "usage_file", "rules_file"); err != nil {
+		return nil, err
+	}
+	if audit, err := bootstrapChildMap(plugin, "audit"); err != nil {
+		return nil, err
+	} else if audit != nil {
+		if err := bootstrapRemove(audit, "trusted_proxies"); err != nil {
 			return nil, err
 		}
 	}
@@ -184,7 +184,7 @@ func (m *Manager) SaveBootstrapSettings(rawBody []byte) (map[string]any, error) 
 		}
 	}
 	m.mu.RLock()
-	effective := bootstrapValues{Enabled: m.cfg.Enabled, Priority: m.cfg.Priority, UsageDBFile: m.cfg.Storage.UsageDBFile, AdminTokenConfigured: strings.TrimSpace(m.cfg.AdminToken) != ""}
+	effective := bootstrapValues{Enabled: m.cfg.Enabled, Priority: m.cfg.Priority, UsageDBFile: m.cfg.Storage.UsageDBFile}
 	m.mu.RUnlock()
 	return map[string]any{"ok": true, "requires_restart": true, "bootstrap": bootstrapSettingsView(effective)}, nil
 }
@@ -285,16 +285,6 @@ func readBootstrapValues(doc *yaml.Node) (bootstrapValues, *yaml.Node, error) {
 	if priority != nil && (priority.Kind != yaml.ScalarNode || priority.Tag != "!!int" || priority.Decode(&values.Priority) != nil) {
 		return values, nil, bootstrapUnavailable
 	}
-	token, err := bootstrapField(plugin, "admin_token")
-	if err != nil {
-		return values, nil, err
-	}
-	if token != nil {
-		if token.Kind != yaml.ScalarNode || token.Tag != "!!str" {
-			return values, nil, bootstrapUnavailable
-		}
-		values.AdminTokenConfigured = strings.TrimSpace(token.Value) != ""
-	}
 	storage, err := bootstrapChildMap(plugin, "storage")
 	if err != nil {
 		return values, nil, err
@@ -327,6 +317,43 @@ func bootstrapEnsureMap(parent *yaml.Node, key string) (*yaml.Node, error) {
 	}
 	return node, nil
 }
+func bootstrapRemove(mapping *yaml.Node, keys ...string) error {
+	if mapping == nil {
+		return nil
+	}
+	remove := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		remove[key] = true
+	}
+	// Removing an anchor may leave an unrelated host field with an unresolved alias.
+	// Reject that uncommon legacy shape rather than rewrite other configuration.
+	var hasAnchor func(*yaml.Node) bool
+	hasAnchor = func(node *yaml.Node) bool {
+		if node.Anchor != "" {
+			return true
+		}
+		for _, child := range node.Content {
+			if hasAnchor(child) {
+				return true
+			}
+		}
+		return false
+	}
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		if remove[mapping.Content[i].Value] && hasAnchor(mapping.Content[i+1]) {
+			return bootstrapUnavailable
+		}
+	}
+	kept := make([]*yaml.Node, 0, len(mapping.Content))
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		if !remove[mapping.Content[i].Value] {
+			kept = append(kept, mapping.Content[i], mapping.Content[i+1])
+		}
+	}
+	mapping.Content = kept
+	return nil
+}
+
 func bootstrapSet(mapping *yaml.Node, key, tag, value string) error {
 	node, err := bootstrapField(mapping, key)
 	if err != nil {
@@ -354,7 +381,7 @@ func decodeBootstrapRequest(raw []byte) (bootstrapSaveRequest, error) {
 		return request, bootstrapInvalid
 	}
 	var pluginFields map[string]json.RawMessage
-	if !bootstrapStrictObject(fields["bootstrap"], map[string]bool{"enabled": true, "priority": true, "usage_db_file": true, "admin_token": true, "clear_admin_token": true}, &pluginFields) {
+	if !bootstrapStrictObject(fields["bootstrap"], map[string]bool{"enabled": true, "priority": true, "usage_db_file": true}, &pluginFields) {
 		return request, bootstrapInvalid
 	}
 	for _, value := range fields {
@@ -387,15 +414,6 @@ func decodeBootstrapRequest(raw []byte) (bootstrapSaveRequest, error) {
 	path := *request.Bootstrap.UsageDBFile
 	if strings.TrimSpace(path) == "" || len(path) > 4096 || strings.ContainsAny(path, "\x00\r\n") {
 		return request, bootstrapInvalid
-	}
-	if request.Bootstrap.AdminToken != nil {
-		token := *request.Bootstrap.AdminToken
-		if len(token) > 4096 || strings.IndexFunc(token, unicode.IsControl) >= 0 {
-			return request, bootstrapInvalid
-		}
-		if strings.TrimSpace(token) != "" && request.Bootstrap.ClearAdminToken != nil && *request.Bootstrap.ClearAdminToken {
-			return request, bootstrapInvalid
-		}
 	}
 	return request, nil
 }

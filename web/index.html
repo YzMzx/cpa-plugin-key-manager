@@ -615,10 +615,10 @@
       </div>
     </div>
   </section>
-  <!-- Unified hot settings; bootstrap-only values are explicitly read-only. -->
+  <!-- Unified runtime settings and separately staged startup configuration. -->
   <section id="tab-settings" class="admin-tab hidden">
     <div class="card">
-      <div class="card-header"><div><h2 class="card-title">统一配置</h2><div class="card-subtitle">集中管理可热更新设置；启动参数在底部只读展示</div></div><button type="button" class="btn btn-sm" id="settingsReload">重新加载</button></div>
+      <div class="card-header"><div><h2 class="card-title">统一配置</h2><div class="card-subtitle">集中管理运行设置；启动配置单独保存</div></div><button type="button" class="btn btn-sm" id="settingsReload">重新加载</button></div>
       <div id="settingsMessage" class="card-hint" role="status">进入此页后读取配置。</div>
       <form id="settingsForm" novalidate>
         <fieldset class="settings-section"><legend>请求审计</legend><div class="settings-grid">
@@ -654,10 +654,8 @@
         <label class="settings-check"><input id="settingBootstrapEnabled" type="checkbox">启动时启用插件</label>
         <label>插件优先级<input id="settingBootstrapPriority" class="input" type="number" min="-10000" max="10000" step="1"></label>
         <label class="settings-wide">SQLite 数据库路径<input id="settingBootstrapDB" class="input mono" type="text" autocomplete="off"><small id="settingsDBLockNote">变更路径不会自动复制旧数据。</small></label>
-        <label class="settings-wide">新插件 admin_token（留空保留原值）<input id="settingBootstrapAdminToken" class="input mono" type="password" autocomplete="new-password"><small>兼容旧配置，不是 CPA 的 Management Key；不会回显当前值。</small></label>
-        <label class="settings-check"><input id="settingBootstrapClearToken" type="checkbox">清除旧插件 admin_token</label>
       </div><div class="settings-prune"><label><input id="settingsAcknowledgeRestart" type="checkbox">我已备份配置，理解保存后可能被宿主热重载（禁用可能使页面失效），并会按需重启 CPA</label><label id="settingsPathChangeWarning" class="hidden"><input id="settingsAcknowledgeDBChange" type="checkbox">我确认数据库路径变化不会自动迁移数据，已备份并准备好目标数据库</label></div><div class="settings-save-row"><span id="settingsBootstrapMessage" class="card-hint" role="status"></span><button type="submit" class="btn" id="settingsBootstrapSave" disabled>保存启动配置</button></div></form>
-      <p class="card-hint">旧 JSON 文件字段只用于兼容迁移，不推荐继续配置；明文密钥不会被此页读取或回显。受环境变量锁定的数据库路径不能在这里修改。</p><dl id="settingsDeprecated" class="settings-bootstrap"></dl></div>
+    </div>
   </section>
   </div><!-- /#adminWorkspace -->
 </div><!-- /.wrap -->

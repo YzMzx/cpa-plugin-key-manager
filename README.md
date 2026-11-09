@@ -31,9 +31,9 @@ CLIProxyAPI 的 API Key 管控与用量统计插件：多 Key 治理、模型白
 - 新增「统一设置」页面，集中调整审计启用/保留天数/最大条数/单正文上限/逻辑总容量（最高 1 GiB）、用量刷盘间隔、账本保留天数、统计时区、价格同步 URL/周期/超时、自动请求 usage 及价格缓存文件路径。容量单位在页面中按 MiB 显示，保存为字节整数。
 - 常规设置持久化到 SQLite `rules_state.settings`，保存后热应用，重启后优先于 YAML 初始值；不会覆盖密钥规则、默认策略或价格覆盖。缩短保留期、条数或总容量可能立即清理历史，必须明确确认。版本冲突会要求重新加载，未保存草稿不会被刷新悄悄覆盖。
 - 密钥、默认策略/凭证池、模型价格通过设置页入口跳转至现有专用表单，不引入第二套重复配置。
-- 「启动配置」单独编辑宿主 YAML 中本插件的启用、优先级、数据库路径和旧 `admin_token`；保留注释及其它宿主配置，文件版本校验后原子保存。敏感 token 不回显，留空保留，清空必须显式选择。这个字段不是 CPA 管理密钥。
+- 「启动配置」仅编辑宿主 YAML 中本插件的启用、优先级和数据库路径；保留注释及其它宿主配置，文件版本校验后原子保存。管理鉴权统一由 CPA 宿主提供。
 - 启动配置保存不迁移数据库，路径变更需另行确认并安排重启；宿主文件监听器可能提前重载甚至使当前插件页面失效。环境变量指定数据库时路径不可在前端覆盖。操作前备份，切换空库并不会自动带走原库中的规则/设置/历史。
-- 旧 `usage_file`、`rules_file`、代理配置等迁移/废弃字段集中展示说明，不冒充可生效的运行参数；CPA 全局管理密钥、插件目录等宿主级设置仍由宿主维护，不在本插件越权改写。
+- 设置页只保留当前有效参数；CPA 全局管理密钥、插件目录等宿主级设置由宿主维护，不在本插件越权改写。
 
 ### 请求审计（管理员）
 - 筛选仅 API Key、备注名称、模型名称、结果四项；密钥使用掩码下拉和不可逆指纹，备注/模型支持包含搜索。请求 ID/Trace/时间查询接口仍兼容。
@@ -41,8 +41,9 @@ CLIProxyAPI 的 API Key 管控与用量统计插件：多 Key 治理、模型白
 - **明文留存模式：保存 JSON 请求正文，不对普通文字脱敏；入库前过滤图片、音频、视频等文件载荷，新记录按两空格缩进换行，仅改变字符串外的空白，不重排字段、不合并重复键、不转换数字精度。正文中自行携带的密码、token、API Key、对话及个人信息会原样保留。请严格限制管理员、数据库及备份的访问权限。**请求鉴权头、响应正文和 URL 查询参数仍不记录。
 - 默认启用，保留 7 天，最多 10,000 条，单正文 10 MiB（10,485,760 字节），审计逻辑总量 64 MiB；容量满时淘汰旧记录，接近 10 MiB 的正文通常只能保留约 6 条。
 - JSON 正文不再走脱敏器，不受旧版元素 4096、嵌套 16 或大正文脱敏繁忙限制。媒体文件载荷按新规则过滤为 `[OMITTED:media]`，保留同请求正常文字、数值和工具定义。保留合法 UTF-8 JSON 对象/数组和 10 MiB 上限；格式无效、非 JSON、压缩内容、超限仍整段略过，不留半截原文。底层 JSON 解析器本身也有防异常极深嵌套保护。
-- 无媒体的新记录状态为 `stored_raw`，媒体已过滤为 `stored_raw_media_filtered`；默认格式化保存，哈希对应过滤后实际保存内容。若缩进使内容超过单条上限，则完整保留原始表示，绝不因格式化膨胀而丢弃正文。SHA-256 对实际保存内容计算，不是防篡改证明。详情默认以两空格格式化显示，也可切换「保存原文」核对字节对应内容；历史记录仅格式化展示，不改写数据库和旧哈希。重复键、大整数、数值字面量和 Unicode 转义均保留。旧版已脱敏/略过的正文无法恢复原始内容。
-- **IP 监控已移除：**不解析网络地址/代理头，不采集或显示客户端/Peer IP，不再提供 IP 筛选。数据库迁移清空旧的独立 IP 字段并移除索引；不修改用户正文自行包含的 IP 文本。旧备份/WAL/空闲页不保证安全擦除。旧 `trusted_proxies` 配置仅兼容读取、不会生效。
+- 审计保存前，从根请求的 `messages` / `input` / `contents` 数组（或根消息数组）移除 `role: "system"` 和 `role: "developer"` 的整条消息及其正文；保留 `user` / `assistant` / `tool` 等其它角色。仅处理审计副本，不修改实际发给上游的请求，不解释工具 Schema 或嵌套业务 JSON 中的同名字段。
+- 无过滤的新记录状态为 `stored_raw`，媒体已过滤为 `stored_raw_media_filtered`，角色已过滤为 `stored_raw_system_filtered`，两者均过滤为 `stored_raw_system_media_filtered`；默认格式化保存，哈希对应过滤后实际保存内容。若缩进使内容超过单条上限，则完整保留原始表示，绝不因格式化膨胀而丢弃正文。SHA-256 对实际保存内容计算，不是防篡改证明。详情默认以两空格格式化显示，也可切换「保存原文」核对字节对应内容；历史记录仅格式化展示，不改写数据库和旧哈希。重复键、大整数、数值字面量和 Unicode 转义均保留。旧版已脱敏/略过的正文无法恢复原始内容。
+- **IP 监控已移除：**不解析网络地址/代理头，不采集或显示客户端/Peer IP，不再提供 IP 筛选。数据库迁移清空旧的独立 IP 字段并移除索引；不修改用户正文自行包含的 IP 文本。旧备份/WAL/空闲页不保证安全擦除。
 - 页面可计算审计逻辑占用、正文大小、条数、占比，以及共享数据库/WAL 实际文件大小。逻辑删除不保证立即缩小物理文件。
 - 手动清理支持仅过期、1/3/7 天前、自定义日期前、全部审计；先预览再确认，5 分钟单次身份绑定令牌，只删除预览快照中的审计，不影响新增记录、密钥规则或用量。
 - 只记录进入插件模型执行生命周期的新请求，不是全站抓包；存储写入有限等待，不阻断代理请求，失败计数可见，不承诺零丢失。审计记录默认持久化，重启不丢，但并未做数据库加密。
@@ -163,34 +164,21 @@ Key 规则、默认策略、模型价格覆盖都通过管理页面配置，**�
 http://127.0.0.1:8317/v0/resource/plugins/cpa-plugin-key-manager/ui
 ```
 
-标签页：`概览` / `API Key 与规则管控` / `Token 用量统计看板` / `全局默认策略与凭证池` / `模型与价格`。
+标签页：`概览` / `API Key 与规则管控` / `Token 用量统计看板` / `全局默认策略与凭证池` / `模型与价格` / `请求审计` / `统一设置`。
 
 ---
 
 ## 运维
 
-```bash
-# 查看数据库状态
-curl -s -H "Authorization: Bearer <管理密钥>" \
-  http://127.0.0.1:8317/v0/management/key-guard/overview \
-  | jq '.diagnostics | {usage_db_file, usage_db_exists, usage_db_size}'
-
-# 清理旧版本遗留的 JSON / .state 文件（默认 dry-run）
-curl -fsSL https://raw.githubusercontent.com/YzMzx/cpa-plugin-key-manager/main/scripts/cleanup-legacy-json.sh -o cleanup-legacy-json.sh
-chmod +x cleanup-legacy-json.sh
-./cleanup-legacy-json.sh --root /opt/Docker/CLIProxyAPI               # 预览
-./cleanup-legacy-json.sh --root /opt/Docker/CLIProxyAPI --apply        # 移入备份目录
-```
-
-`cleanup-legacy-json.sh` 只处理 `key_guard_rules.json`、`key_usage_stats.json`、`.state` 镜像、早期 `key_usage_stats.db` 与 `.bak` 残片，不会碰 `models_dev.json`、`key_usage.db*`、`config.yaml`；找不到有效数据库时拒绝执行。加 `--plugins-leftover` 可一并清理 `plugins/linux` 之类的旧解压残留。
-
----
+- 规则、用量、账本、审计和运行设置仅保存于当前 SQLite 数据库；不再搜索或导入旧 JSON / `.state` / 实验数据库。
+- 备份完整数据目录，并在停止写入或使用一致性快照后备份数据库；现有 SQLite 数据不会因清理旧配置功能而被删除。
+- 当前保留的 JSON 文件仅为模型价格缓存 `models_dev.json`，不是规则或用量后端。相对数据库/缓存路径固定以 CPA 根目录解析，不再拾取工作目录、用户目录等位置的同名历史文件；显式绝对路径仍支持。
 
 ## 源码编译
 
 ```bash
 go test ./...
-node --test web/runtime.test.cjs web/audit.test.cjs
+node --test web/settings.test.cjs web/runtime.test.cjs web/audit.test.cjs
 
 # Linux
 CGO_ENABLED=1 go build -buildmode=c-shared -o cpa-plugin-key-manager.so .

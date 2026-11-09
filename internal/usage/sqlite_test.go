@@ -1,13 +1,14 @@
 package usage
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
-	"strconv"
 	"testing"
 	"time"
 
 	"github.com/YzMzx/cpa-plugin-key-manager/internal/pricing"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // TestSQLitePersistsUsageAndLedger covers the SQLite backend: aggregates, the
@@ -151,64 +152,43 @@ func TestSQLiteResetClearsPersistedRows(t *testing.T) {
 	}
 }
 
-// TestImportLegacySnapshotCandidates covers the v0.8.x -> v0.9.x upgrade: the newest
-// JSON snapshot is adopted when the database is still empty, and lands in SQLite.
-func TestImportLegacySnapshotCandidates(t *testing.T) {
+// TestSQLiteIgnoresAdjacentJSON pins the SQLite-only persistence boundary.
+// Historical files are neither read, overwritten nor removed during configure/reload.
+func TestSQLiteIgnoresAdjacentJSON(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "key_usage.db")
-	oldSnapshot := filepath.Join(dir, "old.json")
-	newSnapshot := filepath.Join(dir, "new.json")
-
-	writeSnapshot := func(path, updated string, requests int64) {
-		raw := `{
-  "version": 1,
-  "updated_at": "` + updated + `",
-  "keys": {
-    "sk-legacy-json": {
-      "api_key": "sk-legacy-json",
-      "total_requests": ` + itoa(requests) + `,
-      "total_tokens": 1000,
-      "models": {
-        "gemini-3.8-flash-high\u001fglm-5.3": {
-          "requested_model": "gemini-3.8-flash-high",
-          "served_model": "glm-5.3",
-          "requests": ` + itoa(requests) + `,
-          "total_tokens": 1000
-        }
-      }
-    }
-  }
-}`
-		if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
-			t.Fatalf("write snapshot: %v", err)
-		}
+	oldPath := filepath.Join(dir, "key_usage_stats.json")
+	old := []byte(`{"version":1,"keys":{"sk-old":{"api_key":"sk-old","total_requests":999}}}`)
+	if err := os.WriteFile(oldPath, old, 0600); err != nil {
+		t.Fatal(err)
 	}
-	writeSnapshot(oldSnapshot, "2026-10-01T00:00:00Z", 1)
-	writeSnapshot(newSnapshot, "2026-10-20T00:00:00Z", 7)
-
 	store := NewStore(pricing.NewEngine())
-	if err := store.ImportLegacySnapshotCandidates([]string{oldSnapshot, newSnapshot}); err != nil {
-		t.Fatalf("import: %v", err)
-	}
 	if err := store.ConfigureSQLite(dbPath, time.Hour); err != nil {
-		t.Fatalf("configure sqlite: %v", err)
+		t.Fatal(err)
 	}
-	if ks := store.Snapshot("sk-legacy-json", "", nil, nil, nil, false).Keys["sk-legacy-json"]; ks == nil || ks.TotalRequests != 7 {
-		t.Fatalf("newest snapshot was not imported: %+v", ks)
+	store.BeginRequest("sqlite-live", "sk-live", "live", "model", "model", "openai", false)
+	store.ObserveResponse("sqlite-live", "model", "model", []byte(`{"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`))
+	store.CompleteRequest(pluginapi.RequestCompletion{RequestID: "sqlite-live", Outcome: pluginapi.RequestCompletionSucceeded}, "sk-live", "live")
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
 	}
-	_ = store.Close()
-
 	persisted := NewStore(pricing.NewEngine())
 	if err := persisted.ConfigureSQLite(dbPath, time.Hour); err != nil {
-		t.Fatalf("reopen: %v", err)
+		t.Fatal(err)
 	}
 	defer persisted.Close()
-	if ks := persisted.Snapshot("sk-legacy-json", "", nil, nil, nil, false).Keys["sk-legacy-json"]; ks == nil || ks.TotalRequests != 7 {
-		t.Fatalf("imported rows were not persisted to sqlite: %+v", ks)
+	snap := persisted.Snapshot("", "", nil, nil, nil, false)
+	if _, ok := snap.Keys["sk-old"]; ok {
+		t.Fatal("historical JSON was read")
+	}
+	if live := snap.Keys["sk-live"]; live == nil || live.TotalRequests != 1 || live.TotalTokens != 5 {
+		t.Fatalf("live SQLite records lost: %+v", live)
+	}
+	unchanged, err := os.ReadFile(oldPath)
+	if err != nil || !bytes.Equal(unchanged, old) {
+		t.Fatal("historical JSON was changed or removed")
 	}
 }
-
-func itoa(v int64) string { return strconv.FormatInt(v, 10) }
 
 // TestSQLiteRejectsSecondWriter pins the cross-process writer lock: a second open
 // of the same database must fail while the first handle is alive.

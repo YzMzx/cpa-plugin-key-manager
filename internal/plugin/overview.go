@@ -130,7 +130,6 @@ func (m *Manager) BuildAdminOverview(hostCallbackID string) map[string]any {
 		"auth_files":        authFiles,
 		"available_models":  availableModels,
 		"pricing_status":    pStatus,
-		"rules_file":        cfg.Storage.RulesFile,
 		"diagnostics":       m.BuildPersistenceDiagnostics(),
 		"audit_status":      m.AuditStatus(),
 		"audit_key_options": m.AuditKeyOptions(),
@@ -146,10 +145,6 @@ func (m *Manager) BuildPersistenceDiagnostics() map[string]any {
 		stateKeys = len(m.dynamicState.Keys)
 	}
 	m.mu.RUnlock()
-
-	cwd, _ := os.Getwd()
-	home, _ := os.UserHomeDir()
-	configFile := FindHostConfigFile("")
 
 	usageDBFile := ""
 	usageDBExists := false
@@ -176,10 +171,6 @@ func (m *Manager) BuildPersistenceDiagnostics() map[string]any {
 		"usage_db_exists":      usageDBExists,
 		"usage_db_size":        usageDBSize,
 		"usage_db_lock_file":   m.usageStore.SQLiteLockPath(),
-		"config_file":          configFile,
-		"cwd":                  cwd,
-		"home":                 home,
-		"process_args":         os.Args,
 	}
 }
 

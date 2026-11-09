@@ -20,10 +20,8 @@ func TestAuditKeyOptionsAreOpaqueMaskedAndIndependent(t *testing.T) {
 	m := NewManager(nil)
 	key := "client-production-private-value"
 	second := "another-client-private-value"
-	admin := "management-private-value"
 	m.mu.Lock()
-	m.cfg.Keys = []KeyRuleConfig{{APIKey: key, Name: "生产 " + key + " " + admin}, {APIKey: second, Name: "测试"}, {APIKey: key, Name: "duplicate"}, {APIKey: " "}, {APIKey: "x", Name: "短密钥"}}
-	m.cfg.AdminToken = admin
+	m.cfg.Keys = []KeyRuleConfig{{APIKey: key, Name: "生产 " + key}, {APIKey: second, Name: "测试"}, {APIKey: key, Name: "duplicate"}, {APIKey: " "}, {APIKey: "x", Name: "短密钥"}}
 	m.mu.Unlock()
 	options := m.AuditKeyOptions()
 	if len(options) != 3 {
@@ -43,7 +41,7 @@ func TestAuditKeyOptionsAreOpaqueMaskedAndIndependent(t *testing.T) {
 		t.Fatal("short key exposed")
 	}
 	raw, _ := json.Marshal(options)
-	for _, secret := range []string{key, second, admin} {
+	for _, secret := range []string{key, second} {
 		if strings.Contains(string(raw), secret) {
 			t.Fatal("selector leaked unmasked credential")
 		}

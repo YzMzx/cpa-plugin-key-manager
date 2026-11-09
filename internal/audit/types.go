@@ -32,8 +32,6 @@ type Config struct {
 	MaxRecords    int   `yaml:"max_records" json:"max_records"`
 	MaxBodyBytes  int   `yaml:"max_body_bytes" json:"max_body_bytes"`
 	MaxTotalBytes int64 `yaml:"max_total_bytes" json:"max_total_bytes"`
-	// Deprecated: ignored. Audit network monitoring has been removed.
-	TrustedProxies []string `yaml:"-" json:"-"`
 }
 
 // Record deliberately has no API key, headers or upstream error body fields.

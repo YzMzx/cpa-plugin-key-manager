@@ -135,12 +135,11 @@ func TestRuntimeSettingsPreflushFailureDoesNotCommit(t *testing.T) {
 func TestRuntimeSettingsNoSecretsAndProtectedCachePaths(t *testing.T) {
 	m := transactionManager(t)
 	m.mu.Lock()
-	m.cfg.AdminToken = "management-secret"
 	m.cfg.Pricing.SyncURL = "https://user:private-pass@example.com/prices?token=hidden"
 	m.mu.Unlock()
 	value := m.GetRuntimeSettings()
 	raw, _ := json.Marshal(value)
-	for _, secret := range []string{"management-secret", "private-pass", "hidden", "api_key", "custom_prices", "default_policy"} {
+	for _, secret := range []string{"private-pass", "hidden", "api_key", "custom_prices", "default_policy"} {
 		if strings.Contains(string(raw), secret) {
 			t.Fatalf("settings returned protected material: %s", secret)
 		}

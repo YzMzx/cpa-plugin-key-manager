@@ -1,7 +1,6 @@
 package usage
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -115,7 +114,7 @@ type AccountStats struct {
 	Models map[string]*ModelStats `json:"models,omitempty"`
 }
 
-// PersistedSnapshot is the root JSON structure persisted to disk.
+// PersistedSnapshot is the public usage snapshot assembled from live SQLite-backed state.
 type PersistedSnapshot struct {
 	Version   int                      `json:"version"`
 	UpdatedAt string                   `json:"updated_at"`
@@ -170,7 +169,7 @@ type TrackedRequest struct {
 	AuthType  string
 }
 
-// Store manages in-memory usage accounting, request deduplication, and atomic JSON persistence.
+// Store manages in-memory usage accounting, request deduplication, and SQLite persistence.
 type Store struct {
 	// Lock order: lifecycleMu -> flushMu -> mu. Request accounting only takes mu.
 	lifecycleMu            sync.Mutex
@@ -245,21 +244,6 @@ func NewStore(pricingEngine *pricing.Engine) *Store {
 	}
 }
 
-// ConfigurePersistence is kept for compatibility with the JSON era. On this branch
-// persistence is SQLite-only: the path is normalised to a `.db` file next to the
-// requested snapshot path.
-func (s *Store) ConfigurePersistence(filePath string, flushInterval time.Duration) error {
-	cleanPath := strings.TrimSpace(filePath)
-	if cleanPath == "" {
-		return nil
-	}
-	cleanPath = filepath.Clean(cleanPath)
-	if !strings.HasSuffix(strings.ToLower(cleanPath), ".db") {
-		cleanPath = strings.TrimSuffix(cleanPath, filepath.Ext(cleanPath)) + ".db"
-	}
-	return s.ConfigureSQLite(cleanPath, flushInterval)
-}
-
 // ConfigureSQLite applies persistence configuration without reloading a live database.
 // A failed flush or candidate open leaves the old handle, state and flusher intact.
 func (s *Store) ConfigureSQLite(dbPath string, flushInterval time.Duration) error {
@@ -284,23 +268,6 @@ func (s *Store) ConfigureSQLite(dbPath string, flushInterval time.Duration) erro
 		s.startFlusher(interval)
 	}
 	return err
-}
-
-// FlushNowIfOpen only accepts the current handle; it never temporarily publishes
-// a detached handle which could race another flush or configuration change.
-func (s *Store) FlushNowIfOpen(db *sqlitestore.DB) error {
-	s.flushMu.Lock()
-	defer s.flushMu.Unlock()
-	s.mu.Lock()
-	current := s.db
-	s.mu.Unlock()
-	if db == nil {
-		return nil
-	}
-	if db != current {
-		return fmt.Errorf("sqlite: stale database handle")
-	}
-	return s.flushToDBSerialized()
 }
 
 // Close stops the flusher and flushes before releasing the database. On failure
@@ -801,31 +768,6 @@ func getOrCreateAccountTupleStats(acct *AccountStats, key, requested, served str
 	return stats
 }
 
-// mergeTupleStats folds src into dst when two entries describe the same tuple.
-func mergeTupleStats(dst, src *ModelStats) {
-	if dst == nil || src == nil {
-		return
-	}
-	dst.Requests += src.Requests
-	dst.SuccessRequests += src.SuccessRequests
-	dst.FailedRequests += src.FailedRequests
-	dst.InputTokens += src.InputTokens
-	dst.OutputTokens += src.OutputTokens
-	dst.ReasoningTokens += src.ReasoningTokens
-	dst.CacheReadTokens += src.CacheReadTokens
-	dst.CacheWriteTokens += src.CacheWriteTokens
-	dst.TotalTokens += src.TotalTokens
-	dst.CostNanoUSD += src.CostNanoUSD
-	dst.CostUSD = pricing.NanoToUSD(dst.CostNanoUSD)
-	dst.CostFormatted = pricing.FormatUSD(dst.CostNanoUSD)
-	if dst.UnitPricePer1M.Source == "" {
-		dst.UnitPricePer1M = src.UnitPricePer1M
-	}
-	if src.LastUsedAt > dst.LastUsedAt {
-		dst.LastUsedAt = src.LastUsedAt
-	}
-}
-
 // normalizeAccountIdentity collapses credential ids that differ only by a
 // trailing hash into a single account identity. CLIProxyAPI names inline
 // openai-compatibility credentials as `<provider>:<name>:<hash>`, so several
@@ -1002,78 +944,7 @@ func (s *Store) getOrCreateAccountStatsLocked(tr *TrackedRequest) *AccountStats 
 	return acct
 }
 
-// mergeAccountStats folds src into dst (used when legacy snapshots are re-keyed
-// onto the same normalized account identity).
-func mergeAccountStats(dst, src *AccountStats) {
-	if dst == nil || src == nil {
-		return
-	}
-	dst.Requests += src.Requests
-	dst.SuccessRequests += src.SuccessRequests
-	dst.FailedRequests += src.FailedRequests
-	dst.InputTokens += src.InputTokens
-	dst.OutputTokens += src.OutputTokens
-	dst.ReasoningTokens += src.ReasoningTokens
-	dst.CacheReadTokens += src.CacheReadTokens
-	dst.CacheWriteTokens += src.CacheWriteTokens
-	dst.TotalTokens += src.TotalTokens
-	if src.LastRequestAt > dst.LastRequestAt {
-		dst.LastRequestAt = src.LastRequestAt
-	}
-	if src.LastModel != "" {
-		dst.LastModel = src.LastModel
-	}
-	if dst.AuthIndex == "" {
-		dst.AuthIndex = src.AuthIndex
-	}
-	if dst.AuthType == "" {
-		dst.AuthType = src.AuthType
-	}
-	if dst.AuthID == "" {
-		dst.AuthID = src.AuthID
-	}
-	if dst.Provider == "" {
-		dst.Provider = src.Provider
-	} else if src.Provider != "" && !strings.EqualFold(dst.Provider, src.Provider) {
-		dst.Provider = "mixed"
-	}
-	for _, id := range src.AuthIDs {
-		dst.AuthIDs = appendUniqueAccountID(dst.AuthIDs, id)
-	}
-	if len(src.Models) > 0 {
-		if dst.Models == nil {
-			dst.Models = make(map[string]*ModelStats)
-		}
-		for model, stats := range src.Models {
-			if stats == nil {
-				continue
-			}
-			existing, ok := dst.Models[model]
-			if !ok || existing == nil {
-				dst.Models[model] = stats
-				continue
-			}
-			existing.Requests += stats.Requests
-			existing.SuccessRequests += stats.SuccessRequests
-			existing.FailedRequests += stats.FailedRequests
-			existing.InputTokens += stats.InputTokens
-			existing.OutputTokens += stats.OutputTokens
-			existing.ReasoningTokens += stats.ReasoningTokens
-			existing.CacheReadTokens += stats.CacheReadTokens
-			existing.CacheWriteTokens += stats.CacheWriteTokens
-			existing.TotalTokens += stats.TotalTokens
-			existing.CostNanoUSD += stats.CostNanoUSD
-			existing.CostUSD = pricing.NanoToUSD(existing.CostNanoUSD)
-			existing.CostFormatted = pricing.FormatUSD(existing.CostNanoUSD)
-			if stats.LastUsedAt > existing.LastUsedAt {
-				existing.LastUsedAt = stats.LastUsedAt
-			}
-		}
-	}
-}
-
-// appendUniqueAccountID records a raw credential id that was folded into a
-// normalized account bucket (capped so a pathological config cannot bloat the file).
+// appendUniqueAccountID records a raw credential id folded into one account bucket.
 func appendUniqueAccountID(ids []string, rawID string) []string {
 	rawID = strings.TrimSpace(rawID)
 	if rawID == "" {
@@ -1093,13 +964,7 @@ func appendUniqueAccountID(ids []string, rawID string) []string {
 func (s *Store) getOrCreateKeyStatsLocked(apiKey, keyName string) *KeyStats {
 	ks, ok := s.keys[apiKey]
 	if !ok {
-		ks = &KeyStats{
-			APIKey:             apiKey,
-			MaskedKey:          MaskAPIKey(apiKey),
-			KeyName:            keyName,
-			TotalCostFormatted: "$0.000000",
-			Models:             make(map[string]*ModelStats),
-		}
+		ks = &KeyStats{APIKey: apiKey, MaskedKey: MaskAPIKey(apiKey), KeyName: keyName, TotalCostFormatted: "$0.000000", Models: make(map[string]*ModelStats)}
 		s.keys[apiKey] = ks
 	} else if keyName != "" && ks.KeyName == "" {
 		ks.KeyName = keyName
@@ -1167,212 +1032,6 @@ func (s *Store) FlushIfDirty() error {
 // FlushNow persists every row touched since the previous flush.
 func (s *Store) FlushNow() error {
 	return s.flushToDB()
-}
-
-func (s *Store) loadFromDisk(filePath string) error {
-	raw, err := os.ReadFile(filePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-	if len(strings.TrimSpace(string(raw))) == 0 {
-		return nil
-	}
-	var snap PersistedSnapshot
-	if err := json.Unmarshal(raw, &snap); err != nil {
-		return fmt.Errorf("unmarshal usage stats from %s: %w", filePath, err)
-	}
-
-	s.mu.Lock()
-	if s.keys == nil {
-		s.keys = make(map[string]*KeyStats)
-	}
-	for _, entry := range snap.Ledger {
-		if entry == nil || entry.Hour <= 0 || strings.TrimSpace(entry.Model) == "" {
-			continue
-		}
-		s.ledgerPutLocked(ledgerEntryKey(entry.Hour, entry.APIKey, entry.Account, entry.Model, entry.Source), entry)
-	}
-	s.pruneLedgerLocked(time.Now())
-	cleanedDisk := false
-	for k, ks := range snap.Keys {
-		if ks == nil {
-			cleanedDisk = true
-			continue
-		}
-		if ks.APIKey == "" {
-			ks.APIKey = k
-		}
-		if isInvalidKeyID(k) || isInvalidKeyID(ks.APIKey) {
-			cleanedDisk = true
-			continue
-		}
-		ks.MaskedKey = MaskAPIKey(ks.APIKey)
-		validModels := make(map[string]*ModelStats)
-		var sumReq, sumOk, sumFail, sumIn, sumOut, sumReason, sumRead, sumWrite, sumTotal, sumNano int64
-		for tuple, ms := range ks.Models {
-			if ms == nil {
-				cleanedDisk = true
-				continue
-			}
-			if ms.ServedModel == "" || isInvalidModelID(ms.ServedModel) {
-				// Entries written before the tuple rewrite carry only a served name;
-				// treat them as "requested == served" so the values stay usable.
-				if !isInvalidModelID(tuple) {
-					ms.ServedModel = tuple
-					if ms.RequestedModel == "" {
-						ms.RequestedModel = tuple
-					}
-					cleanedDisk = true
-				}
-			}
-			if ms.RequestedModel == "" {
-				ms.RequestedModel = ms.ServedModel
-			}
-			if isInvalidModelID(ms.ServedModel) || isInvalidModelID(ms.RequestedModel) {
-				cleanedDisk = true
-				continue
-			}
-			// Drop tuples that never recorded anything.
-			if ms.Requests == 0 && ms.TotalTokens == 0 && ms.CostNanoUSD == 0 {
-				cleanedDisk = true
-				continue
-			}
-			if ms.CostNanoUSD == 0 && ms.CostUSD > 0 {
-				ms.CostNanoUSD = int64(ms.CostUSD * float64(pricing.NanoUSDPerUSD))
-			}
-			ms.CostUSD = pricing.NanoToUSD(ms.CostNanoUSD)
-			ms.CostFormatted = pricing.FormatUSD(ms.CostNanoUSD)
-			normalizedKey := tupleKey(ms.RequestedModel, ms.ServedModel)
-			if normalizedKey != tuple {
-				cleanedDisk = true
-				if existing, ok := validModels[normalizedKey]; ok && existing != nil {
-					mergeTupleStats(existing, ms)
-					continue
-				}
-			}
-			validModels[normalizedKey] = ms
-
-			sumReq += ms.Requests
-			sumOk += ms.SuccessRequests
-			sumFail += ms.FailedRequests
-			sumIn += ms.InputTokens
-			sumOut += ms.OutputTokens
-			sumReason += ms.ReasoningTokens
-			sumRead += ms.CacheReadTokens
-			sumWrite += ms.CacheWriteTokens
-			sumTotal += ms.TotalTokens
-			sumNano += ms.CostNanoUSD
-		}
-		if len(validModels) == 0 {
-			cleanedDisk = true
-			continue
-		}
-		ks.Models = validModels
-		ks.TotalRequests = sumReq
-		ks.SuccessRequests = sumOk
-		ks.FailedRequests = sumFail
-		ks.InputTokens = sumIn
-		ks.OutputTokens = sumOut
-		ks.ReasoningTokens = sumReason
-		ks.CacheReadTokens = sumRead
-		ks.CacheWriteTokens = sumWrite
-		ks.TotalTokens = sumTotal
-		ks.TotalCostNanoUSD = sumNano
-		ks.TotalCostUSD = pricing.NanoToUSD(ks.TotalCostNanoUSD)
-		ks.TotalCostFormatted = pricing.FormatUSD(ks.TotalCostNanoUSD)
-		s.keys[ks.APIKey] = ks
-	}
-	if s.accounts == nil {
-		s.accounts = make(map[string]*AccountStats)
-	}
-	for _, acct := range snap.Accounts {
-		if acct == nil {
-			cleanedDisk = true
-			continue
-		}
-		// Re-key on load so snapshots written before account identities were
-		// normalized collapse into one row instead of producing duplicates.
-		key := accountBucketKey(acct.Provider, acct.AuthID, acct.AuthIndex)
-		if key == "" {
-			cleanedDisk = true
-			continue
-		}
-		if rawID := strings.TrimSpace(acct.AuthID); rawID != "" {
-			if normalized := normalizeAccountIdentity(rawID); normalized != rawID {
-				acct.AuthIDs = appendUniqueAccountID(acct.AuthIDs, rawID)
-				acct.AuthID = normalized
-				cleanedDisk = true
-			}
-		}
-		if acct.AuthID == "" {
-			acct.AuthID = normalizeAccountIdentity(acct.AuthIndex)
-		}
-		if acct.Models == nil {
-			acct.Models = make(map[string]*ModelStats)
-		}
-		for tuple, mv := range acct.Models {
-			if mv == nil {
-				delete(acct.Models, tuple)
-				cleanedDisk = true
-				continue
-			}
-			if mv.ServedModel == "" || isInvalidModelID(mv.ServedModel) {
-				if !isInvalidModelID(tuple) {
-					mv.ServedModel = tuple
-					if mv.RequestedModel == "" {
-						mv.RequestedModel = tuple
-					}
-					cleanedDisk = true
-				}
-			}
-			if mv.RequestedModel == "" {
-				mv.RequestedModel = mv.ServedModel
-			}
-			if isInvalidModelID(mv.ServedModel) || isInvalidModelID(mv.RequestedModel) {
-				delete(acct.Models, tuple)
-				cleanedDisk = true
-				continue
-			}
-			if mv.Requests == 0 && mv.TotalTokens == 0 && mv.CostNanoUSD == 0 {
-				delete(acct.Models, tuple)
-				cleanedDisk = true
-				continue
-			}
-			mv.CostUSD = pricing.NanoToUSD(mv.CostNanoUSD)
-			mv.CostFormatted = pricing.FormatUSD(mv.CostNanoUSD)
-			normalizedKey := tupleKey(mv.RequestedModel, mv.ServedModel)
-			if normalizedKey != tuple {
-				delete(acct.Models, tuple)
-				cleanedDisk = true
-				if existing, ok := acct.Models[normalizedKey]; ok && existing != nil {
-					mergeTupleStats(existing, mv)
-					continue
-				}
-				acct.Models[normalizedKey] = mv
-			}
-		}
-		// Drop account buckets that hold no data at all.
-		if acct.Requests == 0 && acct.TotalTokens == 0 && len(acct.Models) == 0 {
-			cleanedDisk = true
-			continue
-		}
-		if existing, ok := s.accounts[key]; ok && existing != nil {
-			mergeAccountStats(existing, acct)
-		} else {
-			s.accounts[key] = acct
-		}
-	}
-	if cleanedDisk {
-		s.dirty = true
-	}
-	s.mu.Unlock()
-	if cleanedDisk {
-		_ = s.FlushIfDirty()
-	}
-	return nil
 }
 
 func (s *Store) evictOldTrackers(maxAge time.Duration) {

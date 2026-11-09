@@ -143,7 +143,7 @@ func TestStreamOptionsProtocolGuard(t *testing.T) {
 
 func TestStoreDeduplicationAndProtocolConversionReconciliation(t *testing.T) {
 	tmpDir := t.TempDir()
-	usageFile := filepath.Join(tmpDir, "usage.json")
+	usageFile := filepath.Join(tmpDir, "usage.db")
 
 	eng := pricing.NewEngine()
 	eng.SetCustomPrices(map[string]pricing.ModelPrice{
@@ -156,8 +156,8 @@ func TestStoreDeduplicationAndProtocolConversionReconciliation(t *testing.T) {
 	}, nil)
 
 	store := NewStore(eng)
-	if err := store.ConfigurePersistence(usageFile, time.Hour); err != nil {
-		t.Fatalf("ConfigurePersistence: %v", err)
+	if err := store.ConfigureSQLite(usageFile, time.Hour); err != nil {
+		t.Fatalf("ConfigureSQLite: %v", err)
 	}
 	defer store.Close()
 
@@ -218,8 +218,8 @@ func TestStoreDeduplicationAndProtocolConversionReconciliation(t *testing.T) {
 		t.Fatalf("TotalCostFormatted = %s, want $0.012300", ks.TotalCostFormatted)
 	}
 
-	// Verify hot-reload (ConfigurePersistence) retains in-memory data
-	if err := store.ConfigurePersistence(usageFile, time.Hour); err != nil {
+	// Verify hot-reload (ConfigureSQLite) retains in-memory data
+	if err := store.ConfigureSQLite(usageFile, time.Hour); err != nil {
 		t.Fatalf("reconfigure persistence failed: %v", err)
 	}
 	snapAfterReload := store.Snapshot(apiKey, "", nil, nil, nil, false)
@@ -237,7 +237,7 @@ func TestTupleBucketsSeparateRequestedFromServed(t *testing.T) {
 	}, nil)
 
 	store := NewStore(eng)
-	if err := store.ConfigurePersistence(filepath.Join(t.TempDir(), "usage.json"), time.Hour); err != nil {
+	if err := store.ConfigureSQLite(filepath.Join(t.TempDir(), "usage.db"), time.Hour); err != nil {
 		t.Fatalf("configure store: %v", err)
 	}
 	defer store.Close()
@@ -287,7 +287,7 @@ func TestTupleBucketsSeparateRequestedFromServed(t *testing.T) {
 // counters, so the totals are never duplicated or guessed.
 func TestTupleKeepsBothRequestNamesForSameServedModel(t *testing.T) {
 	store := NewStore(pricing.NewEngine())
-	if err := store.ConfigurePersistence(filepath.Join(t.TempDir(), "usage.json"), time.Hour); err != nil {
+	if err := store.ConfigureSQLite(filepath.Join(t.TempDir(), "usage.db"), time.Hour); err != nil {
 		t.Fatalf("configure store: %v", err)
 	}
 	defer store.Close()
@@ -339,7 +339,7 @@ func TestTupleKeepsBothRequestNamesForSameServedModel(t *testing.T) {
 // final tuple instead of creating a duplicate row.
 func TestTupleMigrationWhenServedModelArrivesLate(t *testing.T) {
 	store := NewStore(pricing.NewEngine())
-	if err := store.ConfigurePersistence(filepath.Join(t.TempDir(), "usage.json"), time.Hour); err != nil {
+	if err := store.ConfigureSQLite(filepath.Join(t.TempDir(), "usage.db"), time.Hour); err != nil {
 		t.Fatalf("configure store: %v", err)
 	}
 	defer store.Close()
@@ -373,7 +373,7 @@ func TestTupleMigrationWhenServedModelArrivesLate(t *testing.T) {
 // tokens) attributed to its requested and served names.
 func TestZeroTokenTupleStillRecorded(t *testing.T) {
 	store := NewStore(pricing.NewEngine())
-	if err := store.ConfigurePersistence(filepath.Join(t.TempDir(), "usage.json"), time.Hour); err != nil {
+	if err := store.ConfigureSQLite(filepath.Join(t.TempDir(), "usage.db"), time.Hour); err != nil {
 		t.Fatalf("configure store: %v", err)
 	}
 	defer store.Close()
@@ -401,7 +401,7 @@ func TestZeroTokenTupleStillRecorded(t *testing.T) {
 // TestIdleReconcileCreatesNoEmptyTuple keeps the phantom-row fix for the tuple model.
 func TestIdleReconcileCreatesNoEmptyTuple(t *testing.T) {
 	store := NewStore(pricing.NewEngine())
-	if err := store.ConfigurePersistence(filepath.Join(t.TempDir(), "usage.json"), time.Hour); err != nil {
+	if err := store.ConfigureSQLite(filepath.Join(t.TempDir(), "usage.db"), time.Hour); err != nil {
 		t.Fatalf("configure store: %v", err)
 	}
 	defer store.Close()
@@ -436,9 +436,9 @@ func TestIdleReconcileCreatesNoEmptyTuple(t *testing.T) {
 // TestAccountTuplesGroupByProviderAndCredential covers the account dimension.
 func TestAccountTuplesGroupByProviderAndCredential(t *testing.T) {
 	eng := pricing.NewEngine()
-	usageFile := filepath.Join(t.TempDir(), "usage.json")
+	usageFile := filepath.Join(t.TempDir(), "usage.db")
 	store := NewStore(eng)
-	if err := store.ConfigurePersistence(usageFile, time.Hour); err != nil {
+	if err := store.ConfigureSQLite(usageFile, time.Hour); err != nil {
 		t.Fatalf("configure store: %v", err)
 	}
 
@@ -483,7 +483,7 @@ func TestAccountTuplesGroupByProviderAndCredential(t *testing.T) {
 	_ = store.Close()
 
 	reloaded := NewStore(eng)
-	if err := reloaded.ConfigurePersistence(usageFile, time.Hour); err != nil {
+	if err := reloaded.ConfigureSQLite(usageFile, time.Hour); err != nil {
 		t.Fatalf("reload: %v", err)
 	}
 	defer reloaded.Close()
@@ -503,7 +503,7 @@ func TestAccountTuplesGroupByProviderAndCredential(t *testing.T) {
 // TestHashedCredentialsMergeIntoOneAccount keeps the identity normalization.
 func TestHashedCredentialsMergeIntoOneAccount(t *testing.T) {
 	store := NewStore(pricing.NewEngine())
-	if err := store.ConfigurePersistence(filepath.Join(t.TempDir(), "usage.json"), time.Hour); err != nil {
+	if err := store.ConfigureSQLite(filepath.Join(t.TempDir(), "usage.db"), time.Hour); err != nil {
 		t.Fatalf("configure store: %v", err)
 	}
 	defer store.Close()

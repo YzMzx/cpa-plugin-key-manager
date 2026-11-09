@@ -47,7 +47,7 @@ Options:
   --version <tag>      Install a specific release tag (e.g. v0.2.0; default: latest)
   --local <file>       Install from a local archive (.tar.gz) or compiled library (.so/.dylib/.dll)
   --init-only          Only initialize the plugin data directory and config.yaml (skip binary download)
-  --reset-data         Move the SQLite database (and any legacy JSON stores) into data/backup-<timestamp>/
+  --reset-data         Move only SQLite database/WAL/SHM/lock files into data/backup-<timestamp>/
   --skip-models-sync   Skip initial models.dev reference pricing download
   -h, --help           Show this help message
 EOF
@@ -263,22 +263,13 @@ install_binary() {
 init_plugin_data() {
   mkdir -p "$data_dir" || fail "failed to create data directory: ${data_dir}"
 
-  # v0.9.x keeps everything (rules, usage, ledger) in a single SQLite database.
-  # The installer never creates the legacy JSON stores any more; it only adopts
-  # existing ones so the plugin can import them once on first start.
-  legacy_json_names="key_guard_rules.json key_usage_stats.json"
+  # Runtime records live only in SQLite. The plugin creates its database on first start.
 
   if [ "$reset_data" -eq 1 ]; then
     backup_dir="${data_dir}/backup-$(date -u +%Y%m%d-%H%M%S 2>/dev/null || echo 0)"
     mkdir -p "$backup_dir" || fail "failed to create backup directory: ${backup_dir}"
     moved=0
     for f in "${data_dir}"/key_usage.db "${data_dir}"/key_usage.db-wal "${data_dir}"/key_usage.db-shm "${data_dir}"/key_usage.db.lock; do
-      if [ -f "$f" ]; then
-        mv -f "$f" "$backup_dir/" && moved=1
-      fi
-    done
-    for name in $legacy_json_names; do
-      f="${data_dir}/${name}"
       if [ -f "$f" ]; then
         mv -f "$f" "$backup_dir/" && moved=1
       fi
@@ -291,22 +282,6 @@ init_plugin_data() {
     fi
     return
   fi
-
-  for name in $legacy_json_names; do
-    target="${data_dir}/${name}"
-    if [ -f "$target" ]; then
-      info "Found legacy JSON store (imported once into SQLite on next start): ${target}"
-      continue
-    fi
-    for fallback in "/CLIProxyAPI/data/${name}" "$HOME/.cli-proxy-api/${name}" "$HOME/.cli-proxy-api/data/${name}"; do
-      if [ -f "$fallback" ] && [ -s "$fallback" ]; then
-        if cp -f "$fallback" "$target" 2>/dev/null; then
-          info "Adopted legacy ${name} from ${fallback} (imported once into SQLite on next start)"
-          break
-        fi
-      fi
-    done
-  done
 }
 
 init_plugin_config() {
@@ -329,14 +304,6 @@ EOF
 
   if grep -q "cpa-plugin-key-manager" "$config_file" 2>/dev/null; then
     info "Detected existing cpa-plugin-key-manager configuration in ${config_file}"
-    return
-  fi
-
-  if grep -q "cpa-plugin-key:" "$config_file" 2>/dev/null; then
-    info "Migrating legacy cpa-plugin-key configuration to cpa-plugin-key-manager in ${config_file}"
-    cp "$config_file" "${config_file}.bak" 2>/dev/null || true
-    sed -i.bak 's/cpa-plugin-key:/cpa-plugin-key-manager:/g' "$config_file" 2>/dev/null || sed -i '' 's/cpa-plugin-key:/cpa-plugin-key-manager:/g' "$config_file" 2>/dev/null || true
-    info "Updated config.yaml to cpa-plugin-key-manager (backup saved to ${config_file}.bak)"
     return
   fi
 

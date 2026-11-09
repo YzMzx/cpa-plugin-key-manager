@@ -16,14 +16,12 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
-// TestMain keeps every mirror location inside a throwaway directory so tests never
-// write into the developer/production host state directories.
+// TestMain isolates the live SQLite database and CPA root from developer/production files.
 func TestMain(m *testing.M) {
 	dir, errTemp := os.MkdirTemp("", "km-state-dirs-")
 	if errTemp != nil {
 		os.Exit(m.Run())
 	}
-	_ = os.Setenv("CPA_KEY_MANAGER_STATE_DIRS", dir)
 	_ = os.Setenv("CPA_KEY_MANAGER_USAGE_DB", filepath.Join(dir, "default-test-usage.db"))
 	_ = os.Setenv("CPA_DIR", dir)
 	code := m.Run()
@@ -31,11 +29,10 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// isolateStateDirs gives a single test its own private set of mirror directories.
+// isolateStateDirs gives a single test its own private live SQLite database.
 func isolateStateDirs(t *testing.T) {
 	t.Helper()
 	dir := t.TempDir()
-	t.Setenv("CPA_KEY_MANAGER_STATE_DIRS", dir)
 	// The database also needs a per-test file, otherwise tests share the CPA
 	// root's ./data database and leak counters into each other.
 	t.Setenv("CPA_KEY_MANAGER_USAGE_DB", filepath.Join(dir, "key_usage.db"))
@@ -81,8 +78,7 @@ plugins:
       enabled: true
       priority: 100
       storage:
-        usage_file: "./data/key_usage_stats.json"
-        rules_file: "./data/key_guard_rules.json"
+        usage_db_file: "./data/key_usage.db"
 `
 	if err := os.WriteFile(cpaConfigPath, []byte(initialCPAConfig), 0644); err != nil {
 		t.Fatalf("failed to write initial config.yaml: %v", err)
@@ -91,8 +87,7 @@ plugins:
 	pluginConfigYAML := `enabled: true
 priority: 100
 storage:
-  usage_file: "./data/key_usage_stats.json"
-  rules_file: "./data/key_guard_rules.json"
+  usage_db_file: "./data/key_usage.db"
 `
 	regReq, _ := json.Marshal(lifecycleRequest{
 		ConfigYAML:    []byte(pluginConfigYAML),
@@ -227,8 +222,7 @@ plugins:
       enabled: true
       priority: 100
       storage:
-        usage_file: "./data/key_usage_stats.json"
-        rules_file: "./data/key_guard_rules.json"
+        usage_db_file: "./data/key_usage.db"
 `
 	if err := os.WriteFile(cfgPath, []byte(sampleYAML), 0644); err != nil {
 		t.Fatalf("write failed: %v", err)
@@ -289,7 +283,7 @@ plugins:
 func TestFullPluginLifecycleAndGovernance(t *testing.T) {
 	isolateStateDirs(t)
 	tmpDir := t.TempDir()
-	usageFile := filepath.Join(tmpDir, "usage_stats.json")
+	usageDB := filepath.Join(tmpDir, "key_usage.db")
 	cacheFile := filepath.Join(tmpDir, "models_dev.json")
 
 	mgr := NewManager(nil)
@@ -299,7 +293,7 @@ func TestFullPluginLifecycleAndGovernance(t *testing.T) {
 enabled: true
 priority: 100
 storage:
-  usage_file: "` + filepath.ToSlash(usageFile) + `"
+  usage_db_file: "` + filepath.ToSlash(usageDB) + `"
   flush_interval_seconds: 60
   pricing_cache_file: "` + filepath.ToSlash(cacheFile) + `"
 pricing:
@@ -519,8 +513,7 @@ keys:
 func TestWebUIDynamicCRUDAndTokenTracking(t *testing.T) {
 	isolateStateDirs(t)
 	tmpDir := t.TempDir()
-	usageFile := filepath.Join(tmpDir, "usage_stats.json")
-	rulesFile := filepath.Join(tmpDir, "key_guard_rules.json")
+	usageDB := filepath.Join(tmpDir, "key_usage.db")
 	cacheFile := filepath.Join(tmpDir, "models_dev.json")
 
 	// Mock host callback returning upstream auth files and registered models
@@ -550,8 +543,7 @@ func TestWebUIDynamicCRUDAndTokenTracking(t *testing.T) {
 	cfgYAML := `
 enabled: true
 storage:
-  usage_file: "` + filepath.ToSlash(usageFile) + `"
-  rules_file: "` + filepath.ToSlash(rulesFile) + `"
+  usage_db_file: "` + filepath.ToSlash(usageDB) + `"
   pricing_cache_file: "` + filepath.ToSlash(cacheFile) + `"
 `
 	regReq, _ := json.Marshal(lifecycleRequest{
@@ -812,8 +804,7 @@ func TestKeyQuotaEnforcementAndReset(t *testing.T) {
 
 	cfgYAML := `enabled: true
 storage:
-  usage_file: "` + filepath.ToSlash(filepath.Join(tmpDir, "usage.json")) + `"
-  rules_file: "` + filepath.ToSlash(filepath.Join(tmpDir, "rules.json")) + `"
+  usage_db_file: "` + filepath.ToSlash(filepath.Join(tmpDir, "key_usage.db")) + `"
 pricing:
   sync_url: "http://127.0.0.1:1/offline"
   custom_prices:
@@ -911,8 +902,7 @@ func TestOverviewKeyCountsComeFromConfiguredRules(t *testing.T) {
 
 	cfgYAML := `enabled: true
 storage:
-  usage_file: "` + filepath.ToSlash(filepath.Join(tmpDir, "usage.json")) + `"
-  rules_file: "` + filepath.ToSlash(filepath.Join(tmpDir, "rules.json")) + `"
+  usage_db_file: "` + filepath.ToSlash(filepath.Join(tmpDir, "key_usage.db")) + `"
 keys:
   - api_key: "sk-enabled-1"
     name: "启用一"
@@ -960,6 +950,7 @@ func TestIsManagementPanelRequest(t *testing.T) {
 
 func TestResolveStoragePathAndHostConfigFile(t *testing.T) {
 	tmpDir := t.TempDir()
+	t.Setenv("CPA_DIR", tmpDir)
 	origWD, _ := os.Getwd()
 	defer func() { _ = os.Chdir(origWD) }()
 	if err := os.Chdir(tmpDir); err != nil {
@@ -967,7 +958,7 @@ func TestResolveStoragePathAndHostConfigFile(t *testing.T) {
 	}
 
 	// 1. When file exists in relative path
-	rulesRel := "./data/key_guard_rules.json"
+	rulesRel := "./data/models_dev.json"
 	if err := os.MkdirAll("./data", 0755); err != nil {
 		t.Fatalf("mkdir failed: %v", err)
 	}
@@ -1017,8 +1008,7 @@ func TestResolveStoragePathAndHostConfigFile(t *testing.T) {
 func TestBuildAdminOverviewPreservesAllowedModelsWhenAuthModelsEmpty(t *testing.T) {
 	isolateStateDirs(t)
 	tmpDir := t.TempDir()
-	rulesFile := filepath.Join(tmpDir, "key_guard_rules.json")
-	usageFile := filepath.Join(tmpDir, "key_usage_stats.json")
+	usageDB := filepath.Join(tmpDir, "key_usage.db")
 
 	mgr := NewManager(func(method string, payload []byte) ([]byte, error) {
 		return okEnvelope(struct{}{})
@@ -1028,8 +1018,7 @@ func TestBuildAdminOverviewPreservesAllowedModelsWhenAuthModelsEmpty(t *testing.
 	regReq, _ := json.Marshal(lifecycleRequest{
 		ConfigYAML: []byte(`
 storage:
-  rules_file: "` + filepath.ToSlash(rulesFile) + `"
-  usage_file: "` + filepath.ToSlash(usageFile) + `"
+  usage_db_file: "` + filepath.ToSlash(usageDB) + `"
 default_policy:
   allowed_models: ["gpt-4o", "claude-3-5-sonnet"]
 keys:
@@ -1062,17 +1051,15 @@ keys:
 }
 
 // TestKeyOrderPersistsAcrossRestart covers the drag & drop ordering of the API key
-// list: the order must be stored in the rules file and replayed by a fresh manager.
+// list: the order must be stored in SQLite and replayed by a fresh manager.
 func TestKeyOrderPersistsAcrossRestart(t *testing.T) {
 	isolateStateDirs(t)
 	tmpDir := t.TempDir()
-	rulesFile := filepath.Join(tmpDir, "key_guard_rules.json")
-	usageFile := filepath.Join(tmpDir, "key_usage_stats.json")
+	usageDB := filepath.Join(tmpDir, "key_usage.db")
 
 	pluginYAML := []byte(`
 storage:
-  rules_file: "` + filepath.ToSlash(rulesFile) + `"
-  usage_file: "` + filepath.ToSlash(usageFile) + `"
+  usage_db_file: "` + filepath.ToSlash(usageDB) + `"
 keys:
   - api_key: "sk-alpha"
   - api_key: "sk-bravo"
@@ -1126,8 +1113,7 @@ keys:
 func TestModelsDevSyncAndCustomPriceOverride(t *testing.T) {
 	isolateStateDirs(t)
 	tmpDir := t.TempDir()
-	usageFile := filepath.Join(tmpDir, "usage.json")
-	rulesFile := filepath.Join(tmpDir, "rules.json")
+	usageDB := filepath.Join(tmpDir, "key_usage.db")
 	cacheFile := filepath.Join(tmpDir, "models_dev.json")
 
 	sampleModelsDev := `{
@@ -1169,8 +1155,7 @@ func TestModelsDevSyncAndCustomPriceOverride(t *testing.T) {
 
 	cfgYAML := `enabled: true
 storage:
-  usage_file: "` + filepath.ToSlash(usageFile) + `"
-  rules_file: "` + filepath.ToSlash(rulesFile) + `"
+  usage_db_file: "` + filepath.ToSlash(usageDB) + `"
   pricing_cache_file: "` + filepath.ToSlash(cacheFile) + `"
 pricing:
   sync_url: "https://models.dev/api.json"
