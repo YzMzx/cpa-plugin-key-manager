@@ -49,8 +49,8 @@ test("four filters encode literal values and omit removed identifiers/time field
 test("JSON body is decoded read-only while non-JSON stays omitted",()=>{
  const value=Audit.bodyView(record("a",{request_body:'{"messages":[{"content":"<img onerror=evil()>"}]}'}));
  assert.match(value.json,/<img onerror=evil/);assert.ok(value.json.includes(String.fromCharCode(10)));
- assert.match(Audit.bodyView(record("a",{request_body:"not json"})).state,/解码失败/);
- assert.match(Audit.bodyView(record("a",{body_state:"omitted_input_limit",body_truncated:true})).state,/未保存正文/);
+ assert.equal(Audit.bodyView(record("a",{request_body:"not json"})).state,"未保存（格式异常）");
+ assert.equal(Audit.bodyView(record("a",{body_state:"omitted_input_limit",body_truncated:true})).state,"未保存（超出限制）");
 });
 
 test("list loads metadata only and detail is fetched on explicit selection with text-only rendering",async()=>{
@@ -137,7 +137,7 @@ test("audit status keeps capture failures visible after later successful reads",
 test("large stored JSON stays compact and omitted bodies remain hidden",()=>{
  const raw=JSON.stringify({messages:[{role:"user",content:"长提示词 ".repeat(70000)}]});
  const value=Audit.bodyView(record("large",{body_state:"stored",request_body:raw}));
- assert.equal(value.json,raw);assert.match(value.state,/紧凑/);
+ assert.equal(value.json,raw);assert.equal(value.state,"已保存 JSON 明文");
  const omitted=Audit.bodyView(record("large",{body_state:"omitted_output_limit",request_body:raw,body_truncated:true}));
  assert.notEqual(omitted.json,raw);
 });
@@ -198,17 +198,17 @@ test("lock cancels cleanup and clears confirmation tokens without replaying writ
 test("partial redacted JSON remains visible with placeholders, retained bytes and hash",async()=>{
  const raw=JSON.stringify({messages:[{role:"user",content:"你好 <img onerror=evil()> [OMITTED:string_limit]"}]});
  const partial=record("partial",{body_state:"stored_partial",body_truncated:true,request_body:raw,body_sha256:"partial-digest"});
- const value=Audit.bodyView(partial);assert.match(value.state,/部分留存/);assert.match(value.state,/OMITTED/);assert.doesNotMatch(value.state,/正文已略过/);assert.equal(value.retainedBytes,Buffer.byteLength(raw));assert.match(value.json,/你好/);assert.match(value.json,/OMITTED:string_limit/);
+ const value=Audit.bodyView(partial);assert.equal(value.state,"已保存 JSON 明文");assert.match(value.info,/旧版部分留存/);assert.doesNotMatch(value.state,/正文已略过/);assert.equal(value.retainedBytes,Buffer.byteLength(raw));assert.match(value.json,/你好/);assert.match(value.json,/OMITTED:string_limit/);
  const f=fixture(async url=>url.includes("/detail?")?{record:partial,status:status()}:list([record("partial",{body_state:"stored_partial",body_truncated:true})]));await f.view.enter();assert.doesNotMatch(f.node("auditListBody").textContent,/超限略过|未保存正文/);await f.view.showDetail("partial");
- assert.match(f.node("auditRequestBody").textContent,/OMITTED:string_limit/);assert.match(f.node("auditRequestBody").textContent,/<img onerror=evil/);assert.match(f.node("auditBodyState").textContent,/部分留存/);assert.match(f.node("auditBodyState").textContent,/字节/);assert.equal(f.node("auditBodyHash").textContent,"partial-digest");
- const complete=Audit.bodyView(record("full",{body_state:"stored",request_body:raw}));assert.match(complete.state,/完整留存/);
+ assert.match(f.node("auditRequestBody").textContent,/OMITTED:string_limit/);assert.match(f.node("auditRequestBody").textContent,/<img onerror=evil/);assert.equal(f.node("auditBodyState").textContent,"已保存 JSON 明文");assert.match(f.node("auditBodyInfo").textContent,/旧版部分留存/);assert.match(f.node("auditBodyInfo").textContent,/字节/);assert.equal(f.node("auditBodyHash").textContent,"partial-digest");
+ const complete=Audit.bodyView(record("full",{body_state:"stored",request_body:raw}));assert.equal(complete.state,"已保存 JSON 明文");assert.match(complete.info,/旧版脱敏/);
 });
 
 test("legacy omitted element records remain unrecoverable and unknown states never reveal bodies",()=>{
  const legacy=Audit.bodyView(record("old",{body_state:"omitted_element_limit",body_truncated:true,request_body:'{"sensitive":"must-not-render"}'}));
- assert.match(legacy.state,/旧版/);assert.match(legacy.json,/无法恢复/);assert.doesNotMatch(legacy.json,/must-not-render/);assert.equal(legacy.retainedBytes,0);
+ assert.equal(legacy.state,"未保存（超出限制）");assert.match(legacy.json,/无法恢复/);assert.doesNotMatch(legacy.json,/must-not-render/);assert.equal(legacy.retainedBytes,0);
  for(const body_state of ["unknown_future","omitted_string_limit","omitted_output_limit"]){const value=Audit.bodyView(record("x",{body_state,request_body:'{"secret":"must-not-render"}'}));assert.doesNotMatch(value.json,/must-not-render/);}
- const large=JSON.stringify({content:"部分正文 [OMITTED:limit] ".repeat(20000)});const shown=Audit.bodyView(record("large",{body_state:"stored_partial",body_truncated:true,request_body:large}));assert.equal(shown.json,large);assert.match(shown.state,/紧凑/);
+ const large=JSON.stringify({content:"部分正文 [OMITTED:limit] ".repeat(20000)});const shown=Audit.bodyView(record("large",{body_state:"stored_partial",body_truncated:true,request_body:large}));assert.equal(shown.json,large);assert.equal(shown.state,"已保存 JSON 明文");assert.match(shown.info,/旧版部分留存/);
 });
 
 test("IP metadata and legacy unknown-IP warnings are not rendered",async()=>{
@@ -222,7 +222,7 @@ test("IP metadata and legacy unknown-IP warnings are not rendered",async()=>{
 test("raw plaintext JSON formats whitespace while preserving escapes credentials and literal markup",async()=>{
  const raw=' {\n  "api_key": "secretliteral", "escaped": "\\u4f60\\u597d", "content": "<img src=x onerror=evil()>"\n} ' ;
  const value=Audit.bodyView(record("raw",{body_state:"stored_raw",body_truncated:false,request_body:raw,body_sha256:"raw-digest"}));
- assert.equal(value.json,Audit.formatJSONText(raw));assert.equal(Audit.bodyView(record("raw",{body_state:"stored_raw",request_body:raw}),"original").json,raw);assert.match(value.state,/明文/);assert.match(value.state,/完整留存/);assert.equal(value.retainedBytes,Buffer.byteLength(raw));
+ assert.equal(value.json,Audit.formatJSONText(raw));assert.equal(Audit.bodyView(record("raw",{body_state:"stored_raw",request_body:raw}),"original").json,raw);assert.equal(value.state,"已保存 JSON 明文");assert.equal(value.retainedBytes,Buffer.byteLength(raw));
  const f=fixture(async url=>url.includes("/detail?")?{record:record("raw",{body_state:"stored_raw",body_truncated:false,request_body:raw,body_sha256:"raw-digest"}),status:status()}:list([record("raw",{body_state:"stored_raw"})]));
  await f.view.enter();await f.view.showDetail("raw");assert.equal(f.node("auditRequestBody").textContent,Audit.formatJSONText(raw));f.node("auditBodyOriginal").listeners.click();assert.equal(f.node("auditRequestBody").textContent,raw);f.node("auditBodyFormatted").listeners.click();assert.equal(f.node("auditRequestBody").textContent,Audit.formatJSONText(raw));assert.match(f.node("auditDetailMessage").textContent,/明文可能含凭据/);assert.equal(f.node("auditBodyHash").textContent,"raw-digest");
  const html=fs.readFileSync(path.join(__dirname,"index.html"),"utf8");assert.ok(html.includes("请求 JSON 原文（只读）"));assert.ok(html.includes("已保存内容"));assert.ok(!html.includes("脱敏请求 JSON（只读）"));
@@ -233,7 +233,7 @@ test("JSON formatting preserves tokens without parsing numeric values or limitin
  const raw='{"many":['+Array.from({length:5000},(_,i)=>String(i)).join(",")+'],"secret":"literal"}';
  const value=Audit.bodyView(record("many",{body_state:"stored_raw",request_body:raw}));assert.equal(value.json,Audit.formatJSONText(raw));assert.ok(value.json.includes("\n    4999"));
  const large=JSON.stringify({content:"原文 secretliteral ".repeat(25000)});assert.equal(Audit.bodyView(record("large-raw",{body_state:"stored_raw",request_body:large})).json,Audit.formatJSONText(large));assert.equal(Audit.bodyView(record("large-raw",{body_state:"stored_raw",request_body:large}),"original").json,large);
- const legacy=Audit.bodyView(record("legacy",{body_state:"stored",request_body:"{}"}));assert.match(legacy.state,/旧版脱敏/);
+ const legacy=Audit.bodyView(record("legacy",{body_state:"stored",request_body:"{}"}));assert.equal(legacy.state,"已保存 JSON 明文");assert.match(legacy.info,/旧版脱敏/);
 });
 
 test("whitespace formatter preserves field order duplicate keys arbitrary precision and escapes",()=>{
@@ -259,10 +259,40 @@ test("body format mode resets per record and lock clears both saved and formatte
 test("media-filtered plaintext JSON remains visible and identifies only the omitted payload",()=>{
  const raw='{"messages":[{"content":[{"type":"text","text":"保留文字"},{"type":"image_url","image_url":"[OMITTED:media]"}]}],"secret":"still-plaintext"}';
  const value=Audit.bodyView(record("media",{body_state:"stored_raw_media_filtered",body_truncated:false,request_body:raw,body_sha256:"saved-filtered-hash"}));
- assert.match(value.state,/文件载荷已过滤/);assert.match(value.json,/保留文字/);assert.match(value.json,/still-plaintext/);assert.match(value.json,/OMITTED:media/);assert.equal(value.retainedBytes,Buffer.byteLength(raw));
+ assert.equal(value.state,"已保存 JSON 明文");assert.match(value.json,/保留文字/);assert.match(value.json,/still-plaintext/);assert.match(value.json,/OMITTED:media/);assert.equal(value.retainedBytes,Buffer.byteLength(raw));
 });
 
 test("system/developer filtered audit states remain readable with saved hash",()=>{
  const raw='{"messages":[{"role":"user","content":"保留文字"}]}';
- for(const state of ["stored_raw_system_filtered","stored_raw_system_media_filtered"]){const value=Audit.bodyView(record("roles",{body_state:state,request_body:raw,body_sha256:"saved-filtered-hash",body_truncated:false}));assert.ok(value.state.includes("system / developer"));assert.match(value.json,/保留文字/);assert.ok(value.retainedBytes>0);assert.equal(Audit.bodyView(record("roles",{body_state:state,request_body:raw}),"original").json,raw);}
+ for(const state of ["stored_raw_system_filtered","stored_raw_system_media_filtered"]){const value=Audit.bodyView(record("roles",{body_state:state,request_body:raw,body_sha256:"saved-filtered-hash",body_truncated:false}));assert.equal(value.state,"已保存 JSON 明文");assert.match(value.json,/保留文字/);assert.ok(value.retainedBytes>0);assert.equal(Audit.bodyView(record("roles",{body_state:state,request_body:raw}),"original").json,raw);}
+});
+
+test("saved body states all use one concise label in list and detail without changing acceptance",async()=>{
+ const states=["stored_raw","stored_raw_media_filtered","stored_raw_system_filtered","stored_raw_system_media_filtered","stored","redacted","captured","stored_partial"];
+ const items=states.map((state,index)=>record("label-"+index,{body_state:state,body_truncated:state==="stored_partial"}));
+ const f=fixture(async url=>url.includes("/detail?")?{record:{...items.find(item=>item.id===new URL("http://t"+url).searchParams.get("id")),request_body:'{"safe":"visible"}',body_sha256:"saved-hash"},status:status()}:list(items));
+ await f.view.enter();
+ for(let i=0;i<states.length;i++){
+  assert.equal(f.node("auditListBody").children[i].children[6].textContent,"已保存 JSON 明文");
+  await f.view.showDetail(items[i].id);assert.equal(f.node("auditBodyState").textContent,"已保存 JSON 明文");assert.match(f.node("auditRequestBody").textContent,/visible/);assert.equal(f.node("auditBodyHash").textContent,"saved-hash");
+ }
+ f.view.closeDetail();assert.equal(f.node("auditBodyInfo").textContent,"");
+});
+
+test("omitted body codes merge into actionable categories and never reveal accidental bodies",()=>{
+ const groups={
+  "无正文":["empty"],
+  "未保存（超出限制）":["omitted_input_limit","omitted_output_limit","omitted_size","too_large","omitted_depth_limit","omitted_element_limit","omitted_string_limit","omitted_number_limit","omitted_secret_limit"],
+  "未保存（格式不支持）":["omitted_encoding","omitted_non_json","omitted_non_container","omitted_unknown_schema","non_json"],
+  "未保存（格式异常）":["omitted_invalid_json","omitted_ambiguous_json","invalid_json"],
+  "未保存（采集关闭）":["omitted_disabled","disabled"],
+  "未保存（采集繁忙）":["omitted_busy"],
+  "未保存正文":["omitted","not_captured","omitted_secret_collision","unavailable","unknown_future",""]
+ };
+ for(const [expected,codes]of Object.entries(groups))for(const body_state of codes){
+  const value=record("not-saved",{body_state,body_truncated:true,request_body:'{"secret":"must-not-render"}'});
+  assert.equal(Audit.bodyStatus(value),expected);const view=Audit.bodyView(value);assert.equal(view.state,expected);assert.doesNotMatch(view.json,/must-not-render/);assert.equal(view.retainedBytes,0);
+ }
+ const contradictory=record("contradictory",{body_state:"stored_raw",body_truncated:true,request_body:'{"secret":"must-not-render"}'});
+ assert.equal(Audit.bodyStatus(contradictory),"未保存正文");assert.doesNotMatch(Audit.bodyView(contradictory).json,/must-not-render/);
 });

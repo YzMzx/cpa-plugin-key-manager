@@ -11,7 +11,20 @@
   const own = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
   const FILTERS = { key_fingerprint: "auditKey", key_label: "auditKeyLabel", model: "auditModel", outcome: "auditOutcome" };
   const OUTCOMES = { unknown: "未知", succeeded: "成功", success: "成功", failed: "失败", cancelled: "取消", canceled: "取消", running: "进行中", in_progress: "进行中", pending: "进行中", rejected: "已拒绝" };
-  const BODY_STATES = { omitted_busy: "大正文脱敏繁忙，正文已略过", omitted_unknown_schema: "未知请求结构，正文已略过", omitted_secret_collision: "敏感内容无法安全替换，正文已略过", omitted_secret_limit: "敏感内容校验超限，正文已略过", omitted_encoding: "编码不支持，正文已略过", omitted_non_json: "非 JSON 正文，已略过", omitted_invalid_json: "JSON 无效，正文已略过", omitted_input_limit: "输入正文超限，已略过", omitted_non_container: "非对象或数组 JSON，已略过", omitted_depth_limit: "JSON 嵌套深度超限，已略过", omitted_element_limit: "旧版数量限制未保存正文（无法恢复）", omitted_string_limit: "JSON 字符串超限，已略过", omitted_number_limit: "JSON 数字超限，已略过", omitted_ambiguous_json: "JSON 存在歧义，已略过", omitted_output_limit: "脱敏后正文超限，已略过", redacted: "旧版脱敏 JSON", captured: "旧版脱敏 JSON", stored: "旧版脱敏 JSON", stored_partial: "旧版部分脱敏 JSON · 含 [OMITTED:...] 占位", stored_raw: "已保存 JSON 明文原文", stored_raw_media_filtered:"已保存 JSON 明文 · 文件载荷已过滤", stored_raw_system_filtered:"已保存 JSON 明文 · system / developer 消息已过滤", stored_raw_system_media_filtered:"已保存 JSON 明文 · system / developer 消息和文件载荷已过滤", omitted: "正文已略过", non_json: "非 JSON 正文，已略过", too_large: "正文超过限制，已略过", empty: "无正文", disabled: "未保存正文", invalid_json: "无法解码 JSON，已略过", unavailable: "正文不可用" };
+  const SAVED_BODY_STATES = new Set(["stored_raw", "stored_raw_media_filtered", "stored_raw_system_filtered", "stored_raw_system_media_filtered", "stored", "redacted", "captured", "stored_partial"]);
+  const BODY_STATES = {
+    empty: "无正文",
+    omitted_input_limit: "未保存（超出限制）", omitted_output_limit: "未保存（超出限制）", omitted_size: "未保存（超出限制）", too_large: "未保存（超出限制）",
+    omitted_depth_limit: "未保存（超出限制）", omitted_element_limit: "未保存（超出限制）", omitted_string_limit: "未保存（超出限制）", omitted_number_limit: "未保存（超出限制）", omitted_secret_limit: "未保存（超出限制）",
+    omitted_encoding: "未保存（格式不支持）", omitted_non_json: "未保存（格式不支持）", omitted_non_container: "未保存（格式不支持）", omitted_unknown_schema: "未保存（格式不支持）", non_json: "未保存（格式不支持）",
+    omitted_invalid_json: "未保存（格式异常）", omitted_ambiguous_json: "未保存（格式异常）", invalid_json: "未保存（格式异常）",
+    omitted_disabled: "未保存（采集关闭）", disabled: "未保存（采集关闭）",
+    omitted_busy: "未保存（采集繁忙）"
+  };
+  function bodyStatus(record) {
+    if (SAVED_BODY_STATES.has(record.body_state)) return record.body_state === "stored_partial" || !record.body_truncated ? "已保存 JSON 明文" : "未保存正文";
+    return own(BODY_STATES, record.body_state) ? BODY_STATES[record.body_state] : "未保存正文";
+  }
   function validateStatus(value) {
     if (!object(value) || typeof value.enabled !== "boolean" || !["retention_days", "max_records", "max_body_bytes", "max_total_bytes"].every(key => integer(value[key]))) throw new Error("审计状态响应格式无效");
     return value;
@@ -79,24 +92,20 @@
   }
   function bodyView(record, mode = "formatted") {
     const partial = record.body_state === "stored_partial";
-    const plaintext = ["stored_raw","stored_raw_media_filtered","stored_raw_system_filtered","stored_raw_system_media_filtered"].includes(record.body_state) && !record.body_truncated;
-    const accepted = partial || ["stored_raw", "stored_raw_media_filtered", "stored_raw_system_filtered", "stored_raw_system_media_filtered", "stored", "redacted", "captured"].includes(record.body_state) && !record.body_truncated;
-    const bodyLabel = label(BODY_STATES, record.body_state, "未知正文状态");
-    const raw = record.request_body;
-    const empty = { state: bodyLabel + (!partial && record.body_truncated ? " · 未保存正文" : ""), json: record.body_state === "omitted_element_limit" ? "此记录由旧版数量限制整段略过，历史正文未保存，无法恢复。新请求不再使用此数量上限。" : "正文已略过或未确认可展示的 JSON。", retainedBytes: 0, completeness: "未保存" };
+    const plaintext = ["stored_raw", "stored_raw_media_filtered", "stored_raw_system_filtered", "stored_raw_system_media_filtered"].includes(record.body_state) && !record.body_truncated;
+    const accepted = SAVED_BODY_STATES.has(record.body_state) && (partial || !record.body_truncated);
+    const empty = { state: bodyStatus(record), info: "", json: record.body_state === "omitted_element_limit" ? "历史正文未保存，无法恢复。" : "没有可显示的请求正文。", retainedBytes: 0, completeness: "未保存" };
     if (!accepted) return empty;
-    if (raw === undefined || raw === null || raw === "") return { ...empty, json: "无可显示的请求正文。" };
+    const raw = record.request_body;
+    if (raw === undefined || raw === null || raw === "") return { ...empty, state: "未保存正文" };
     const compact = typeof raw === "string" ? raw : JSON.stringify(raw);
     const retainedBytes = utf8Bytes(compact);
-    const state = bodyLabel + " · " + (partial ? "部分留存" : "完整留存") + " · " + bytes(retainedBytes) + "（" + retainedBytes + " 字节）";
-    // Plaintext records preserve exact bytes/whitespace/escapes, including small
-    // JSON. This is inert text, not markup and not a claim of redaction.
-    if (plaintext) return { state: state + (mode === "original" ? " · 保存原文" : " · 两空格格式化显示，哈希对应保存内容") + " · 明文可能含凭据、会话和个人信息", json: mode === "original" ? compact : formatJSONText(compact), retainedBytes, completeness: "完整原文" };
-    // Large JSON is validated by the backend. Render inert compact text to avoid
-    // a second parsed tree/pretty copy; stored_partial is equally safe to show.
-    if (typeof raw === "string" && raw.length > 256 * 1024) return { state: state + " · 大正文按紧凑 JSON 展示", json: raw, retainedBytes, completeness: partial ? "部分留存" : "完整留存" };
-    try { return { state, json: JSON.stringify(typeof raw === "string" ? JSON.parse(raw) : raw, null, 2), retainedBytes, completeness: partial ? "部分留存" : "完整留存" }; }
-    catch (_) { return { ...empty, state: bodyLabel + " · JSON 解码失败", json: "正文不是可解码的 JSON，已略过展示。" }; }
+    const info = bytes(retainedBytes) + "（" + retainedBytes + " 字节）" + (partial ? " · 旧版部分留存，省略位置使用占位符" : plaintext ? "" : " · 旧版脱敏内容");
+    const saved = { state: "已保存 JSON 明文", info, retainedBytes, completeness: partial ? "部分留存" : "完整留存" };
+    if (plaintext) return { ...saved, json: mode === "original" ? compact : formatJSONText(compact) };
+    if (typeof raw === "string" && raw.length > 256 * 1024) return { ...saved, json: raw };
+    try { return { ...saved, json: JSON.stringify(typeof raw === "string" ? JSON.parse(raw) : raw, null, 2) }; }
+    catch (_) { return { ...empty, state: "未保存（格式异常）", json: "正文无法解码，未展示。" }; }
   }
   function utf8Bytes(value) {
     // Dependency-free and compatible with the page's minimal fixture runtime.
@@ -184,7 +193,7 @@
         const models = cell(row, text(record.requested_model), "mono audit-list-cell"); const served = doc.createElement("div"); served.className = "audit-cell-secondary"; served.textContent = "服务: " + text(record.served_model); models.appendChild(served);
         cell(row, (label(OUTCOMES, record.outcome, "未知")) + " / " + (integer(record.status_code) && record.status_code > 0 ? record.status_code : "未知"), "cell-nowrap");
         cell(row, typeof record.duration_ms === "number" && Number.isFinite(record.duration_ms) && record.duration_ms >= 0 ? record.duration_ms.toFixed(1) + " ms" : "未知", "cell-nowrap");
-        cell(row, (label(BODY_STATES, record.body_state, "未知正文状态")) + (record.body_truncated && record.body_state !== "stored_partial" ? " · 未保存正文" : ""), "audit-list-cell");
+        cell(row, bodyStatus(record), "audit-list-cell");
         const action = cell(row, ""); const button = doc.createElement("button"); button.type = "button"; button.className = "btn btn-sm"; button.dataset.auditId = record.id; button.textContent = "只读详情"; button.setAttribute("aria-controls", "auditDetailPanel"); button.setAttribute("aria-expanded", "false"); action.appendChild(button); rowButtons.set(record.id, button); rowsById.set(record.id, row);
         body.appendChild(row);
       }
@@ -202,7 +211,7 @@
       gate.cancel("audit-detail"); selectedId = ""; bodyRecord = null; bodyMode = "formatted";
       element("auditDetail").classList.add("hidden");
       if (doc.body) doc.body.classList.remove("audit-detail-open");
-      for (const id of ["auditDetailMessage", "auditRequestBody", "auditBodyState", "auditBodyHash", "auditDetailPosition"]) set(id, "");
+      for (const id of ["auditDetailMessage", "auditRequestBody", "auditBodyState", "auditBodyInfo", "auditBodyHash", "auditDetailPosition"]) set(id, "");
       clear(element("auditDetailMetadata")); drawerState();
       const target = returnFocus; returnFocus = null;
       if (restoreFocus && active && isAuthenticated() && target && target.isConnected !== false && typeof target.focus === "function") target.focus({ preventScroll: true });
@@ -240,7 +249,7 @@
     }
     function renderBody() {
       if (!bodyRecord) return;
-      const body = bodyView(bodyRecord, bodyMode); set("auditBodyState", body.state); set("auditRequestBody", body.json);
+      const body = bodyView(bodyRecord, bodyMode); set("auditBodyState", body.state); set("auditBodyInfo", body.info || ""); set("auditRequestBody", body.json);
       set("auditBodyHash", body.retainedBytes > 0 ? text(bodyRecord.body_sha256, "未提供保存内容哈希") : "未保存内容哈希");
       for (const [id, selected] of [["auditBodyFormatted", bodyMode === "formatted"], ["auditBodyOriginal", bodyMode === "original"]]) {
         const button = element(id); button.setAttribute("aria-pressed", String(selected));
@@ -403,5 +412,5 @@
     bind(); renderPagination();
     return { enter, leave, lock, refresh, applyFilters, resetFilters, page, showDetail, closeDetail: () => clearDetail(true), loadStorage, previewCleanup, confirmCleanup, isActive: () => active };
   }
-  return { create, queryString, timestamp, bodyView, formatJSONText, validateStatus, validateList, validateDetail, statusPayload };
+  return { create, queryString, timestamp, bodyView, bodyStatus, formatJSONText, validateStatus, validateList, validateDetail, statusPayload };
 });
