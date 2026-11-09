@@ -1,4 +1,5 @@
-// Package audit stores bounded, sanitized request audit records in the shared database.
+// Package audit stores bounded request audit records in the shared database.
+// New request bodies are plaintext; legacy redacted records remain readable.
 package audit
 
 import "errors"
@@ -26,29 +27,32 @@ var (
 // Config is normalized by the owner; NewStore also supplies safe positive defaults.
 // Enabled has no implicit true value: collection must be explicitly enabled.
 type Config struct {
-	Enabled        bool     `yaml:"enabled" json:"enabled"`
-	RetentionDays  int      `yaml:"retention_days" json:"retention_days"`
-	MaxRecords     int      `yaml:"max_records" json:"max_records"`
-	MaxBodyBytes   int      `yaml:"max_body_bytes" json:"max_body_bytes"`
-	MaxTotalBytes  int64    `yaml:"max_total_bytes" json:"max_total_bytes"`
-	TrustedProxies []string `yaml:"trusted_proxies" json:"trusted_proxies,omitempty"`
+	Enabled       bool  `yaml:"enabled" json:"enabled"`
+	RetentionDays int   `yaml:"retention_days" json:"retention_days"`
+	MaxRecords    int   `yaml:"max_records" json:"max_records"`
+	MaxBodyBytes  int   `yaml:"max_body_bytes" json:"max_body_bytes"`
+	MaxTotalBytes int64 `yaml:"max_total_bytes" json:"max_total_bytes"`
+	// Deprecated: ignored. Audit network monitoring has been removed.
+	TrustedProxies []string `yaml:"-" json:"-"`
 }
 
 // Record deliberately has no API key, headers or upstream error body fields.
-// RequestBody must already have passed the audit sanitizer. Unknown schemas must
-// use a non-captured BodyState and an empty RequestBody. Dates are UTC Unix millis.
+// RequestBody must come from the approved JSON capture boundary. stored_raw keeps
+// exact validated bytes; stored/stored_partial retain legacy sanitized records.
+// Unknown schemas use a non-captured BodyState and an empty RequestBody. Dates are UTC Unix millis.
 type Record struct {
-	ID             string `json:"id"`
-	RequestID      string `json:"request_id"`
-	TraceID        string `json:"trace_id,omitempty"`
-	StartedAt      int64  `json:"started_at"`
-	CompletedAt    int64  `json:"completed_at,omitempty"`
-	Method         string `json:"method"`
-	Path           string `json:"path"`
-	ClientIP       string `json:"client_ip,omitempty"`
-	PeerIP         string `json:"peer_ip,omitempty"`
-	IPSource       string `json:"ip_source,omitempty"`
-	IPNote         string `json:"ip_note,omitempty"`
+	ID          string `json:"id"`
+	RequestID   string `json:"request_id"`
+	TraceID     string `json:"trace_id,omitempty"`
+	StartedAt   int64  `json:"started_at"`
+	CompletedAt int64  `json:"completed_at,omitempty"`
+	Method      string `json:"method"`
+	Path        string `json:"path"`
+	// Deprecated: source compatibility only; discarded on write/read and never serialized.
+	ClientIP       string `json:"-"`
+	PeerIP         string `json:"-"`
+	IPSource       string `json:"-"`
+	IPNote         string `json:"-"`
 	KeyLabel       string `json:"key_label,omitempty"`
 	KeyFingerprint string `json:"key_fingerprint,omitempty"`
 	RequestedModel string `json:"requested_model,omitempty"`
@@ -88,12 +92,13 @@ type Query struct {
 	KeyFingerprint string
 	KeyLabel       string
 	Model          string
-	IP             string
-	Outcome        string
-	From           int64
-	To             int64
-	Limit          int
-	Offset         int
+	// Deprecated: non-empty IP filters are rejected.
+	IP      string `json:"-"`
+	Outcome string
+	From    int64
+	To      int64
+	Limit   int
+	Offset  int
 }
 
 // ListResult contains metadata only; RequestBody is always absent from Records.

@@ -22,7 +22,7 @@ type auditRuntime struct {
 
 func (m *Manager) configureAudit(cfg AuditConfig) {
 	m.stopAudit()
-	store := audit.NewStore(m.usageStore.DB(), audit.Config{Enabled: cfg.isEnabled(), RetentionDays: cfg.RetentionDays, MaxRecords: cfg.MaxRecords, MaxBodyBytes: cfg.MaxBodyBytes, MaxTotalBytes: cfg.MaxTotalBytes, TrustedProxies: append([]string(nil), cfg.TrustedProxies...)})
+	store := audit.NewStore(m.usageStore.DB(), audit.Config{Enabled: cfg.isEnabled(), RetentionDays: cfg.RetentionDays, MaxRecords: cfg.MaxRecords, MaxBodyBytes: cfg.MaxBodyBytes, MaxTotalBytes: cfg.MaxTotalBytes})
 	ctx, cancel := context.WithCancel(context.Background())
 	runtime := &auditRuntime{store: store, cfg: cfg, cancel: cancel, done: make(chan struct{})}
 	m.auditMu.Lock()
@@ -69,7 +69,7 @@ func (m *Manager) auditSnapshot() (*audit.Store, AuditConfig) {
 }
 func (m *Manager) AuditStatus() map[string]any {
 	store, _ := m.auditSnapshot()
-	status := map[string]any{"enabled": false, "warning": "当前宿主插件接口未提供已验证的客户端网络元数据，IP 缺失时显示未知；不会信任任意转发头"}
+	status := map[string]any{"enabled": false, "body_capture_mode": "plaintext_json", "ip_monitoring": false}
 	if store != nil {
 		raw, _ := json.Marshal(store.Status())
 		_ = json.Unmarshal(raw, &status)

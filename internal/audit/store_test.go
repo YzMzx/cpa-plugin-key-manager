@@ -59,7 +59,7 @@ func TestAuditMigrationUpgradePreservesExistingSchema(t *testing.T) {
 	if _, err := db.Conn().Exec("DROP TABLE client_request_audit"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Conn().Exec("DELETE FROM schema_migrations WHERE version=2"); err != nil {
+	if _, err := db.Conn().Exec("DELETE FROM schema_migrations WHERE version>=2"); err != nil {
 		t.Fatal(err)
 	}
 	if err := sqlitestore.Migrate(ctx, db.Conn()); err != nil {
@@ -200,7 +200,7 @@ func TestAuditFiltersPaginationAndSQLParameters(t *testing.T) {
 		}
 		mustBegin(t, s, r)
 	}
-	for _, q := range []Query{{RequestID: "request-0"}, {TraceID: "shared"}, {KeyFingerprint: strings.Repeat("e", 64)}, {Model: "even"}, {IP: "203.0.113.8"}, {Outcome: "pending"}, {From: base, To: base + 1}} {
+	for _, q := range []Query{{RequestID: "request-0"}, {TraceID: "shared"}, {KeyFingerprint: strings.Repeat("e", 64)}, {Model: "even"}, {Outcome: "pending"}, {From: base, To: base + 1}} {
 		result, err := s.List(ctx, q)
 		if err != nil || result.Total < 1 {
 			t.Fatalf("filter %+v => %+v %v", q, result, err)
@@ -214,7 +214,7 @@ func TestAuditFiltersPaginationAndSQLParameters(t *testing.T) {
 	if err != nil || result.Limit != 100 || result.Total != 0 {
 		t.Fatal("query was not parameterized or bounded")
 	}
-	for _, q := range []Query{{Offset: -1}, {Offset: MaxQueryOffset + 1}, {From: 5, To: 4}, {From: -1}} {
+	for _, q := range []Query{{IP: "203.0.113.8"}, {Offset: -1}, {Offset: MaxQueryOffset + 1}, {From: 5, To: 4}, {From: -1}} {
 		if _, err := s.List(ctx, q); !errors.Is(err, ErrInvalidQuery) {
 			t.Fatalf("bad query allowed %+v", q)
 		}
@@ -407,7 +407,7 @@ func TestAuditRecordValidationAndDefaultBounds(t *testing.T) {
 	if st.RetentionDays != 7 || st.MaxRecords != 10000 || st.MaxBodyBytes != DefaultMaxBodyBytes || st.MaxTotalBytes != 64<<20 {
 		t.Fatalf("default bounds %+v", st)
 	}
-	for _, mutate := range []func(*Record){func(r *Record) { r.RequestID = "" }, func(r *Record) { r.TraceID = strings.Repeat("x", 257) }, func(r *Record) { r.KeyLabel = strings.Repeat("x", 1025) }, func(r *Record) { r.ClientIP = "bad ip" }, func(r *Record) { r.Outcome = "custom-secret-error" }, func(r *Record) { r.StatusCode = 999 }, func(r *Record) { r.InputTokens = -1 }, func(r *Record) { r.StartedAt = time.Now().Add(time.Hour).UnixMilli() }} {
+	for _, mutate := range []func(*Record){func(r *Record) { r.RequestID = "" }, func(r *Record) { r.TraceID = strings.Repeat("x", 257) }, func(r *Record) { r.KeyLabel = strings.Repeat("x", 1025) }, func(r *Record) { r.Outcome = "custom-secret-error" }, func(r *Record) { r.StatusCode = 999 }, func(r *Record) { r.InputTokens = -1 }, func(r *Record) { r.StartedAt = time.Now().Add(time.Hour).UnixMilli() }} {
 		r := auditRecord("invalid")
 		mutate(&r)
 		if !errors.Is(s.Begin(context.Background(), r), ErrInvalidRecord) {

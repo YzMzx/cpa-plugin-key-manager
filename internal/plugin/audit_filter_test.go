@@ -54,14 +54,14 @@ func TestAuditKeyOptionsAreOpaqueMaskedAndIndependent(t *testing.T) {
 	}
 }
 
-func TestAuditFiveFilterHTTPQueryContract(t *testing.T) {
+func TestAuditFourFilterHTTPQueryContract(t *testing.T) {
 	m := transactionManager(t)
 	store, _ := m.auditSnapshot()
 	key := "five-filter-private-key"
 	sum := sha256.Sum256([]byte(key))
 	fingerprint := hex.EncodeToString(sum[:])
 	now := time.Now().Add(-time.Minute)
-	record := audit.Record{RequestID: auditCorrelationID("filter-request"), TraceID: auditCorrelationID("filter-trace"), StartedAt: now.UnixMilli(), Path: "/v1/chat/completions", Protocol: "openai", KeyLabel: "生产 ALPHA 团队", KeyFingerprint: fingerprint, RequestedModel: "GPT-4.1-Mini", ServedModel: "upstream-preview", Outcome: "succeeded", ClientIP: "203.0.113.25", IPSource: "host_peer", BodyState: "empty"}
+	record := audit.Record{RequestID: auditCorrelationID("filter-request"), TraceID: auditCorrelationID("filter-trace"), StartedAt: now.UnixMilli(), Path: "/v1/chat/completions", Protocol: "openai", KeyLabel: "生产 ALPHA 团队", KeyFingerprint: fingerprint, RequestedModel: "GPT-4.1-Mini", ServedModel: "upstream-preview", Outcome: "succeeded", BodyState: "empty"}
 	if err := store.Begin(context.Background(), record); err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func TestAuditFiveFilterHTTPQueryContract(t *testing.T) {
 		}
 		return decodeEnvelope[pluginapi.ManagementResponse](t, response)
 	}
-	query := url.Values{"key_fingerprint": {fingerprint}, "key_label": {"生产 alpha"}, "model": {"4.1-mi"}, "outcome": {"succeeded"}, "ip": {"203.0.113.25"}}
+	query := url.Values{"key_fingerprint": {fingerprint}, "key_label": {"生产 alpha"}, "model": {"4.1-mi"}, "outcome": {"succeeded"}}
 	response := invoke(query)
 	var payload struct {
 		Total int

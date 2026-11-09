@@ -30,7 +30,6 @@ func (m *Manager) beginAudit(req pluginapi.RequestInterceptRequest, apiKey, keyL
 			contentType = "application/json"
 		}
 	}
-	network := audit.ResolveClientIP(req.Metadata, req.Headers, cfg.TrustedProxies)
 	path := ""
 	if value, ok := req.Metadata["request_path"].(string); ok {
 		if parsed, err := url.Parse(value); err == nil {
@@ -40,24 +39,9 @@ func (m *Manager) beginAudit(req pluginapi.RequestInterceptRequest, apiKey, keyL
 	if !strings.HasPrefix(path, "/") || strings.HasPrefix(path, "//") {
 		path = ""
 	}
-	body := audit.BodyResult{State: "omitted_busy"}
-	// Large JSON sanitization allocates multiple working representations. Do not
-	// let a burst of requests multiply that cost or queue raw sensitive payloads.
-	allowed := auditRequestSchemaField(req.SourceFormat, path) != ""
-	if !allowed {
-		body = audit.BodyResult{State: "omitted_unknown_schema"}
-	}
-	if allowed && len(req.Body) > 256<<10 && len(req.Body) <= audit.MaxRequestBodyBytes {
-		select {
-		case m.auditLargeCapture <- struct{}{}:
-			defer func() { <-m.auditLargeCapture }()
-		default:
-			allowed = false
-		}
-	}
-	if allowed {
-		body = audit.SanitizeBody(req.Body, contentType, req.Headers.Get("Content-Encoding"), cfg.MaxBodyBytes, apiKey, adminToken)
-	}
+	// Plaintext collection was explicitly requested. Do not invoke the legacy
+	// sanitizer, count elements or skip bodies because another request is large.
+	body := audit.CaptureRawJSON(req.Body, contentType, req.Headers.Get("Content-Encoding"), cfg.MaxBodyBytes)
 	method := ""
 	if value, ok := req.Metadata["request_method"].(string); ok {
 		switch strings.ToUpper(value) {
@@ -65,16 +49,13 @@ func (m *Manager) beginAudit(req pluginapi.RequestInterceptRequest, apiKey, keyL
 			method = strings.ToUpper(value)
 		}
 	}
-	if body.State == "stored" && !auditKnownRequestSchema(req.SourceFormat, path, body.Body) {
-		body = audit.BodyResult{State: "omitted_unknown_schema"}
-	}
 	fingerprint := ""
 	if apiKey != "" {
 		sum := sha256.Sum256([]byte(apiKey))
 		fingerprint = hex.EncodeToString(sum[:])
 	}
-	rec := audit.Record{RequestID: auditCorrelationID(req.RequestID), TraceID: auditCorrelationID(req.TraceID), StartedAt: time.Now().UTC().UnixMilli(), Method: method, Path: auditSafeLabel(path, apiKey, adminToken), ClientIP: network.ClientIP, PeerIP: network.PeerIP, IPSource: network.Source, IPNote: network.Note, KeyLabel: auditSafeLabel(keyLabel, apiKey, adminToken), KeyFingerprint: fingerprint, RequestedModel: auditSafeLabel(req.RequestedModel, apiKey, adminToken), ServedModel: auditSafeLabel(req.Model, apiKey, adminToken), Protocol: auditSafeLabel(req.SourceFormat), Stream: req.Stream, Outcome: "running", BodyState: body.State, BodyTruncated: body.Truncated, RequestBody: body.Body, BodySHA256: body.SHA256}
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	rec := audit.Record{RequestID: auditCorrelationID(req.RequestID), TraceID: auditCorrelationID(req.TraceID), StartedAt: time.Now().UTC().UnixMilli(), Method: method, Path: auditSafeLabel(path, apiKey, adminToken), KeyLabel: auditSafeLabel(keyLabel, apiKey, adminToken), KeyFingerprint: fingerprint, RequestedModel: auditSafeLabel(req.RequestedModel, apiKey, adminToken), ServedModel: auditSafeLabel(req.Model, apiKey, adminToken), Protocol: auditSafeLabel(req.SourceFormat), Stream: req.Stream, Outcome: "running", BodyState: body.State, BodyTruncated: body.Truncated, RequestBody: body.Body, BodySHA256: body.SHA256}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := store.Begin(ctx, rec); err != nil {
 		m.recordAuditCaptureFailure()

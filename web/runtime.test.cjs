@@ -348,7 +348,7 @@ test("overview exposes persistence and accounting failures instead of hiding the
 test("audit tab uses administrator endpoints and tab exit cancels its detail", async () => {
  const status = {enabled:true,retention_days:7,max_records:100,max_body_bytes:1024,max_total_bytes:10000};
  const detail = deferred(); const calls = [];
- const env = environment(async (url, opts) => { calls.push({url,opts}); if(url.includes("/audit/detail"))return detail.promise; if(url.endsWith("/audit/status"))return response({status}); if(url.includes("/audit?"))return response({items:[{id:"audit-a",request_id:"req-a",ip_source:"unknown"}],total:1,limit:50,offset:0,status}); if(url.includes("/ledger"))return response(ledger()); return response(overview()); });
+ const env = environment(async (url, opts) => { calls.push({url,opts}); if(url.includes("/audit/detail"))return detail.promise; if(url.endsWith("/audit/status"))return response({status}); if(url.includes("/audit?"))return response({items:[{id:"audit-a",request_id:"req-a"}],total:1,limit:50,offset:0,status}); if(url.includes("/ledger"))return response(ledger()); return response(overview()); });
  env.run('switchAdminTab("tab-audit")'); await tick(); await tick();
  assert.ok(calls.some(call=>call.url.includes("/audit?limit=50&offset=0")));
  const pending = env.run('auditView.showDetail("audit-a")'); const request = calls.find(call=>call.url.includes("/audit/detail"));
@@ -372,7 +372,7 @@ test("audit 401 clears detail and filters through the production API auth lifecy
  const status={enabled:true,retention_days:7,max_records:100,max_body_bytes:1024,max_total_bytes:10000};let detailRequests=0;
  const env=environment(async url=>{if(url.endsWith("/audit/status"))return response({status});if(url.includes("/audit?"))return response({items:[{id:"audit-a"},{id:"audit-b"}],total:2,limit:50,offset:0,status});if(url.includes("/audit/detail")){detailRequests++;return detailRequests===1?response({record:{id:"audit-a",body_state:"stored",request_body:{private:"conversation"}},status}):response("unauthorized",401,"text/plain");}return response(overview());});
  env.run('switchAdminTab("tab-audit")');await tick();await tick();await env.run('auditView.showDetail("audit-a")');assert.match(env.element("auditRequestBody").textContent,/conversation/);
- env.element("auditIP").value="sensitive-IP";await env.run('auditView.showDetail("audit-b")');assert.equal(env.run("activeManagementKey"),"");assert.equal(env.element("auditRequestBody").textContent,"");assert.equal(env.element("auditIP").value,"");assert.equal(env.element("auditDetail").classList.contains("hidden"),true);
+ env.element("auditKeyLabel").value="sensitive-remark";await env.run('auditView.showDetail("audit-b")');assert.equal(env.run("activeManagementKey"),"");assert.equal(env.element("auditRequestBody").textContent,"");assert.equal(env.element("auditKeyLabel").value,"");assert.equal(env.element("auditDetail").classList.contains("hidden"),true);
 });
 
 test("production API client accepts audit cleanup preview then confirmed apply",async()=>{

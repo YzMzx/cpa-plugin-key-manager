@@ -31,7 +31,7 @@ func filterStore(t *testing.T) *Store {
 	return s
 }
 
-func TestAuditFiveFiltersMatchDocumentedSemantics(t *testing.T) {
+func TestAuditFourFiltersMatchDocumentedSemantics(t *testing.T) {
 	s := filterStore(t)
 	for _, tc := range []struct {
 		name string
@@ -47,9 +47,7 @@ func TestAuditFiveFiltersMatchDocumentedSemantics(t *testing.T) {
 		{"model-both-columns", Query{Model: "GPT"}, []string{"filter-second", "filter-first"}},
 		{"outcome-exact", Query{Outcome: "failed"}, []string{"filter-second"}},
 		{"outcome-not-prefix", Query{Outcome: "fail"}, nil},
-		{"ip-exact", Query{IP: "203.0.113.10"}, []string{"filter-literal", "filter-first"}},
-		{"ip-not-prefix", Query{IP: "203.0.113.1"}, nil},
-		{"combined-and", Query{KeyFingerprint: strings.Repeat("a", 64), KeyLabel: "ALPHA", Model: "mini", Outcome: "succeeded", IP: "203.0.113.10"}, []string{"filter-first"}},
+		{"combined-and", Query{KeyFingerprint: strings.Repeat("a", 64), KeyLabel: "ALPHA", Model: "mini", Outcome: "succeeded"}, []string{"filter-first"}},
 		{"combined-mismatch", Query{KeyLabel: "生产", Model: "Other"}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -80,7 +78,7 @@ func TestAuditSubstringFiltersTreatWildcardAndSQLTextLiterally(t *testing.T) {
 			t.Fatalf("literal filter %+v matched %+v err=%v", q, got, err)
 		}
 	}
-	for _, q := range []Query{{Model: "' OR 1=1 --"}, {KeyLabel: "%does-not-exist"}, {IP: "203.0.113.10' OR 1=1 --"}, {Outcome: "failed' OR 1=1 --"}} {
+	for _, q := range []Query{{Model: "' OR 1=1 --"}, {KeyLabel: "%does-not-exist"}, {Outcome: "failed' OR 1=1 --"}} {
 		got, err := s.List(context.Background(), q)
 		if err != nil || got.Total != 0 {
 			t.Fatalf("query not literal %+v => %+v err=%v", q, got, err)
@@ -90,7 +88,7 @@ func TestAuditSubstringFiltersTreatWildcardAndSQLTextLiterally(t *testing.T) {
 
 func TestAuditFilterGuardsAndLegacyQueriesRemainCompatible(t *testing.T) {
 	s := filterStore(t)
-	for _, q := range []Query{{KeyLabel: strings.Repeat("x", 1025)}, {KeyLabel: "x" + string(rune(0)) + "y"}, {Model: strings.Repeat("x", 1025)}, {KeyFingerprint: "raw-private-key"}} {
+	for _, q := range []Query{{IP:"203.0.113.10"}, {KeyLabel: strings.Repeat("x", 1025)}, {KeyLabel: "x" + string(rune(0)) + "y"}, {Model: strings.Repeat("x", 1025)}, {KeyFingerprint: "raw-private-key"}} {
 		if _, err := s.List(context.Background(), q); !errors.Is(err, ErrInvalidQuery) {
 			t.Fatalf("invalid filter accepted %+v err=%v", q, err)
 		}

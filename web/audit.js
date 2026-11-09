@@ -9,10 +9,9 @@
   const object = value => value !== null && typeof value === "object" && !Array.isArray(value);
   const integer = value => Number.isSafeInteger(value) && value >= 0;
   const own = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
-  const FILTERS = { key_fingerprint: "auditKey", key_label: "auditKeyLabel", model: "auditModel", outcome: "auditOutcome", ip: "auditIP" };
+  const FILTERS = { key_fingerprint: "auditKey", key_label: "auditKeyLabel", model: "auditModel", outcome: "auditOutcome" };
   const OUTCOMES = { unknown: "未知", succeeded: "成功", success: "成功", failed: "失败", cancelled: "取消", canceled: "取消", running: "进行中", in_progress: "进行中", pending: "进行中", rejected: "已拒绝" };
-  const SOURCES = { host: "host · 宿主", peer: "peer · 直连", trustedproxy: "trustedproxy · 可信代理", unknown: "unknown · 未知" };
-  const BODY_STATES = { omitted_busy: "大正文脱敏繁忙，正文已略过", omitted_unknown_schema: "未知请求结构，正文已略过", omitted_secret_collision: "敏感内容无法安全替换，正文已略过", omitted_secret_limit: "敏感内容校验超限，正文已略过", omitted_encoding: "编码不支持，正文已略过", omitted_non_json: "非 JSON 正文，已略过", omitted_invalid_json: "JSON 无效，正文已略过", omitted_input_limit: "输入正文超限，已略过", omitted_non_container: "非对象或数组 JSON，已略过", omitted_depth_limit: "JSON 嵌套深度超限，已略过", omitted_element_limit: "JSON 元素数量超限，已略过", omitted_string_limit: "JSON 字符串超限，已略过", omitted_number_limit: "JSON 数字超限，已略过", omitted_ambiguous_json: "JSON 存在歧义，已略过", omitted_output_limit: "脱敏后正文超限，已略过", redacted: "已保存脱敏 JSON", captured: "已保存脱敏 JSON", stored: "已保存脱敏 JSON", omitted: "正文已略过", non_json: "非 JSON 正文，已略过", too_large: "正文超过限制，已略过", empty: "无正文", disabled: "未保存正文", invalid_json: "无法解码 JSON，已略过", unavailable: "正文不可用" };
+  const BODY_STATES = { omitted_busy: "大正文脱敏繁忙，正文已略过", omitted_unknown_schema: "未知请求结构，正文已略过", omitted_secret_collision: "敏感内容无法安全替换，正文已略过", omitted_secret_limit: "敏感内容校验超限，正文已略过", omitted_encoding: "编码不支持，正文已略过", omitted_non_json: "非 JSON 正文，已略过", omitted_invalid_json: "JSON 无效，正文已略过", omitted_input_limit: "输入正文超限，已略过", omitted_non_container: "非对象或数组 JSON，已略过", omitted_depth_limit: "JSON 嵌套深度超限，已略过", omitted_element_limit: "旧版数量限制未保存正文（无法恢复）", omitted_string_limit: "JSON 字符串超限，已略过", omitted_number_limit: "JSON 数字超限，已略过", omitted_ambiguous_json: "JSON 存在歧义，已略过", omitted_output_limit: "脱敏后正文超限，已略过", redacted: "旧版脱敏 JSON", captured: "旧版脱敏 JSON", stored: "旧版脱敏 JSON", stored_partial: "旧版部分脱敏 JSON · 含 [OMITTED:...] 占位", stored_raw: "已保存 JSON 明文原文", omitted: "正文已略过", non_json: "非 JSON 正文，已略过", too_large: "正文超过限制，已略过", empty: "无正文", disabled: "未保存正文", invalid_json: "无法解码 JSON，已略过", unavailable: "正文不可用" };
   function validateStatus(value) {
     if (!object(value) || typeof value.enabled !== "boolean" || !["retention_days", "max_records", "max_body_bytes", "max_total_bytes"].every(key => integer(value[key]))) throw new Error("审计状态响应格式无效");
     return value;
@@ -47,16 +46,31 @@
     catch (_) { return value; }
   }
   function bodyView(record) {
+    const partial = record.body_state === "stored_partial";
+    const plaintext = record.body_state === "stored_raw" && !record.body_truncated;
+    const accepted = partial || ["stored_raw", "stored", "redacted", "captured"].includes(record.body_state) && !record.body_truncated;
     const bodyLabel = label(BODY_STATES, record.body_state, "未知正文状态");
-    const state = bodyLabel + (record.body_truncated ? " · 已触及限制，正文已略过" : "");
     const raw = record.request_body;
-    if (record.body_truncated || !["stored", "redacted", "captured"].includes(record.body_state)) return { state, json: "正文已略过或未确认可展示的脱敏 JSON。" };
-    if (raw === undefined || raw === null || raw === "") return { state, json: "无可显示的请求正文（可能为空、非 JSON 或已超过保存限制）。" };
-    // Large retained JSON is already validated by the backend. Keep its compact
-    // representation instead of allocating another parsed tree and pretty copy.
-    if (typeof raw === "string" && raw.length > 256 * 1024) return { state: state + " · 大正文按紧凑 JSON 展示", json: raw };
-    try { return { state, json: JSON.stringify(typeof raw === "string" ? JSON.parse(raw) : raw, null, 2) }; }
-    catch (_) { return { state: state + " · JSON 解码失败", json: "正文不是可解码的 JSON，已略过展示。" }; }
+    const empty = { state: bodyLabel + (!partial && record.body_truncated ? " · 未保存正文" : ""), json: record.body_state === "omitted_element_limit" ? "此记录由旧版数量限制整段略过，历史正文未保存，无法恢复。新请求不再使用此数量上限。" : "正文已略过或未确认可展示的 JSON。", retainedBytes: 0, completeness: "未保存" };
+    if (!accepted) return empty;
+    if (raw === undefined || raw === null || raw === "") return { ...empty, json: "无可显示的请求正文。" };
+    const compact = typeof raw === "string" ? raw : JSON.stringify(raw);
+    const retainedBytes = utf8Bytes(compact);
+    const state = bodyLabel + " · " + (partial ? "部分留存" : "完整留存") + " · " + bytes(retainedBytes) + "（" + retainedBytes + " 字节）";
+    // Plaintext records preserve exact bytes/whitespace/escapes, including small
+    // JSON. This is inert text, not markup and not a claim of redaction.
+    if (plaintext) return { state: state + " · 明文可能含凭据、会话和个人信息", json: compact, retainedBytes, completeness: "完整原文" };
+    // Large JSON is validated by the backend. Render inert compact text to avoid
+    // a second parsed tree/pretty copy; stored_partial is equally safe to show.
+    if (typeof raw === "string" && raw.length > 256 * 1024) return { state: state + " · 大正文按紧凑 JSON 展示", json: raw, retainedBytes, completeness: partial ? "部分留存" : "完整留存" };
+    try { return { state, json: JSON.stringify(typeof raw === "string" ? JSON.parse(raw) : raw, null, 2), retainedBytes, completeness: partial ? "部分留存" : "完整留存" }; }
+    catch (_) { return { ...empty, state: bodyLabel + " · JSON 解码失败", json: "正文不是可解码的 JSON，已略过展示。" }; }
+  }
+  function utf8Bytes(value) {
+    // Dependency-free and compatible with the page's minimal fixture runtime.
+    let size = 0;
+    for (const char of value) { const code = char.codePointAt(0); size += code <= 0x7f ? 1 : code <= 0x7ff ? 2 : code <= 0xffff ? 3 : 4; }
+    return size;
   }
   function dateFilter(value) {
     if (!value) return "";
@@ -96,11 +110,11 @@
     const set = (id, value) => { const node = element(id); if (node) node.textContent = value; };
     const clear = node => { if (node) node.replaceChildren(); };
     function cell(parent, value, className) { const node = doc.createElement("td"); if (className) node.className = className; node.textContent = value; parent.appendChild(node); return node; }
-    function messageRow(message) { const body = element("auditListBody"); clear(body); const row = doc.createElement("tr"); const td = cell(row, message, "cell-empty"); td.colSpan = 10; body.appendChild(row); }
+    function messageRow(message) { const body = element("auditListBody"); clear(body); const row = doc.createElement("tr"); const td = cell(row, message, "cell-empty"); td.colSpan = 8; body.appendChild(row); }
     function renderStatus() {
       if (!status) return;
       const description = (status.enabled ? "审计已启用" : "审计未启用，不会生成新记录") + " · 保留 " + status.retention_days + " 天 · 最多 " + status.max_records + " 条 · 单正文 " + bytes(status.max_body_bytes) + " · 总量上限 " + bytes(status.max_total_bytes);
-      set("auditStatus", description + (status.warning ? " · " + String(status.warning) : "") + (status.last_error ? " · 审计存储异常：" + String(status.last_error) : "") + (integer(status.capture_failures) && status.capture_failures > 0 ? " · 本次运行采集失败 " + status.capture_failures + " 次（可能有记录或终态缺失）" : ""));
+      set("auditStatus", description + (status.last_error ? " · 审计存储异常：" + String(status.last_error) : "") + (integer(status.capture_failures) && status.capture_failures > 0 ? " · 本次运行采集失败 " + status.capture_failures + " 次（可能有记录或终态缺失）" : ""));
     }
     function renderKeyOptions() {
       const select = element("auditKey");
@@ -134,11 +148,9 @@
         const ids = cell(row, text(record.request_id), "mono audit-list-cell"); const trace = doc.createElement("div"); trace.className = "audit-cell-secondary"; trace.textContent = "Trace: " + text(record.trace_id); ids.appendChild(trace);
         const key = cell(row, text(record.key_label), "audit-list-cell"); const fingerprint = doc.createElement("div"); fingerprint.className = "mono audit-cell-secondary"; fingerprint.textContent = text(record.key_fingerprint); key.appendChild(fingerprint);
         const models = cell(row, text(record.requested_model), "mono audit-list-cell"); const served = doc.createElement("div"); served.className = "audit-cell-secondary"; served.textContent = "服务: " + text(record.served_model); models.appendChild(served);
-        cell(row, text(record.client_ip), "mono audit-list-cell");
-        cell(row, label(SOURCES, record.ip_source, SOURCES.unknown), "audit-list-cell");
         cell(row, (label(OUTCOMES, record.outcome, "未知")) + " / " + (integer(record.status_code) && record.status_code > 0 ? record.status_code : "未知"), "cell-nowrap");
         cell(row, typeof record.duration_ms === "number" && Number.isFinite(record.duration_ms) && record.duration_ms >= 0 ? record.duration_ms.toFixed(1) + " ms" : "未知", "cell-nowrap");
-        cell(row, (label(BODY_STATES, record.body_state, "未知正文状态")) + (record.body_truncated ? " · 超限略过" : ""), "audit-list-cell");
+        cell(row, (label(BODY_STATES, record.body_state, "未知正文状态")) + (record.body_truncated && record.body_state !== "stored_partial" ? " · 未保存正文" : ""), "audit-list-cell");
         const action = cell(row, ""); const button = doc.createElement("button"); button.type = "button"; button.className = "btn btn-sm"; button.dataset.auditId = record.id; button.textContent = "只读详情"; button.setAttribute("aria-controls", "auditDetailPanel"); button.setAttribute("aria-expanded", "false"); action.appendChild(button); rowButtons.set(record.id, button); rowsById.set(record.id, row);
         body.appendChild(row);
       }
@@ -183,15 +195,14 @@
       const rows = [
         ["审计 ID", record.id], ["请求 ID", record.request_id], ["Trace ID", record.trace_id],
         ["开始时间", timestamp(record.started_at, getTimezone())], ["完成时间", timestamp(record.completed_at !== undefined ? record.completed_at : record.complete_at, getTimezone())],
-        ["方法 / 路径", text(record.method) + " " + text(record.path)], ["客户端 IP", text(record.client_ip)], ["直连 Peer IP", text(record.peer_ip)],
-        ["IP 来源", SOURCES[record.ip_source] || text(record.ip_source, SOURCES.unknown)], ["IP 说明", text(record.ip_note, "无附加说明")],
+        ["方法 / 路径", text(record.method) + " " + text(record.path)],
         ["密钥备注 / 指纹", text(record.key_label) + " / " + text(record.key_fingerprint)], ["请求模型", text(record.requested_model)], ["服务模型", text(record.served_model)],
         ["协议 / 流式", text(record.protocol) + " / " + (typeof record.stream === "boolean" ? record.stream ? "是" : "否" : "未知")],
         ["结果 / 状态码", (OUTCOMES[record.outcome] || text(record.outcome)) + " / " + (integer(record.status_code) && record.status_code > 0 ? record.status_code : "未知")],
         ["耗时", typeof record.duration_ms === "number" && Number.isFinite(record.duration_ms) && record.duration_ms >= 0 ? record.duration_ms.toFixed(1) + " ms" : "未知"]
       ];
       for (const [label, value] of rows) { const dt = doc.createElement("dt"); dt.textContent = label; const dd = doc.createElement("dd"); dd.textContent = text(value); metadata.appendChild(dt); metadata.appendChild(dd); }
-      const body = bodyView(record); set("auditBodyState", body.state); set("auditRequestBody", body.json); set("auditBodyHash", text(record.body_sha256, "未知 / 未保存脱敏内容哈希"));
+      const body = bodyView(record); set("auditBodyState", body.state); set("auditRequestBody", body.json); set("auditBodyHash", body.retainedBytes > 0 ? text(record.body_sha256, "未提供保存内容哈希") : "未保存内容哈希");
     }
     function renderStorage(value) {
       if (!object(value) || !integer(value.records) || !integer(value.logical_bytes) || !integer(value.max_total_bytes)) throw new Error("占用统计响应格式无效");
@@ -303,12 +314,12 @@
       if (!preserveDrawer) element("auditMetadataSection").open = false;
       drawerState();
       if (!preserveDrawer) element("auditDetailClose").focus({ preventScroll: true });
-      set("auditDetailMessage", "正在读取所选记录的脱敏请求详情…");
+      set("auditDetailMessage", "正在读取所选记录的请求详情…");
       const ticket = gate.begin("audit-detail");
       try {
         const payload = await request(BASE + "/detail?id=" + encodeURIComponent(id), { method: "GET", signal: ticket.signal });
         if (!ticket.current() || selectedId !== id || !active || !isAuthenticated()) return;
-        validateDetail(payload, id); status = payload.status; renderStatus(); renderDetail(payload.record); set("auditDetailMessage", "只读详情 · 不记录或展示响应正文");
+        validateDetail(payload, id); status = payload.status; renderStatus(); renderDetail(payload.record); set("auditDetailMessage", "只读详情 · 明文可能含凭据、会话和个人信息 · 不记录响应正文");
       } catch (error) {
         if (ticket.current() && selectedId === id && active && isAuthenticated() && error.name !== "AbortError") set("auditDetailMessage", "详情读取失败：" + error.message + "（记录可能已过期，请刷新列表）");
       } finally { ticket.finish(); }

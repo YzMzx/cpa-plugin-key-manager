@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"net"
 	"strings"
 	"sync"
 	"time"
@@ -51,7 +50,7 @@ func NewStore(db *sqlitestore.DB, cfg Config) *Store {
 	if cfg.MaxTotalBytes > 1<<30 {
 		cfg.MaxTotalBytes = 1 << 30
 	}
-	cfg.TrustedProxies = append([]string(nil), cfg.TrustedProxies...)
+	cfg.TrustedProxies = nil // Deprecated: audit does not collect network metadata.
 	return &Store{db: db, cfg: cfg}
 }
 
@@ -100,6 +99,8 @@ func safeOutcome(value string) bool {
 }
 
 func (s *Store) normalize(r Record, now time.Time) (Record, int64, error) {
+	// Discard legacy network fields before validation, sizing or persistence.
+	r.ClientIP, r.PeerIP, r.IPSource, r.IPNote = "", "", "", ""
 	if strings.TrimSpace(r.RequestID) == "" || !validText(r.RequestID, 256) || !validText(r.TraceID, 256) {
 		return r, 0, ErrInvalidRecord
 	}
@@ -131,31 +132,25 @@ func (s *Store) normalize(r Record, now time.Time) (Record, int64, error) {
 	if !safeOutcome(r.Outcome) {
 		return r, 0, ErrInvalidRecord
 	}
-	for _, value := range []string{r.Method, r.Path, r.ClientIP, r.PeerIP, r.IPSource, r.IPNote, r.KeyLabel, r.KeyFingerprint, r.RequestedModel, r.ServedModel, r.Protocol, r.BodyState} {
+	for _, value := range []string{r.Method, r.Path, r.KeyLabel, r.KeyFingerprint, r.RequestedModel, r.ServedModel, r.Protocol, r.BodyState} {
 		if !validText(value, 1024) {
 			return r, 0, ErrInvalidRecord
 		}
 	}
-	if len(r.Method) > 32 || (r.KeyFingerprint != "" && !validID(r.KeyFingerprint)) || len(r.IPNote) > 256 {
+	if len(r.Method) > 32 || (r.KeyFingerprint != "" && !validID(r.KeyFingerprint)) {
 		return r, 0, ErrInvalidRecord
 	}
 	r.KeyFingerprint = strings.ToLower(r.KeyFingerprint)
-	for _, ip := range []*string{&r.ClientIP, &r.PeerIP} {
-		if *ip != "" {
-			parsed := net.ParseIP(*ip)
-			if parsed == nil {
-				return r, 0, ErrInvalidRecord
-			}
-			*ip = parsed.String()
-		}
-	}
-	capture := r.BodyState == "stored" || r.BodyState == "sanitized" || r.BodyState == "truncated"
-	if !capture || !knownProtocol(r.Protocol) {
+	capture := r.BodyState == "stored_raw" || r.BodyState == "stored_partial" || r.BodyState == "stored" || r.BodyState == "sanitized" || r.BodyState == "truncated"
+	if !capture || (r.BodyState != "stored_raw" && !knownProtocol(r.Protocol)) {
 		r.RequestBody = ""
 		r.BodySHA256 = ""
 		if r.BodyState == "" || capture {
 			r.BodyState = "not_captured"
 		}
+	}
+	if r.BodyState == "stored_raw" {
+		r.BodyTruncated = false
 	}
 	if r.RequestBody != "" {
 		if len(r.RequestBody) > s.cfg.MaxBodyBytes {
@@ -163,7 +158,7 @@ func (s *Store) normalize(r Record, now time.Time) (Record, int64, error) {
 			r.BodySHA256 = ""
 			r.BodyState = "omitted_size"
 			r.BodyTruncated = true
-		} else if !json.Valid([]byte(r.RequestBody)) || !validID(r.BodySHA256) || !utf8.ValidString(r.RequestBody) || !strings.HasPrefix(strings.TrimSpace(r.RequestBody), "{") {
+		} else if !json.Valid([]byte(r.RequestBody)) || !validID(r.BodySHA256) || !utf8.ValidString(r.RequestBody) || (!strings.HasPrefix(strings.TrimSpace(r.RequestBody), "{") && !strings.HasPrefix(strings.TrimSpace(r.RequestBody), "[")) {
 			r.RequestBody = ""
 			r.BodySHA256 = ""
 			r.BodyState = "not_captured"
@@ -192,22 +187,24 @@ func knownProtocol(value string) bool {
 }
 func logicalBytes(r Record) int64 {
 	n := int64(256)
-	for _, value := range []string{r.ID, r.RequestID, r.TraceID, r.Method, r.Path, r.ClientIP, r.PeerIP, r.IPSource, r.IPNote, r.KeyLabel, r.KeyFingerprint, r.RequestedModel, r.ServedModel, r.Protocol, r.Outcome, r.BodyState, r.RequestBody, r.BodySHA256} {
+	for _, value := range []string{r.ID, r.RequestID, r.TraceID, r.Method, r.Path, r.KeyLabel, r.KeyFingerprint, r.RequestedModel, r.ServedModel, r.Protocol, r.Outcome, r.BodyState, r.RequestBody, r.BodySHA256} {
 		n += int64(len(value))
 	}
 	return n
 }
 
 const columns = "id,request_id,trace_id,started_at,completed_at,method,path,client_ip,peer_ip,ip_source,ip_note,key_label,key_fingerprint,requested_model,served_model,protocol,stream,outcome,status_code,duration_ms,body_state,body_truncated,request_body,body_sha256,input_tokens,output_tokens,total_tokens"
-const listColumns = "id,request_id,trace_id,started_at,completed_at,method,path,client_ip,peer_ip,ip_source,ip_note,key_label,key_fingerprint,requested_model,served_model,protocol,stream,outcome,status_code,duration_ms,body_state,body_truncated,'' AS request_body,body_sha256,input_tokens,output_tokens,total_tokens"
+const detailColumns = "id,request_id,trace_id,started_at,completed_at,method,path,'' AS client_ip,'' AS peer_ip,'' AS ip_source,'' AS ip_note,key_label,key_fingerprint,requested_model,served_model,protocol,stream,outcome,status_code,duration_ms,body_state,body_truncated,request_body,body_sha256,input_tokens,output_tokens,total_tokens"
+const listColumns = "id,request_id,trace_id,started_at,completed_at,method,path,'' AS client_ip,'' AS peer_ip,'' AS ip_source,'' AS ip_note,key_label,key_fingerprint,requested_model,served_model,protocol,stream,outcome,status_code,duration_ms,body_state,body_truncated,'' AS request_body,body_sha256,input_tokens,output_tokens,total_tokens"
 
 func recordArgs(r Record) []any {
-	return []any{r.ID, r.RequestID, r.TraceID, r.StartedAt, r.CompletedAt, r.Method, r.Path, r.ClientIP, r.PeerIP, r.IPSource, r.IPNote, r.KeyLabel, r.KeyFingerprint, r.RequestedModel, r.ServedModel, r.Protocol, r.Stream, r.Outcome, r.StatusCode, r.DurationMS, r.BodyState, r.BodyTruncated, r.RequestBody, r.BodySHA256, r.InputTokens, r.OutputTokens, r.TotalTokens}
+	return []any{r.ID, r.RequestID, r.TraceID, r.StartedAt, r.CompletedAt, r.Method, r.Path, "", "", "", "", r.KeyLabel, r.KeyFingerprint, r.RequestedModel, r.ServedModel, r.Protocol, r.Stream, r.Outcome, r.StatusCode, r.DurationMS, r.BodyState, r.BodyTruncated, r.RequestBody, r.BodySHA256, r.InputTokens, r.OutputTokens, r.TotalTokens}
 }
 func scanRecord(scanner interface{ Scan(...any) error }, extra ...any) (Record, error) {
 	var r Record
 	targets := []any{&r.ID, &r.RequestID, &r.TraceID, &r.StartedAt, &r.CompletedAt, &r.Method, &r.Path, &r.ClientIP, &r.PeerIP, &r.IPSource, &r.IPNote, &r.KeyLabel, &r.KeyFingerprint, &r.RequestedModel, &r.ServedModel, &r.Protocol, &r.Stream, &r.Outcome, &r.StatusCode, &r.DurationMS, &r.BodyState, &r.BodyTruncated, &r.RequestBody, &r.BodySHA256, &r.InputTokens, &r.OutputTokens, &r.TotalTokens}
 	err := scanner.Scan(append(targets, extra...)...)
+	r.ClientIP, r.PeerIP, r.IPSource, r.IPNote = "", "", "", ""
 	return r, err
 }
 
@@ -406,7 +403,7 @@ func (s *Store) List(ctx context.Context, q Query) (ListResult, error) {
 		q.Limit = MaxQueryLimit
 	}
 	result.Limit = q.Limit
-	if q.Offset < 0 || q.Offset > MaxQueryOffset || q.From < 0 || q.To < 0 || (q.From != 0 && q.To != 0 && q.To < q.From) {
+	if q.IP != "" || q.Offset < 0 || q.Offset > MaxQueryOffset || q.From < 0 || q.To < 0 || (q.From != 0 && q.To != 0 && q.To < q.From) {
 		return result, ErrInvalidQuery
 	}
 	if q.KeyFingerprint != "" {
@@ -417,7 +414,7 @@ func (s *Store) List(ctx context.Context, q Query) (ListResult, error) {
 	}
 	where := "started_at>=?"
 	args := []any{s.cutoff(time.Now().UTC())}
-	for _, f := range []struct{ column, value string }{{"request_id", q.RequestID}, {"trace_id", q.TraceID}, {"key_fingerprint", q.KeyFingerprint}, {"client_ip", q.IP}, {"outcome", q.Outcome}} {
+	for _, f := range []struct{ column, value string }{{"request_id", q.RequestID}, {"trace_id", q.TraceID}, {"key_fingerprint", q.KeyFingerprint}, {"outcome", q.Outcome}} {
 		if f.value != "" {
 			if !validText(f.value, 1024) {
 				return result, ErrInvalidQuery
@@ -488,7 +485,7 @@ func (s *Store) Detail(ctx context.Context, id string) (Record, error) {
 	if !validID(id) {
 		return result, ErrNotFound
 	}
-	result, err := scanRecord(s.db.Conn().QueryRowContext(ctx, "SELECT "+columns+" FROM client_request_audit WHERE id=? AND started_at>=?", id, s.cutoff(time.Now().UTC())))
+	result, err := scanRecord(s.db.Conn().QueryRowContext(ctx, "SELECT "+detailColumns+" FROM client_request_audit WHERE id=? AND started_at>=?", id, s.cutoff(time.Now().UTC())))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Record{}, ErrNotFound
 	}

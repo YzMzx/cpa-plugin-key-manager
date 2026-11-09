@@ -3,21 +3,22 @@ package plugin
 import (
 	"fmt"
 	"github.com/YzMzx/cpa-plugin-key-manager/internal/audit"
-	"net/netip"
-	"strings"
 )
 
-// AuditConfig bounds redacted request retention; responses and auth headers are excluded.
+// AuditConfig bounds plaintext JSON request retention; responses, IP monitoring
+// and authentication headers are excluded.
 type AuditConfig struct {
-	Enabled        *bool    `yaml:"enabled" json:"enabled,omitempty"`
-	RetentionDays  int      `yaml:"retention_days" json:"retention_days"`
-	MaxRecords     int      `yaml:"max_records" json:"max_records"`
-	MaxBodyBytes   int      `yaml:"max_body_bytes" json:"max_body_bytes"`
-	MaxTotalBytes  int64    `yaml:"max_total_bytes" json:"max_total_bytes"`
-	TrustedProxies []string `yaml:"trusted_proxies" json:"trusted_proxies,omitempty"`
+	Enabled       *bool `yaml:"enabled" json:"enabled,omitempty"`
+	RetentionDays int   `yaml:"retention_days" json:"retention_days"`
+	MaxRecords    int   `yaml:"max_records" json:"max_records"`
+	MaxBodyBytes  int   `yaml:"max_body_bytes" json:"max_body_bytes"`
+	MaxTotalBytes int64 `yaml:"max_total_bytes" json:"max_total_bytes"`
+	// Accepted only for old configuration compatibility; IP monitoring is removed.
+	TrustedProxies []string `yaml:"trusted_proxies" json:"-"`
 }
 
 func (c *AuditConfig) normalize() {
+	c.TrustedProxies = nil
 	if c.Enabled == nil {
 		enabled := true
 		c.Enabled = &enabled
@@ -48,14 +49,6 @@ func (c AuditConfig) validate() error {
 	}
 	if c.MaxTotalBytes < 1<<20 || c.MaxTotalBytes > 1<<30 {
 		return fmt.Errorf("audit.max_total_bytes must be between 1 MiB and 1 GiB")
-	}
-	if len(c.TrustedProxies) > 256 {
-		return fmt.Errorf("audit.trusted_proxies may contain at most 256 CIDRs")
-	}
-	for _, prefix := range c.TrustedProxies {
-		if _, err := netip.ParsePrefix(strings.TrimSpace(prefix)); err != nil {
-			return fmt.Errorf("audit.trusted_proxies must contain valid CIDRs")
-		}
 	}
 	return nil
 }

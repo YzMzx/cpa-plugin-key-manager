@@ -5,9 +5,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -36,7 +38,7 @@ func auditRecords(t *testing.T, m *Manager) []audit.Record {
 	}
 	return result.Records
 }
-func TestAuditCaptureRedactsAndPersistsWithoutResponseBody(t *testing.T) {
+func TestAuditCaptureRawJSONPersistsWithoutHeadersOrResponseBody(t *testing.T) {
 	m := transactionManager(t)
 	if _, err := m.UpsertKeyRuleFromJSON([]byte(`{"api_key":"client-audit-secret","name":"audit key"}`)); err != nil {
 		t.Fatal(err)
@@ -51,7 +53,7 @@ func TestAuditCaptureRedactsAndPersistsWithoutResponseBody(t *testing.T) {
 	if strings.Contains(string(listJSON), "request_body") {
 		t.Fatal("list contains body")
 	}
-	if records[0].IPSource != "unknown" || records[0].ClientIP != "" {
+	if records[0].IPSource != "" || records[0].ClientIP != "" {
 		t.Fatal("trusted unverified forwarded IP")
 	}
 	if records[0].Path != "/v1/chat/completions" {
@@ -62,17 +64,17 @@ func TestAuditCaptureRedactsAndPersistsWithoutResponseBody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if record.BodyState != "stored" || !strings.Contains(record.RequestBody, "你好") {
+	if record.BodyState != "stored_raw" || !strings.Contains(record.RequestBody, "你好") {
 		t.Fatalf("body not decoded: %q %s", record.BodyState, record.RequestBody)
 	}
 	for _, secret := range []string{"client-audit-secret", "person@example.com", "secret-token"} {
-		if strings.Contains(record.RequestBody, secret) {
-			t.Fatalf("secret retained: %s", secret)
+		if !strings.Contains(record.RequestBody, secret) {
+			t.Fatalf("explicitly requested raw body changed: %s", secret)
 		}
 	}
 	sum := sha256.Sum256([]byte(record.RequestBody))
 	if record.BodySHA256 != hex.EncodeToString(sum[:]) {
-		t.Fatal("sanitized hash mismatch")
+		t.Fatal("raw content hash mismatch")
 	}
 	response, _ := json.Marshal(pluginapi.ResponseInterceptRequest{RequestID: "audit-one", SourceFormat: "openai", Model: "audit-model", Body: []byte(`{"secret_response":"DO-NOT-RETAIN"}`)})
 	if _, err := m.handleResponseInterceptAfter(response); err != nil {
@@ -183,7 +185,7 @@ func TestAuditConfigDefaultsAndBounds(t *testing.T) {
 	if !cfg.Audit.isEnabled() || cfg.Audit.RetentionDays != 7 || cfg.Audit.MaxBodyBytes != audit.DefaultMaxBodyBytes || cfg.Audit.MaxRecords != 10000 {
 		t.Fatal("unsafe audit defaults")
 	}
-	for _, raw := range []string{"audit: {retention_days: -1}", "audit: {max_body_bytes: 10485761}", "audit: {trusted_proxies: [bad]}", "audit: {max_total_bytes: 10}"} {
+	for _, raw := range []string{"audit: {retention_days: -1}", "audit: {max_body_bytes: 10485761}", "audit: {max_total_bytes: 10}"} {
 		if _, err := ParseConfigYAML([]byte(raw)); err == nil {
 			t.Fatalf("invalid audit settings accepted: %s", raw)
 		}
@@ -257,8 +259,8 @@ func TestAuditUnknownSchemaAndLateModelsCannotLeakCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rec.RequestBody != "" || rec.BodySHA256 != "" || rec.BodyState != "omitted_unknown_schema" {
-		t.Fatal("unknown schema body captured")
+	if rec.RequestBody != string(req.Body) || rec.BodySHA256 == "" || rec.BodyState != "stored_raw" {
+		t.Fatal("valid raw JSON was hidden by an old schema gate")
 	}
 }
 
@@ -315,21 +317,36 @@ func TestAuditLongPromptFlowsThroughCaptureSchemaAndDetail(t *testing.T) {
 		t.Fatal(err)
 	}
 	record := detail["record"].(map[string]any)
-	if record["body_state"] != "stored" || len(record["request_body"].(string)) <= 1<<20 {
+	if record["body_state"] != "stored_raw" || len(record["request_body"].(string)) <= 1<<20 {
 		t.Fatal("capture or schema still has hidden limit")
 	}
 }
 
-func TestAuditBusyLargeCaptureKeepsMetadataWithoutWaiting(t *testing.T) {
+func TestAuditConcurrentLargeRawBodiesAreNotSkippedAsBusy(t *testing.T) {
 	m := transactionManager(t)
-	m.auditLargeCapture <- struct{}{}
-	defer func() { <-m.auditLargeCapture }()
-	body, _ := json.Marshal(map[string]any{"messages": []any{map[string]string{"role": "user", "content": strings.Repeat("长文本 ", 60000)}}})
-	req := pluginapi.RequestInterceptRequest{RequestID: "large-busy", SourceFormat: "openai", Model: "m", Body: body, Metadata: map[string]any{"request_path": "/v1/chat/completions"}}
-	m.beginAudit(req, "", "")
+	body, _ := json.Marshal(map[string]any{"messages": []any{map[string]string{"role": "user", "content": strings.Repeat("长文本 ", 60000)}}, "api_key": "body-secret"})
+	var group sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		group.Add(1)
+		go func(index int) {
+			defer group.Done()
+			m.beginAudit(pluginapi.RequestInterceptRequest{RequestID: fmt.Sprintf("raw-parallel-%d", index), SourceFormat: "openai", Model: "m", Body: body, Metadata: map[string]any{"request_path": "/v1/chat/completions"}}, "", "")
+		}(i)
+	}
+	group.Wait()
 	records := auditRecords(t, m)
-	if len(records) != 1 || records[0].BodyState != "omitted_busy" {
-		t.Fatal("busy large capture not bounded")
+	if len(records) != 4 {
+		t.Fatalf("concurrent large requests lost: %d", len(records))
+	}
+	store, _ := m.auditSnapshot()
+	for _, record := range records {
+		detail, err := store.Detail(context.Background(), record.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if detail.BodyState != "stored_raw" || detail.RequestBody != string(body) {
+			t.Fatal("large raw body was skipped or rewritten")
+		}
 	}
 }
 
@@ -345,5 +362,103 @@ func TestAuditTenMiBConfigurationAndExplicitSmallerCap(t *testing.T) {
 		if cfg.Audit.MaxBodyBytes != tc.want {
 			t.Fatal("explicit body cap not respected")
 		}
+	}
+}
+
+func TestAuditNoLongerCapturesOrExposesNetworkMetadata(t *testing.T) {
+	m := transactionManager(t)
+	req := pluginapi.RequestInterceptRequest{RequestID: "no-network-monitoring", SourceFormat: "openai", Model: "audit-model", Headers: http.Header{"X-Forwarded-For": {"203.0.113.42"}, "X-Real-IP": {"198.51.100.23"}}, Metadata: map[string]any{"request_path": "/v1/chat/completions", "host_audit": map[string]any{"schema": "cpa.audit.network.v1", "peer_validated": true, "peer_ip": "127.0.0.1", "resolved_validated": true, "resolved_client_ip": "203.0.113.42"}}, Body: []byte(`{"messages":[{"role":"user","content":"hello"}]}`)}
+	raw, _ := json.Marshal(req)
+	if _, err := m.handleRequestInterceptBefore(raw); err != nil {
+		t.Fatal(err)
+	}
+	records := auditRecords(t, m)
+	if len(records) != 1 {
+		t.Fatal("audit missing")
+	}
+	value, err := m.AuditDetail(context.Background(), records[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, _ := json.Marshal(value)
+	for _, field := range []string{"client_ip", "peer_ip", "ip_source", "ip_note", "203.0.113.42", "198.51.100.23"} {
+		if strings.Contains(string(output), field) {
+			t.Fatalf("removed network monitoring still visible: %s", field)
+		}
+	}
+	cfg, err := ParseConfigYAML([]byte("audit: {trusted_proxies: [legacy-unused]}"))
+	if err != nil || len(cfg.Audit.TrustedProxies) != 0 {
+		t.Fatal("legacy proxy settings must be ignored")
+	}
+	apiRequest, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodGet, Path: "/v0/management/key-guard/audit", Headers: http.Header{"Authorization": {"Bearer admin"}}, Query: url.Values{"ip": {"203.0.113.42"}}})
+	response, err := m.handleManagement(apiRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status := decodeEnvelope[pluginapi.ManagementResponse](t, response).StatusCode; status != 400 {
+		t.Fatalf("removed IP query accepted: %d", status)
+	}
+}
+
+func TestAuditDenseConversationAndToolDefinitionsRemainFullyReadable(t *testing.T) {
+	m := transactionManager(t)
+	messages := make([]map[string]any, 6000)
+	for i := range messages {
+		messages[i] = map[string]any{"role": "user", "content": "正常中文对话内容", "name": "speaker"}
+	}
+	tools := make([]map[string]any, 600)
+	for i := range tools {
+		tools[i] = map[string]any{"type": "function", "function": map[string]any{"name": "lookup", "description": "普通工具说明", "parameters": map[string]any{"type": "object", "properties": map[string]any{"value": map[string]any{"type": "string", "description": "参数描述"}}}}}
+	}
+	body, _ := json.Marshal(map[string]any{"model": "audit-model", "messages": messages, "tools": tools, "api_key": "client-audit-secret"})
+	request := pluginapi.RequestInterceptRequest{RequestID: "dense-complex-request", SourceFormat: "openai", Model: "audit-model", Headers: http.Header{"Content-Type": {"application/json"}}, Metadata: map[string]any{"request_path": "/v1/chat/completions"}, Body: body}
+	m.beginAudit(request, "client-audit-secret", "team")
+	records := auditRecords(t, m)
+	if len(records) != 1 {
+		t.Fatal("dense audit missing")
+	}
+	store, _ := m.auditSnapshot()
+	record, err := store.Detail(context.Background(), records[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.BodyState != "stored_raw" || record.BodyTruncated || record.BodySHA256 == "" {
+		t.Fatalf("dense JSON still omitted: %s", record.BodyState)
+	}
+	var saved struct {
+		Messages []json.RawMessage
+		Tools    []json.RawMessage
+		APIKey   string `json:"api_key"`
+	}
+	if err := json.Unmarshal([]byte(record.RequestBody), &saved); err != nil {
+		t.Fatal(err)
+	}
+	if len(saved.Messages) != 6000 || len(saved.Tools) != 600 || saved.APIKey != "client-audit-secret" {
+		t.Fatal("raw content completeness regressed")
+	}
+}
+
+func TestAuditRawBodyOverExplicitSmallerLimitIsNotPartiallySaved(t *testing.T) {
+	m := transactionManager(t)
+	config, _ := json.Marshal(lifecycleRequest{ConfigYAML: []byte("audit:\n  max_body_bytes: 512\n")})
+	if err := m.Configure(config); err != nil {
+		t.Fatal(err)
+	}
+	payload, _ := json.Marshal(map[string]any{"messages": []any{map[string]any{"role": "user", "content": strings.Repeat("长提示内容 ", 400)}}, "api_key": "body-secret"})
+	m.beginAudit(pluginapi.RequestInterceptRequest{RequestID: "explicit-small-cap", SourceFormat: "openai", Model: "audit-model", Metadata: map[string]any{"request_path": "/v1/chat/completions"}, Body: payload}, "", "")
+	records := auditRecords(t, m)
+	if len(records) != 1 {
+		t.Fatal("metadata missing")
+	}
+	value, err := m.AuditDetail(context.Background(), records[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := value["record"].(map[string]any)
+	if record["body_state"] != "omitted_input_limit" || record["body_truncated"] != true || record["body_sha256"] != nil && record["body_sha256"] != "" {
+		t.Fatalf("explicit size limit bypassed: %v", record)
+	}
+	if body, ok := record["request_body"].(string); ok && body != "" {
+		t.Fatal("raw partial body saved")
 	}
 }

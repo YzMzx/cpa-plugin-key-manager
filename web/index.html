@@ -592,11 +592,10 @@
         <label>备注名称<input id="auditKeyLabel" class="input" type="text" autocomplete="off" placeholder="搜索密钥备注"></label>
         <label>模型名称<input id="auditModel" class="input" type="text" autocomplete="off" placeholder="搜索请求或服务模型"></label>
         <label>结果<select id="auditOutcome"><option value="">全部结果</option><option value="succeeded">成功</option><option value="failed">失败</option><option value="canceled">取消</option><option value="running">进行中</option><option value="rejected">已拒绝</option><option value="unknown">未知</option></select></label>
-        <label>IP<input id="auditIP" class="input mono" type="text" autocomplete="off" placeholder="输入客户端 IP"></label>
         <div class="audit-filter-actions"><button type="submit" class="btn btn-primary" id="auditFilterSubmit">筛选</button><button type="button" class="btn" id="auditFilterReset">重置</button></div>
       </form>
       <div id="auditListMessage" class="card-hint" role="status"></div>
-      <div class="table-wrap"><table><thead><tr><th>开始时间</th><th>请求 / Trace</th><th>密钥</th><th>请求 / 服务模型</th><th>来源 IP</th><th>IP 来源</th><th>结果 / 状态码</th><th>耗时</th><th>正文状态</th><th>操作</th></tr></thead><tbody id="auditListBody"><tr><td colspan="10" class="cell-empty">尚未加载审计记录</td></tr></tbody></table></div>
+      <div class="table-wrap"><table><thead><tr><th>开始时间</th><th>请求 / Trace</th><th>密钥</th><th>请求 / 服务模型</th><th>结果 / 状态码</th><th>耗时</th><th>正文状态</th><th>操作</th></tr></thead><tbody id="auditListBody"><tr><td colspan="8" class="cell-empty">尚未加载审计记录</td></tr></tbody></table></div>
       <div class="audit-pagination"><span id="auditPageInfo">第 1 页</span><div class="input-row"><label for="auditPageSize">每页</label><select id="auditPageSize"><option value="25">25</option><option value="50" selected>50</option><option value="100">100</option></select><button type="button" class="btn btn-sm" id="auditPrevPage">上一页</button><button type="button" class="btn btn-sm" id="auditNextPage">下一页</button></div></div>
     </div>
     <div id="auditDetail" class="audit-drawer-overlay hidden">
@@ -608,9 +607,9 @@
         <div id="auditDetailContent" class="audit-drawer-content">
           <div id="auditDetailMessage" class="card-hint" role="status"></div>
           <details id="auditMetadataSection" class="audit-metadata-section"><summary>请求溯源信息</summary><dl id="auditDetailMetadata" class="audit-metadata"></dl></details>
-          <h3 class="audit-body-title">脱敏请求 JSON（只读）</h3><div id="auditBodyState" class="card-hint"></div>
-          <pre id="auditRequestBody" class="audit-json" tabindex="0" aria-label="脱敏请求 JSON"></pre>
-          <div class="card-hint">下方 SHA-256 仅用于核对已保存的脱敏内容，不是防篡改证明。</div><div id="auditBodyHash" class="mono audit-hash"></div>
+          <h3 class="audit-body-title">请求 JSON 原文（只读）</h3><div id="auditBodyState" class="card-hint"></div>
+          <pre id="auditRequestBody" class="audit-json" tabindex="0" aria-label="请求 JSON 原文"></pre>
+          <div class="card-hint">下方 SHA-256 仅用于核对已保存内容，不是防篡改证明。</div><div id="auditBodyHash" class="mono audit-hash"></div>
         </div>
       </div>
     </div>

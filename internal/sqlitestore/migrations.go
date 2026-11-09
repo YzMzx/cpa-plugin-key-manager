@@ -152,6 +152,18 @@ var migrations = []migration{
 			`CREATE INDEX IF NOT EXISTS client_request_audit_ip_idx ON client_request_audit(client_ip, started_at)`,
 		},
 	},
+	{
+		version: 3,
+		name:    "remove request audit network monitoring",
+		stmts: []string{
+			// Preserve compatibility columns, but remove every historical network value.
+			// SQLite length(TEXT) counts characters, while logical_bytes counts UTF-8 bytes.
+			`UPDATE client_request_audit SET
+			 logical_bytes = max(0, logical_bytes - length(CAST(client_ip AS BLOB)) - length(CAST(peer_ip AS BLOB)) - length(CAST(ip_source AS BLOB)) - length(CAST(ip_note AS BLOB))),
+			 client_ip = '', peer_ip = '', ip_source = '', ip_note = ''`,
+			`DROP INDEX IF EXISTS client_request_audit_ip_idx`,
+		},
+	},
 }
 
 // Migrate applies every pending migration inside its own transaction.

@@ -5,7 +5,7 @@ const path = require("node:path");
 const Audit = require("./audit.js");
 const State = require("./state.js");
 const status = extra => ({enabled:true,retention_days:7,max_records:10000,max_body_bytes:65536,max_total_bytes:10485760,...extra});
-const record = (id, extra={}) => ({id,request_id:"req-"+id,trace_id:"trace-"+id,started_at:"2026-11-09T12:00:00Z",completed_at:"2026-11-09T12:00:01Z",client_ip:"",peer_ip:"",ip_source:"unknown",key_label:"team",key_fingerprint:"fp",requested_model:"m",served_model:"m",outcome:"succeeded",status_code:200,duration_ms:1,body_state:"redacted",...extra});
+const record = (id, extra={}) => ({id,request_id:"req-"+id,trace_id:"trace-"+id,started_at:"2026-11-09T12:00:00Z",completed_at:"2026-11-09T12:00:01Z",key_label:"team",key_fingerprint:"fp",requested_model:"m",served_model:"m",outcome:"succeeded",status_code:200,duration_ms:1,body_state:"redacted",...extra});
 const list = (items,extra={}) => ({items,total:items.length,limit:50,offset:0,status:status(),...extra});
 const deferred = () => {let resolve;const promise=new Promise(done=>resolve=done);return {promise,resolve};};
 const tick = () => new Promise(done=>setImmediate(done));
@@ -39,9 +39,9 @@ test("audit validates list without body and rejects malformed pagination/status"
  assert.equal(Audit.statusPayload({status:status()}).retention_days,7);
 });
 
-test("five filters encode literal values and omit removed identifiers/time fields",()=>{
+test("four filters encode literal values and omit removed identifiers/time fields",()=>{
  const params=new URLSearchParams(Audit.queryString({key_fingerprint:"a".repeat(64),key_label:"备注&'",model:"模型<x>",outcome:"failed",ip:"::1",request_id:"gone",trace_id:"gone",from:"invalid",to:"invalid"},50,0));
- assert.equal(params.get("key_label"),"备注&'");assert.equal(params.get("model"),"模型<x>");assert.equal(params.get("ip"),"::1");
+ assert.equal(params.get("key_label"),"备注&'");assert.equal(params.get("model"),"模型<x>");assert.equal(params.has("ip"),false);
  for(const key of ["request_id","trace_id","from","to"])assert.equal(params.has(key),false);
  assert.equal(Audit.timestamp(0,"UTC"),"未知");
 });
@@ -50,14 +50,14 @@ test("JSON body is decoded read-only while non-JSON stays omitted",()=>{
  const value=Audit.bodyView(record("a",{request_body:'{"messages":[{"content":"<img onerror=evil()>"}]}'}));
  assert.match(value.json,/<img onerror=evil/);assert.ok(value.json.includes(String.fromCharCode(10)));
  assert.match(Audit.bodyView(record("a",{request_body:"not json"})).state,/解码失败/);
- assert.match(Audit.bodyView(record("a",{body_state:"omitted_input_limit",body_truncated:true})).state,/正文已略过/);
+ assert.match(Audit.bodyView(record("a",{body_state:"omitted_input_limit",body_truncated:true})).state,/未保存正文/);
 });
 
 test("list loads metadata only and detail is fetched on explicit selection with text-only rendering",async()=>{
  const attack="<img src=x onerror=globalThis.pwned=true>";
- const f=fixture(async url=>url.includes("/detail?")?{record:record("a",{request_body:{messages:[{content:attack}]},ip_note:attack,path:attack,body_sha256:"hash"}),status:status()}:list([record("a",{key_label:attack})]));
+ const f=fixture(async url=>url.includes("/detail?")?{record:record("a",{request_body:{messages:[{content:attack}]},path:attack,body_sha256:"hash"}),status:status()}:list([record("a",{key_label:attack})]));
  await f.view.enter();assert.equal(f.calls.filter(c=>c.url.includes("/detail?")).length,0);
- assert.match(f.node("auditListBody").textContent,/<img/);assert.match(f.node("auditListBody").textContent,/unknown/);assert.match(f.node("auditListBody").textContent,/未知/);
+ assert.match(f.node("auditListBody").textContent,/<img/);assert.equal(f.node("auditListBody").children[0].children.length,8);
  await f.view.showDetail("a");assert.equal(f.calls.filter(c=>c.url.includes("/detail?")).length,1);assert.match(f.node("auditRequestBody").textContent,/<img/);assert.match(f.node("auditDetailMetadata").textContent,/<img/);assert.equal(f.node("auditBodyHash").textContent,"hash");
  assert.ok(f.calls.every(c=>c.url.startsWith("/v0/management/key-guard/audit")&&c.options.method==="GET"));
 });
@@ -93,12 +93,12 @@ test("disabled audit and failures are explicit rather than fake records",async()
  const g=fixture(()=>Promise.reject(new Error("offline")));await g.view.enter();assert.match(g.node("auditListMessage").textContent,/offline/);assert.equal(g.node("auditNextPage").disabled,true);
 });
 
-test("audit UI uses fixed drawer, five filters and no removed privacy banner",()=>{
+test("audit UI uses fixed drawer, four filters and no removed privacy banner",()=>{
  const html=fs.readFileSync(path.join(__dirname,"index.html"),"utf8");const source=fs.readFileSync(path.join(__dirname,"audit.js"),"utf8");const css=fs.readFileSync(path.join(__dirname,"app.css"),"utf8");
  for(const phrase of ["请求审计","保留 7 天","不记录响应","防篡改证明"])assert.ok(html.includes(phrase));
  assert.ok(!html.includes("请求正文可能包含对话、个人信息和业务数据。"));
- for(const id of ["auditKey","auditKeyLabel","auditModel","auditOutcome","auditIP"])assert.ok(html.includes('id="'+id+'"'));
- for(const id of ["auditRequestId","auditTraceId","auditKeyFingerprint","auditFrom","auditTo"])assert.ok(!html.includes('id="'+id+'"'));
+ for(const id of ["auditKey","auditKeyLabel","auditModel","auditOutcome"])assert.ok(html.includes('id="'+id+'"'));
+ for(const id of ["auditRequestId","auditTraceId","auditKeyFingerprint","auditFrom","auditTo","auditIP"])assert.ok(!html.includes('id="'+id+'"'));
  assert.match(html,/role="dialog" aria-modal="true"/);assert.match(css,/audit-drawer-overlay[^}]+position: fixed/);
  for(const forbidden of ["innerHTML","eval(","new Function","response_body"])assert.ok(!source.includes(forbidden));
 });
@@ -145,7 +145,7 @@ test("large stored JSON stays compact and omitted bodies remain hidden",()=>{
 test("detail drawer opens in viewport, changes adjacent record, Esc restores trigger focus",async()=>{
  const f=fixture(async url=>url.includes("/detail?")?{record:record(new URL("http://test"+url).searchParams.get("id"),{body_state:"stored",request_body:'{"value":"safe"}'}),status:status()}:list([record("a"),record("b")]));
  await f.view.enter();
- const trigger=f.node("auditListBody").children[0].children[9].children[0];trigger.focus();
+ const trigger=f.node("auditListBody").children[0].children[7].children[0];trigger.focus();
  await f.view.showDetail("a",trigger);
  assert.equal(f.node("auditDetail").classList.contains("hidden"),false);assert.equal(f.doc.body.classList.contains("audit-detail-open"),true);
  assert.equal(f.doc.activeElement,f.node("auditDetailClose"));assert.equal(f.node("auditDetailContent").scrollTop,0);assert.equal(f.node("auditDetailPrev").disabled,true);assert.equal(trigger.getAttribute("aria-expanded"),"true");
@@ -193,4 +193,45 @@ test("lock cancels cleanup and clears confirmation tokens without replaying writ
  const pending=f.view.previewCleanup();const signal=f.calls.at(-1).options.signal;f.setAuth(false);f.view.lock();assert.equal(signal.aborted,true);
  delayed.resolve({preview:{token:"late",records:1,logical_bytes:10},storage:{records:1,logical_bytes:10,max_total_bytes:20}});await pending;
  assert.equal(f.node("auditCleanupConfirmation").classList.contains("hidden"),true);assert.equal(f.node("auditCleanupBefore").value,"");assert.match(f.node("auditStorageSummary").textContent,/授权/);
+});
+
+test("partial redacted JSON remains visible with placeholders, retained bytes and hash",async()=>{
+ const raw=JSON.stringify({messages:[{role:"user",content:"你好 <img onerror=evil()> [OMITTED:string_limit]"}]});
+ const partial=record("partial",{body_state:"stored_partial",body_truncated:true,request_body:raw,body_sha256:"partial-digest"});
+ const value=Audit.bodyView(partial);assert.match(value.state,/部分留存/);assert.match(value.state,/OMITTED/);assert.doesNotMatch(value.state,/正文已略过/);assert.equal(value.retainedBytes,Buffer.byteLength(raw));assert.match(value.json,/你好/);assert.match(value.json,/OMITTED:string_limit/);
+ const f=fixture(async url=>url.includes("/detail?")?{record:partial,status:status()}:list([record("partial",{body_state:"stored_partial",body_truncated:true})]));await f.view.enter();assert.doesNotMatch(f.node("auditListBody").textContent,/超限略过|未保存正文/);await f.view.showDetail("partial");
+ assert.match(f.node("auditRequestBody").textContent,/OMITTED:string_limit/);assert.match(f.node("auditRequestBody").textContent,/<img onerror=evil/);assert.match(f.node("auditBodyState").textContent,/部分留存/);assert.match(f.node("auditBodyState").textContent,/字节/);assert.equal(f.node("auditBodyHash").textContent,"partial-digest");
+ const complete=Audit.bodyView(record("full",{body_state:"stored",request_body:raw}));assert.match(complete.state,/完整留存/);
+});
+
+test("legacy omitted element records remain unrecoverable and unknown states never reveal bodies",()=>{
+ const legacy=Audit.bodyView(record("old",{body_state:"omitted_element_limit",body_truncated:true,request_body:'{"sensitive":"must-not-render"}'}));
+ assert.match(legacy.state,/旧版/);assert.match(legacy.json,/无法恢复/);assert.doesNotMatch(legacy.json,/must-not-render/);assert.equal(legacy.retainedBytes,0);
+ for(const body_state of ["unknown_future","omitted_string_limit","omitted_output_limit"]){const value=Audit.bodyView(record("x",{body_state,request_body:'{"secret":"must-not-render"}'}));assert.doesNotMatch(value.json,/must-not-render/);}
+ const large=JSON.stringify({content:"部分正文 [OMITTED:limit] ".repeat(20000)});const shown=Audit.bodyView(record("large",{body_state:"stored_partial",body_truncated:true,request_body:large}));assert.equal(shown.json,large);assert.match(shown.state,/紧凑/);
+});
+
+test("IP metadata and legacy unknown-IP warnings are not rendered",async()=>{
+ const legacy={client_ip:"203.0.113.88",peer_ip:"192.0.2.2",ip_source:"host_resolved",ip_note:"private-network-note"};
+ const f=fixture(async url=>url.includes("/detail?")?{record:record("noip",{...legacy,body_state:"stored",request_body:"{}"}),status:status({warning:"宿主未提供客户端IP"})}:list([record("noip",legacy)],{status:status({warning:"宿主未提供客户端IP"})}));
+ await f.view.enter();await f.view.showDetail("noip");
+ for(const id of ["auditListBody","auditDetailMetadata","auditStatus"]){for(const value of ["203.0.113.88","192.0.2.2","host_resolved","private-network-note","宿主未提供客户端IP"]){assert.ok(!f.node(id).textContent.includes(value));}}
+ const html=fs.readFileSync(path.join(__dirname,"index.html"),"utf8");assert.ok(!html.includes("来源 IP"));assert.ok(!html.includes("IP 来源"));assert.match(html,/colspan="8" class="cell-empty">尚未加载审计记录/);
+});
+
+test("raw plaintext JSON preserves exact whitespace escapes credentials and literal markup",async()=>{
+ const raw=' {\n  "api_key": "secretliteral", "escaped": "\\u4f60\\u597d", "content": "<img src=x onerror=evil()>"\n} ' ;
+ const value=Audit.bodyView(record("raw",{body_state:"stored_raw",body_truncated:false,request_body:raw,body_sha256:"raw-digest"}));
+ assert.equal(value.json,raw);assert.match(value.state,/明文/);assert.match(value.state,/完整留存/);assert.equal(value.retainedBytes,Buffer.byteLength(raw));
+ const f=fixture(async url=>url.includes("/detail?")?{record:record("raw",{body_state:"stored_raw",body_truncated:false,request_body:raw,body_sha256:"raw-digest"}),status:status()}:list([record("raw",{body_state:"stored_raw"})]));
+ await f.view.enter();await f.view.showDetail("raw");assert.equal(f.node("auditRequestBody").textContent,raw);assert.match(f.node("auditDetailMessage").textContent,/明文可能含凭据/);assert.equal(f.node("auditBodyHash").textContent,"raw-digest");
+ const html=fs.readFileSync(path.join(__dirname,"index.html"),"utf8");assert.ok(html.includes("请求 JSON 原文（只读）"));assert.ok(html.includes("已保存内容"));assert.ok(!html.includes("脱敏请求 JSON（只读）"));
+ const rejected=Audit.bodyView(record("invalid-partial-raw",{body_state:"stored_raw",body_truncated:true,request_body:raw}));assert.notEqual(rejected.json,raw);
+});
+
+test("raw JSON is not reparsed or constrained by old element count and large compact mode remains exact",()=>{
+ const raw='{"many":['+Array.from({length:5000},(_,i)=>String(i)).join(",")+'],"secret":"literal"}';
+ const value=Audit.bodyView(record("many",{body_state:"stored_raw",request_body:raw}));assert.equal(value.json,raw);
+ const large=JSON.stringify({content:"原文 secretliteral ".repeat(25000)});assert.equal(Audit.bodyView(record("large-raw",{body_state:"stored_raw",request_body:large})).json,large);
+ const legacy=Audit.bodyView(record("legacy",{body_state:"stored",request_body:"{}"}));assert.match(legacy.state,/旧版脱敏/);
 });
