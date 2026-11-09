@@ -18,7 +18,7 @@ GET overview provides the existing summary, keys, default_policy, usage, auth_fi
 - `timezone`: IANA zone. All display/range/query boundaries derive from it. Asia/Shanghai is only a fallback for older/invalid configuration; ledger is initially fetched after overview resolves.
 - Each rule may include authoritative `quota_used_usd` so renamed keys and late usage use the backend quota lineage; older backends fall back to the local accumulated cost minus reset baseline.
 - `rules_revision`: current rule revision. Mutations send `X-Key-Guard-Revision` automatically when a snapshot is available. HTTP 409 asks the user to refresh, not silently overwrite.
-- `host_sync: {pending: boolean, error?: string}`: a committed rule change can have pending host synchronization. The UI displays this state and any response warning; it does not claim host synchronization succeeded.
+- `host_sync: {pending: boolean, error?: string, error_code?: string}`: a committed rule change can have pending host synchronization. The UI displays this state and any response warning; it does not claim host synchronization succeeded.
 
 Mutations may return the complete overview or `{ok:true, overview:...}`. Key CRUD never PUTs CPA's global key list. Refresh GETs overview and ledger only; host synchronization is owned by the backend. Requests do not automatically retry writes, because a timeout can have an unknown commit outcome.
 

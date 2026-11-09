@@ -7,7 +7,6 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -17,8 +16,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"gopkg.in/yaml.v3"
 )
 
 // HostSyncStatus exposes partial success without retaining management credentials.
@@ -26,7 +23,7 @@ func (m *Manager) HostSyncStatus() map[string]any {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	pending := m.dynamicState != nil && m.dynamicState.HostSyncPending
-	return map[string]any{"pending": pending, "error": m.hostSyncError}
+	return map[string]any{"pending": pending, "error": m.hostSyncError, "error_code": m.hostSyncCode}
 }
 
 // syncPendingHost retries the durable intent using the credential of this request.
@@ -53,9 +50,11 @@ func (m *Manager) syncPendingHost(ctx context.Context, credential string) {
 		err = syncHostRuntimeDelta(ctx, credential, keys, deleted)
 	}
 	if err != nil {
+		code, message := hostSyncDiagnostic(err)
 		m.mu.Lock()
-		m.hostSyncError = "Rules saved; CPA synchronization failed. Refresh to retry."
+		m.hostSyncError, m.hostSyncCode = message, code
 		m.mu.Unlock()
+		m.host.Log("warn", "CPA API key synchronization is pending", map[string]any{"reason": code})
 		return
 	}
 	m.mu.RLock()
@@ -73,10 +72,11 @@ func (m *Manager) syncPendingHost(ctx context.Context, credential string) {
 	}
 	m.mu.Lock()
 	if cloneErr != nil {
-		m.hostSyncError = "CPA synchronized; persisting synchronization status failed. Refresh to retry."
+		m.hostSyncError = "CPA 已同步，但同步状态保存失败；请刷新重试"
+		m.hostSyncCode = "status_persist"
 	} else {
 		m.dynamicState = next
-		m.hostSyncError = ""
+		m.hostSyncError, m.hostSyncCode = "", ""
 	}
 	m.mu.Unlock()
 }
@@ -85,22 +85,15 @@ func (m *Manager) syncPendingHost(ctx context.Context, credential string) {
 // PUT this cannot overwrite keys created concurrently in the host admin panel.
 func syncHostRuntimeDelta(ctx context.Context, credential string, keys, deleted []string) error {
 	if strings.TrimSpace(credential) == "" {
-		return fmt.Errorf("management credential is required")
+		return newHostSyncFailure("credential_missing", "缺少宿主管理凭据，请重新验证 Management Key")
 	}
 	raw, err := os.ReadFile(FindHostConfigFile(""))
 	if err != nil {
-		return fmt.Errorf("host config is unavailable")
+		return newHostSyncFailure("config_unavailable", "无法读取宿主配置文件，请检查 CPA_CONFIG_FILE 或宿主启动配置路径")
 	}
-	var cfg struct {
-		Host string `yaml:"host"`
-		Port int    `yaml:"port"`
-		TLS  struct {
-			Enable bool   `yaml:"enable"`
-			Cert   string `yaml:"cert"`
-		} `yaml:"tls"`
-	}
-	if err := yaml.Unmarshal(raw, &cfg); err != nil || cfg.Port < 1 || cfg.Port > 65535 {
-		return fmt.Errorf("host management port is invalid")
+	cfg, err := parseHostListenerConfig(raw)
+	if err != nil {
+		return err
 	}
 	scheme := "http"
 	if cfg.TLS.Enable {
@@ -125,14 +118,14 @@ func syncHostRuntimeDelta(ctx context.Context, credential string, keys, deleted 
 		}
 		certPEM, err := os.ReadFile(certFile)
 		if err != nil {
-			return fmt.Errorf("host TLS certificate is unavailable")
+			return newHostSyncFailure("tls_cert_unavailable", "无法读取宿主 TLS 证书，请检查 server.tls.cert 的文件与权限")
 		}
 		roots, err := x509.SystemCertPool()
 		if err != nil {
 			roots = x509.NewCertPool()
 		}
 		if !roots.AppendCertsFromPEM(certPEM) {
-			return fmt.Errorf("invalid host TLS certificate")
+			return newHostSyncFailure("tls_cert_invalid", "宿主 TLS 证书内容无效，请检查 server.tls.cert")
 		}
 		serverName := host
 		if block, _ := pem.Decode(certPEM); block != nil {
@@ -147,21 +140,21 @@ func syncHostRuntimeDelta(ctx context.Context, credential string, keys, deleted 
 	call := func(method, target string, payload []byte, output any) error {
 		req, err := http.NewRequestWithContext(requestCtx, method, target, bytes.NewReader(payload))
 		if err != nil {
-			return fmt.Errorf("build host management request")
+			return newHostSyncFailure("request_invalid", "无法创建宿主同步请求，请检查 server.host 和 server.port")
 		}
 		req.Header.Set("Authorization", "Bearer "+credential)
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := client.Do(req)
 		if err != nil {
-			return fmt.Errorf("host management request failed")
+			return hostSyncTransportFailure(err)
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return fmt.Errorf("host management returned HTTP %d", resp.StatusCode)
+			return hostSyncHTTPFailure(method, resp.StatusCode)
 		}
 		if output != nil {
 			if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(output); err != nil {
-				return fmt.Errorf("invalid host management response")
+				return newHostSyncFailure("response_invalid", "宿主管理接口未返回有效 JSON，请检查监听端口是否指向 CPA")
 			}
 		} else {
 			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))

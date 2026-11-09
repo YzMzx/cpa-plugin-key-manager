@@ -83,7 +83,7 @@ func (m *Manager) mutateRules(opts ruleMutation, fn func(*DynamicRulesState) err
 	}
 	if opts.syncHostKeys {
 		m.mu.Lock()
-		m.hostSyncError = "host runtime synchronization is pending"
+		m.hostSyncError, m.hostSyncCode = "宿主同步等待重试", "pending"
 		m.mu.Unlock()
 	}
 	return nil
