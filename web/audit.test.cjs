@@ -255,3 +255,9 @@ test("body format mode resets per record and lock clears both saved and formatte
  await f.view.showDetail("b");assert.equal(f.node("auditBodyFormatted").getAttribute("aria-pressed"),"true");assert.match(f.node("auditRequestBody").textContent,/\n/);assert.equal(f.node("auditBodyHash").textContent,"saved-content-hash");
  f.setAuth(false);f.view.lock();f.node("auditBodyOriginal").listeners.click();assert.equal(f.node("auditRequestBody").textContent,"");assert.equal(f.node("auditBodyHash").textContent,"");
 });
+
+test("media-filtered plaintext JSON remains visible and identifies only the omitted payload",()=>{
+ const raw='{"messages":[{"content":[{"type":"text","text":"保留文字"},{"type":"image_url","image_url":"[OMITTED:media]"}]}],"secret":"still-plaintext"}';
+ const value=Audit.bodyView(record("media",{body_state:"stored_raw_media_filtered",body_truncated:false,request_body:raw,body_sha256:"saved-filtered-hash"}));
+ assert.match(value.state,/文件载荷已过滤/);assert.match(value.json,/保留文字/);assert.match(value.json,/still-plaintext/);assert.match(value.json,/OMITTED:media/);assert.equal(value.retainedBytes,Buffer.byteLength(raw));
+});

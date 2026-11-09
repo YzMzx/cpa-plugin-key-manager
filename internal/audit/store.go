@@ -141,15 +141,15 @@ func (s *Store) normalize(r Record, now time.Time) (Record, int64, error) {
 		return r, 0, ErrInvalidRecord
 	}
 	r.KeyFingerprint = strings.ToLower(r.KeyFingerprint)
-	capture := r.BodyState == "stored_raw" || r.BodyState == "stored_partial" || r.BodyState == "stored" || r.BodyState == "sanitized" || r.BodyState == "truncated"
-	if !capture || (r.BodyState != "stored_raw" && !knownProtocol(r.Protocol)) {
+	capture := r.BodyState == "stored_raw_media_filtered" || r.BodyState == "stored_raw" || r.BodyState == "stored_partial" || r.BodyState == "stored" || r.BodyState == "sanitized" || r.BodyState == "truncated"
+	if !capture || (r.BodyState != "stored_raw" && r.BodyState != "stored_raw_media_filtered" && !knownProtocol(r.Protocol)) {
 		r.RequestBody = ""
 		r.BodySHA256 = ""
 		if r.BodyState == "" || capture {
 			r.BodyState = "not_captured"
 		}
 	}
-	if r.BodyState == "stored_raw" {
+	if r.BodyState == "stored_raw" || r.BodyState == "stored_raw_media_filtered" {
 		r.BodyTruncated = false
 	}
 	if r.RequestBody != "" {

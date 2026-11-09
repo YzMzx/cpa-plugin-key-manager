@@ -59,7 +59,7 @@
       headers.set("X-Management-Key", key);
       if (options.body !== undefined && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
       const revision = getRevision();
-      if (method !== "GET" && method !== "HEAD" && revision !== undefined && revision !== null) headers.set("X-Key-Guard-Revision", String(revision));
+      if (method !== "GET" && method !== "HEAD" && revision !== undefined && revision !== null && !headers.has("X-Key-Guard-Revision")) headers.set("X-Key-Guard-Revision", String(revision));
       const controller = new AbortController();
       controllers.add(controller);
       const externalSignal = options.signal;

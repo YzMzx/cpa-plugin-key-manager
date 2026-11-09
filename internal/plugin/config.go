@@ -100,6 +100,7 @@ type DynamicRulesState struct {
 	Revision          uint64               `json:"revision,omitempty"`
 	HostSyncPending   bool                 `json:"host_sync_pending,omitempty"`
 	ConfigFingerprint string               `json:"config_fingerprint,omitempty"`
+	Settings          *RuntimeSettings     `json:"settings,omitempty"`
 	DefaultPolicy     *DefaultPolicyConfig `json:"default_policy,omitempty"`
 	Keys              []KeyRuleConfig      `json:"keys"`
 	// KeyOrder is the administrator-defined display order (drag & drop) of API keys.
@@ -1018,6 +1019,7 @@ func MergeDynamicState(seed Config, state *DynamicRulesState, hostAPIKeys ...str
 	}
 
 	out.deletedKeys = deletedKeySet
+	applySettingsConfig(&out, state.Settings)
 	out.Normalize()
 	return out
 }

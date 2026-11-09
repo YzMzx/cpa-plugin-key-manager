@@ -21,7 +21,7 @@ import (
 
 const (
 	PluginID      = "cpa-plugin-key-manager"
-	PluginVersion = "0.11.0-pre.4"
+	PluginVersion = "0.11.0-pre.5"
 	PluginAuthor  = "YzMzx"
 	PluginRepo    = "https://github.com/YzMzx/cpa-plugin-key-manager"
 	PluginLogoSVG = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%238b8680'/><path d='M24 22a10 10 0 1 0 9.5 13H42v5h6v-5h4v-6H33.5A10 10 0 0 0 24 22zm0 6a4 4 0 1 1 0 8 4 4 0 0 1 0-8z' fill='%23fff'/></svg>"
@@ -61,30 +61,31 @@ type managementRegistrationResponse struct {
 // dynamic Web UI rules, and accumulated usage across `plugin.reconfigure` hot-reloads.
 type Manager struct {
 	// mutationMu orders configuration changes and durable rule commits.
-	mutationMu    sync.Mutex
-	managementMu  sync.Mutex
-	admissionMu   sync.RWMutex
-	hostSyncError string
-	hostSyncCode  string
-	hostKeySync   func(context.Context, string, []string) error
-	auditMu       sync.RWMutex
-	auditRuntime  *auditRuntime
-	auditCleanup  *auditCleanupRuntime
-	mu            sync.RWMutex
-	seedCfg       Config
-	dynamicState  *DynamicRulesState
-	hostAPIKeys   []string
-	cfg           Config
-	lastSyncKey   string
-	seenAuthFiles map[string]pluginapi.HostAuthFileEntry
-	seenModels    map[string]string
-	host          *HostBridge
-	scheduler     *authz.Scheduler
-	limiter       *limiter.Limiter
-	pricingEngine *pricing.Engine
-	pricingSyncer *pricing.Syncer
-	usageStore    *usage.Store
-	rulesRepo     *rulesRepository
+	mutationMu         sync.Mutex
+	managementMu       sync.Mutex
+	admissionMu        sync.RWMutex
+	hostSyncError      string
+	hostSyncCode       string
+	hostKeySync        func(context.Context, string, []string) error
+	auditMu            sync.RWMutex
+	auditRuntime       *auditRuntime
+	auditCleanup       *auditCleanupRuntime
+	mu                 sync.RWMutex
+	seedCfg            Config
+	dynamicState       *DynamicRulesState
+	hostAPIKeys        []string
+	cfg                Config
+	lastSyncKey        string
+	settingsApplyError string
+	seenAuthFiles      map[string]pluginapi.HostAuthFileEntry
+	seenModels         map[string]string
+	host               *HostBridge
+	scheduler          *authz.Scheduler
+	limiter            *limiter.Limiter
+	pricingEngine      *pricing.Engine
+	pricingSyncer      *pricing.Syncer
+	usageStore         *usage.Store
+	rulesRepo          *rulesRepository
 
 	// authListCache keeps the host credential list for a few seconds; it costs two
 	// host RPCs and the overview is refreshed often.
@@ -276,9 +277,25 @@ func (m *Manager) Configure(raw []byte) error {
 	}
 	m.mu.RUnlock()
 
+	if dynState.Settings != nil {
+		validated := *dynState.Settings
+		if err := validateRuntimeSettings(&validated); err != nil {
+			return err
+		}
+		dynState.Settings = &validated
+	}
 	cfg := MergeDynamicState(seedCfg, dynState, hostKeys...)
+	if dynState.Settings != nil && settingsCacheConflicts(*dynState.Settings, cfg) {
+		return ErrSettingsInvalid
+	}
 	if err := validateConfig(cfg); err != nil {
 		return err
+	}
+	// SQLite settings take precedence over seed scheduling on every restart/reload.
+	if cfg.Storage.FlushIntervalSeconds != seedCfg.Storage.FlushIntervalSeconds {
+		if err := m.usageStore.ConfigureSQLite(cfg.Storage.UsageDBFile, time.Duration(cfg.Storage.FlushIntervalSeconds)*time.Second); err != nil {
+			return ErrSettingsPersistence
+		}
 	}
 	if fingerprint := configFingerprint(cfg); dynState.ConfigFingerprint != fingerprint {
 		dynState.Revision++
@@ -311,6 +328,7 @@ func (m *Manager) Configure(raw []byte) error {
 	m.hostAPIKeys = hostKeys
 	m.cfg = cfg
 	m.lastSyncKey = syncKey
+	m.settingsApplyError = ""
 	m.mu.Unlock()
 
 	m.configureAudit(cfg.Audit)

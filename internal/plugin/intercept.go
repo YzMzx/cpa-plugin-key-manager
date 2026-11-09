@@ -284,7 +284,7 @@ func (m *Manager) handleManagement(raw []byte) ([]byte, error) {
 	m.managementMu.Lock()
 	defer m.managementMu.Unlock()
 	method := strings.ToUpper(req.Method)
-	if method != http.MethodGet && method != http.MethodHead {
+	if method != http.MethodGet && method != http.MethodHead && req.Path != "/v0/management/key-guard/settings/bootstrap" {
 		if value := req.Headers.Get("X-Key-Guard-Revision"); value != "" {
 			revision, err := strconv.ParseUint(value, 10, 64)
 			if err != nil || revision != m.RulesRevision() {

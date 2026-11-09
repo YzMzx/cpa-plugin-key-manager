@@ -3,6 +3,7 @@ package plugin
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"time"
 )
 
@@ -42,6 +43,7 @@ func (m *Manager) mutateRules(opts ruleMutation, fn func(*DynamicRulesState) err
 	defer m.mutationMu.Unlock()
 	m.mu.RLock()
 	next, err := cloneRulesState(m.dynamicState)
+	previousSettings := m.dynamicState
 	seed, repo := m.seedCfg, m.rulesRepo
 	hostKeys := append([]string(nil), m.hostAPIKeys...)
 	m.mu.RUnlock()
@@ -64,6 +66,18 @@ func (m *Manager) mutateRules(opts ruleMutation, fn func(*DynamicRulesState) err
 	if opts.syncHostKeys {
 		next.HostSyncPending = true
 	}
+	settingsChanged := previousSettings == nil && next.Settings != nil || previousSettings != nil && !reflect.DeepEqual(previousSettings.Settings, next.Settings)
+	if settingsChanged {
+		if next.Settings != nil {
+			validated := *next.Settings
+			if err := validateRuntimeSettings(&validated); err != nil {
+				return err
+			}
+		}
+		if err := m.usageStore.FlushNow(); err != nil {
+			return ErrSettingsPersistence
+		}
+	}
 	next.ConfigFingerprint = configFingerprint(nextCfg)
 	raw, err := json.Marshal(next)
 	if err != nil {
@@ -76,6 +90,11 @@ func (m *Manager) mutateRules(opts ruleMutation, fn func(*DynamicRulesState) err
 	m.dynamicState, m.cfg = next, nextCfg
 	m.hostAPIKeys = configuredKeyList(nextCfg.Keys)
 	m.mu.Unlock()
+	if settingsChanged {
+		if err := m.applyRuntimeSettings(nextCfg); err != nil {
+			return err
+		}
+	}
 	if opts.refreshPricing {
 		if err := m.pricingEngine.SetCustomPrices(nextCfg.Pricing.CustomPrices, nextCfg.Pricing.DefaultPrice); err != nil {
 			return err

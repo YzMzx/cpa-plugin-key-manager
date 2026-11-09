@@ -38,6 +38,10 @@ const (
 // self-service/dashboard resource routes (`/v0/resource/plugins/cpa-plugin-key-manager/...`).
 func RegisterManagementEndpoints() ([]pluginapi.ManagementRoute, []pluginapi.ResourceRoute) {
 	routes := []pluginapi.ManagementRoute{
+		{Method: http.MethodGet, Path: RouteManagementSettings, Description: "Read unified runtime settings, limits and restart-only configuration."},
+		{Method: http.MethodPut, Path: RouteManagementSettings, Description: "Persist and apply runtime settings with revision and pruning confirmation."},
+		{Method: http.MethodGet, Path: RouteManagementSettingsBootstrap, Description: "Read current and pending restart-only configuration."},
+		{Method: http.MethodPut, Path: RouteManagementSettingsBootstrap, Description: "Stage restart-only host configuration without migrating the database."},
 		{
 			Method:      http.MethodGet,
 			Path:        RouteManagementOverview,
@@ -184,6 +188,9 @@ func HandleManagementRequest(ctx context.Context, provider SnapshotProvider, req
 		return jsonError(http.StatusUnauthorized, "unauthorized: valid CLIProxyAPI Management Key is required")
 	}
 
+	if path == "/v0/management"+RouteManagementSettings || path == "/v0/management"+RouteManagementSettingsBootstrap {
+		return handleSettingsRequest(ctx, provider, req)
+	}
 	if path == "/v0/management"+RouteManagementAudit || strings.HasPrefix(path, "/v0/management"+RouteManagementAudit+"/") {
 		return handleAuditRequest(ctx, provider, req)
 	}

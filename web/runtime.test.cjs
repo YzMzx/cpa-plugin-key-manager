@@ -9,6 +9,7 @@ const Format = require("./formatters.js");
 const Auth = require("./auth.js");
 const Events = require("./events.js");
 const Audit = require("./audit.js");
+const Settings = require("./settings.js");
 const response = (body, status = 200, type = "application/json") => new Response(typeof body === "string" ? body : JSON.stringify(body), { status, headers: { "Content-Type": type } });
 const overview = (extra = {}) => ({ summary: { total_tokens: 12, total_requests: 2, total_cost_nano_usd: 10 }, keys: [], usage: { keys: {}, accounts: {} }, default_policy: {}, available_models: [], auth_files: [], timezone: "UTC", rules_revision: 4, ...extra });
 const ledger = (extra = {}) => ({ series: [], models: [], requests: 2, total_tokens: 12, from: "2026-01-01T00:00:00Z", to: "2026-01-02T00:00:00Z", ...extra });
@@ -20,7 +21,7 @@ function environment(fetchImpl = async () => response(overview())) {
   const listeners = new Map();
   const classes = () => { const set = new Set(); return { add: (...items) => items.forEach(item => set.add(item)), remove: (...items) => items.forEach(item => set.delete(item)), contains: item => set.has(item), toggle: (item, force) => { const add = force === undefined ? !set.has(item) : force; if (add) set.add(item); else set.delete(item); return add; } }; };
   const element = id => {
-    if (!elements.has(id)) elements.set(id, { id, value: "", textContent: "", innerHTML: "", disabled: false, checked: false, style: {}, dataset: {}, classList: classes(), focus() {}, setSelectionRange() {}, getAttribute() { return null; }, setAttribute() {}, addEventListener() {}, replaceChildren() { this.textContent = ""; this.children = []; }, appendChild(child) { (this.children ||= []).push(child); return child; }, remove() {} });
+    if (!elements.has(id)) elements.set(id, { id, value: "", textContent: "", innerHTML: "", disabled: false, checked: false, style: {}, dataset: {}, classList: classes(), focus() {}, setSelectionRange() {}, getAttribute() { return null; }, setAttribute() {}, addEventListener(type, handler) { (this.listeners ||= {})[type] = handler; }, replaceChildren() { this.textContent = ""; this.children = []; }, appendChild(child) { (this.children ||= []).push(child); return child; }, remove() {} });
     return elements.get(id);
   };
   const doc = { body: { classList: classes() }, getElementById: element,
@@ -38,7 +39,7 @@ function environment(fetchImpl = async () => response(overview())) {
   const win = { location: { href: "http://localhost/ui", origin: "http://localhost", host: "localhost" }, history: { replaceState() {} }, addEventListener() {}, localStorage: storage };
   win.parent = win;
   const context = vm.createContext({ window: win, document: doc, location: win.location, navigator: { userAgent: "test", clipboard: { writeText: async () => {} } }, sessionStorage: storage,
-    KeyGuardClient: Client, KeyGuardState: State, KeyGuardFormat: Format, KeyGuardAuth: Auth, KeyGuardEvents: Events, KeyGuardAudit: Audit,
+    KeyGuardClient: Client, KeyGuardState: State, KeyGuardFormat: Format, KeyGuardAuth: Auth, KeyGuardEvents: Events, KeyGuardAudit: Audit, KeyGuardSettings: Settings,
     fetch: fetchImpl, Headers, Response, AbortController, URL, URLSearchParams, TextEncoder, TextDecoder, atob, console, confirm: () => true,
     setTimeout: (fn, ms) => { const timer = setTimeout(fn, ms); timer.unref(); return timer; }, clearTimeout });
   // Skip only automatic page boot. All production functions and delegated bindings execute unchanged.
@@ -390,4 +391,14 @@ test("production API client accepts audit cleanup preview then confirmed apply",
  env.element("auditCleanupScope").value="all";await env.run("auditView.previewCleanup()");
  assert.match(env.element("auditCleanupMessage").textContent,/2 条/);assert.equal(deleted,0);
  env.element("auditCleanupAcknowledge").checked=true;await env.run("auditView.confirmCleanup()");assert.equal(deleted,1);assert.match(env.element("auditCleanupMessage").textContent,/已清理 2 条/);
+});
+
+test("settings tab retains dirty unit draft on global refresh, saves with fresh CAS and clears on lock",async()=>{
+ const setting={audit:{enabled:true,retention_days:7,max_records:10000,max_body_bytes:10485760,max_total_bytes:67108864},storage:{flush_interval_seconds:10,ledger_retention_days:90,timezone:"Asia/Shanghai",pricing_cache_file:"data/prices.json"},pricing:{sync_url:"https://models.dev/api.json",sync_interval_hours:24,http_timeout_seconds:30,auto_inject_include_usage:true}};
+ const calls=[];let version=7;const env=environment(async(url,options)=>{calls.push({url,options});if(url.endsWith("/settings")){if(options.method==="PUT"){const body=JSON.parse(options.body);assert.equal(body.expected_revision,7);assert.equal(options.headers.get("X-Key-Guard-Revision"),"7");version=8;return response({ok:true,settings:body.settings,rules_revision:version});}return response({settings:setting,rules_revision:version,deprecated:[]});}if(url.includes("/ledger"))return response(ledger());return response(overview({rules_revision:version}));});
+ env.run('switchAdminTab("tab-settings")');await tick();await tick();assert.equal(env.element("settingAuditTotalMiB").value,"64");
+ env.element("settingAuditTotalMiB").value="512";env.element("settingAuditTotalMiB").listeners.input();assert.equal(env.run("settingsView.isDirty()"),true);
+ const readCount=calls.filter(call=>call.url.endsWith("/settings")&&call.options.method==="GET").length;await env.run("refreshAllData()");assert.equal(env.element("settingAuditTotalMiB").value,"512");assert.equal(calls.filter(call=>call.url.endsWith("/settings")&&call.options.method==="GET").length,readCount);
+ await env.run("settingsView.save()");assert.equal(env.run("settingsView.isDirty()"),false);assert.ok(calls.some(call=>call.url.endsWith("/settings")&&call.options.method==="PUT"));
+ env.element("settingBootstrapAdminToken").value="sensitive-draft";env.run('lockAdminWorkspace("expired")');assert.equal(env.element("settingBootstrapAdminToken").value,"");assert.equal(env.element("settingTimezone").value,"");assert.equal(env.element("settingsSave").disabled,true);
 });

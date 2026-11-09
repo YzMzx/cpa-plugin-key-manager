@@ -30,6 +30,12 @@
     getTimezone: () => currentTimezone(),
     getKeyOptions: () => (overviewData && overviewData.audit_key_options) || []
   });
+  const settingsView = KeyGuardSettings.create({
+    document, request: (...args) => callManagementAPI(...args), gate: requestGate,
+    isAuthenticated: () => !!activeManagementKey,
+    navigate: tab => switchAdminTab(tab),
+    onSaved: async payload => { if (payload.overview) { applyOverviewData(payload.overview); await loadOverviewLedger(false); } else { await loadAdminOverview(); } }
+  });
   const apiClient = KeyGuardClient.createClient({
     fetchImpl: (...args) => fetch(...args),
     getKey: () => activeManagementKey,
@@ -186,6 +192,7 @@
 
   function lockAdminWorkspace(errMsg) {
     auditView.lock();
+    settingsView.lock();
     requestGate.cancelAll(); apiClient.cancelAll();
     overviewState.loading = false;
     clearTimeout(modelsDevSearchTimer);
@@ -264,6 +271,8 @@
     currentAdminTab = tabId;
     if (tabId === "tab-audit") { if (activeManagementKey) auditView.enter(); }
     else auditView.leave();
+    if (tabId === "tab-settings") { if (activeManagementKey) settingsView.enter(); }
+    else settingsView.leave();
     document.querySelectorAll(".admin-tab").forEach(s => s.classList.add("hidden"));
     const section = document.getElementById(tabId);
     if (section) section.classList.remove("hidden");
@@ -314,6 +323,7 @@
     try {
       await loadAdminOverview();
       if (currentAdminTab === "tab-audit" && activeManagementKey) await auditView.refresh();
+      if (currentAdminTab === "tab-settings" && activeManagementKey) await settingsView.refresh();
       // Belt and braces: make sure the key/quota/leaderboard tables are painted even
       // if a late ledger refresh replaced them with placeholders.
       if (overviewData) {
@@ -348,6 +358,7 @@
       unlockAdminWorkspace(keyToUse);
       applyOverviewData(data);
       if (!wasAuthenticated && currentAdminTab === "tab-audit") await auditView.enter();
+      if (!wasAuthenticated && currentAdminTab === "tab-settings") await settingsView.enter();
       const sync = data.host_sync;
       const healthMessage = overviewHealthMessage(data);
       setRefreshStatus(healthMessage, !!healthMessage);

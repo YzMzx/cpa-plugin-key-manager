@@ -49,6 +49,7 @@
       <button type="button" class="tab-btn" data-tab="tab-routing" onclick="switchAdminTab('tab-routing')">全局默认策略与凭证池</button>
       <button type="button" class="tab-btn" data-tab="tab-pricing" onclick="switchAdminTab('tab-pricing')">模型与价格</button>
       <button type="button" class="tab-btn" data-tab="tab-audit" onclick="switchAdminTab('tab-audit')">请求审计</button>
+      <button type="button" class="tab-btn" data-tab="tab-settings" onclick="switchAdminTab('tab-settings')">统一配置</button>
       <span class="tabs-divider" aria-hidden="true"></span>
       <button type="button" class="tabs-refresh" id="tabsRefreshBtn" onclick="refreshAllData()" title="刷新数据" aria-label="刷新数据">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -613,6 +614,50 @@
         </div>
       </div>
     </div>
+  </section>
+  <!-- Unified hot settings; bootstrap-only values are explicitly read-only. -->
+  <section id="tab-settings" class="admin-tab hidden">
+    <div class="card">
+      <div class="card-header"><div><h2 class="card-title">统一配置</h2><div class="card-subtitle">集中管理可热更新设置；启动参数在底部只读展示</div></div><button type="button" class="btn btn-sm" id="settingsReload">重新加载</button></div>
+      <div id="settingsMessage" class="card-hint" role="status">进入此页后读取配置。</div>
+      <form id="settingsForm" novalidate>
+        <fieldset class="settings-section"><legend>请求审计</legend><div class="settings-grid">
+          <label class="settings-check"><input id="settingAuditEnabled" type="checkbox">启用请求审计</label>
+          <label>保留天数<input id="settingAuditRetention" class="input" type="number" min="1" max="90" step="1"><small>默认 7 天</small></label>
+          <label>最大记录条数<input id="settingAuditRecords" class="input" type="number" min="1" max="100000" step="1"></label>
+          <label>单条正文上限（MiB）<input id="settingAuditBodyMiB" class="input" type="number" min="0.000244140625" max="10" step="any"><small>最大 10 MiB；1 MiB = 1,048,576 字节</small></label>
+          <label>审计总量上限（MiB）<input id="settingAuditTotalMiB" class="input" type="number" min="1" max="1024" step="any"><small>最大 1024 MiB（1 GiB）；先达到条数、容量或期限即清理旧记录</small></label>
+        </div><p class="card-hint">启用后保留文字请求 JSON 明文，可能包含凭据、会话和个人信息；图片、音视频及文件载荷不留存，不采集 IP、鉴权头或响应正文。</p></fieldset>
+        <fieldset class="settings-section"><legend>用量与时间</legend><div class="settings-grid">
+          <label>统计落盘间隔（秒）<input id="settingFlushSeconds" class="input" type="number" min="1" max="3600" step="1"></label>
+          <label>小时账本保留天数<input id="settingLedgerRetention" class="input" type="number" min="1" max="3650" step="1"><small>默认 90 天；不等于审计正文保留期限</small></label>
+          <label>显示与统计时区<input id="settingTimezone" class="input" type="text" autocomplete="off" placeholder="Asia/Shanghai"><small>使用 IANA 时区，如 Asia/Shanghai、UTC</small></label>
+        </div></fieldset>
+        <fieldset class="settings-section"><legend>模型价格同步</legend><div class="settings-grid">
+          <label class="settings-wide">同步地址<input id="settingPricingURL" class="input mono" type="url" autocomplete="off" placeholder="https://models.dev/api.json"></label>
+          <label>同步间隔（小时）<input id="settingPricingHours" class="input" type="number" min="1" max="720" step="1"><small>默认 24 小时</small></label>
+          <label>HTTP 超时（秒）<input id="settingPricingTimeout" class="input" type="number" min="1" max="300" step="1"></label>
+          <label class="settings-check"><input id="settingIncludeUsage" type="checkbox">自动请求流式用量信息</label>
+          <label class="settings-wide">价格缓存文件路径<input id="settingCacheFile" class="input mono" type="text" autocomplete="off"><small>宿主进程可写路径；不可将鉴权密钥填入此字段</small></label>
+        </div></fieldset>
+        <div id="settingsPruneWarning" class="settings-prune hidden"><label><input type="checkbox" id="settingsAcknowledgePrune">我确认降低保留期限、记录条数或容量可能清理历史数据</label></div>
+        <div class="settings-save-row"><span id="settingsDirtyState" class="card-hint">尚未读取</span><button type="button" class="btn" id="settingsDiscard">放弃未保存修改</button><button type="submit" class="btn btn-primary" id="settingsSave" disabled>保存配置</button></div>
+      </form>
+    </div>
+    <div class="settings-jump-grid">
+      <button type="button" class="card settings-jump" id="settingsJumpKeys"><strong>API Key 与规则</strong><span>管理密钥、并发、额度和单 Key 路由</span></button>
+      <button type="button" class="card settings-jump" id="settingsJumpPolicy"><strong>全局默认策略与凭证池</strong><span>编辑未列出 Key 的策略及上游绑定</span></button>
+      <button type="button" class="card settings-jump" id="settingsJumpPricing"><strong>模型价格覆盖</strong><span>编辑模型、通配符与默认价格</span></button>
+    </div>
+    <div class="card"><div class="card-header"><div><h2 class="card-title">高级启动配置</h2><div class="card-subtitle">单独写入宿主配置文件；可能触发宿主重载，数据库路径需重启且不会自动迁移数据</div></div></div><dl id="settingsBootstrap" class="settings-bootstrap"></dl>
+      <form id="settingsBootstrapForm" novalidate><div class="settings-grid">
+        <label class="settings-check"><input id="settingBootstrapEnabled" type="checkbox">启动时启用插件</label>
+        <label>插件优先级<input id="settingBootstrapPriority" class="input" type="number" min="-10000" max="10000" step="1"></label>
+        <label class="settings-wide">SQLite 数据库路径<input id="settingBootstrapDB" class="input mono" type="text" autocomplete="off"><small id="settingsDBLockNote">变更路径不会自动复制旧数据。</small></label>
+        <label class="settings-wide">新插件 admin_token（留空保留原值）<input id="settingBootstrapAdminToken" class="input mono" type="password" autocomplete="new-password"><small>兼容旧配置，不是 CPA 的 Management Key；不会回显当前值。</small></label>
+        <label class="settings-check"><input id="settingBootstrapClearToken" type="checkbox">清除旧插件 admin_token</label>
+      </div><div class="settings-prune"><label><input id="settingsAcknowledgeRestart" type="checkbox">我已备份配置，理解保存后可能被宿主热重载（禁用可能使页面失效），并会按需重启 CPA</label><label id="settingsPathChangeWarning" class="hidden"><input id="settingsAcknowledgeDBChange" type="checkbox">我确认数据库路径变化不会自动迁移数据，已备份并准备好目标数据库</label></div><div class="settings-save-row"><span id="settingsBootstrapMessage" class="card-hint" role="status"></span><button type="submit" class="btn" id="settingsBootstrapSave" disabled>保存启动配置</button></div></form>
+      <p class="card-hint">旧 JSON 文件字段只用于兼容迁移，不推荐继续配置；明文密钥不会被此页读取或回显。受环境变量锁定的数据库路径不能在这里修改。</p><dl id="settingsDeprecated" class="settings-bootstrap"></dl></div>
   </section>
   </div><!-- /#adminWorkspace -->
 </div><!-- /.wrap -->
