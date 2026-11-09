@@ -31,7 +31,10 @@ func (m *Manager) configureAudit(cfg AuditConfig) {
 	go func() {
 		defer close(runtime.done)
 		cleanup := func() {
-			work, cancel := context.WithTimeout(ctx, 2*time.Second)
+			// Stop wakes the loop but lets an active cleanup finish within its own
+			// deadline. Cancelling its transaction mid-commit can leave database/sql
+			// asynchronous rollback still closing the shared driver during shutdown.
+			work, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
 			_ = store.Prune(work, time.Now())
 		}
@@ -96,4 +99,23 @@ func (m *Manager) recordAuditCaptureFailure() {
 		runtime.dropped.Add(1)
 		runtime.lastFailure.Store(time.Now().UTC().UnixMilli())
 	}
+}
+
+// writeCurrentAudit acquires a generation lease after CPU-only body preparation.
+// A runtime swap waits for in-flight SQL writes, and a prepared old-generation
+// capture cannot write after a disabling or tighter configuration has applied.
+// Do not call recordAuditCaptureFailure inside this lease: a nested RLock could
+// deadlock with a writer already waiting to reconfigure the runtime.
+func (m *Manager) writeCurrentAudit(expected *audit.Store, write func(*audit.Store) error) bool {
+	m.auditMu.RLock()
+	defer m.auditMu.RUnlock()
+	current := m.auditRuntime
+	if expected == nil || current == nil || current.store != expected || !current.cfg.isEnabled() {
+		return false
+	}
+	if err := write(current.store); err != nil {
+		current.dropped.Add(1)
+		current.lastFailure.Store(time.Now().UTC().UnixMilli())
+	}
+	return true
 }

@@ -92,7 +92,22 @@ func (s *Scheduler) Pick(apiKey string, binding UpstreamBinding, req pluginapi.S
 			AuthID:  sorted[0].ID,
 		}
 	default:
-		// Default: round-robin across matching candidates within the highest available priority tier
+		// The host deliberately supplies candidates across all priorities so a binding
+		// can select a lower tier when it has no higher-tier match. Once constrained,
+		// preserve the host priority contract and rotate only within the best tier.
+		bestPriority := matched[0].Priority
+		for _, candidate := range matched[1:] {
+			if candidate.Priority > bestPriority {
+				bestPriority = candidate.Priority
+			}
+		}
+		tier := make([]pluginapi.SchedulerAuthCandidate, 0, len(matched))
+		for _, candidate := range matched {
+			if candidate.Priority == bestPriority {
+				tier = append(tier, candidate)
+			}
+		}
+		matched = tier
 		idx := s.nextIndex(apiKey) % uint64(len(matched))
 		return pluginapi.SchedulerPickResponse{
 			Handled: true,

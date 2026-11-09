@@ -15,7 +15,7 @@ func TestSystemMessageFilteringPreservesOtherRolesAndMessageOrder(t *testing.T) 
 	if result.State != "stored_raw_system_filtered" || result.Truncated || !json.Valid([]byte(result.Body)) {
 		t.Fatalf("bad filtered body: %s", result.State)
 	}
-	for _, secret := range []string{"SYSTEM-SECRET", "SECOND-SYSTEM", "keep-developer"} {
+	for _, secret := range []string{"SYSTEM-SECRET", "SECOND-SYSTEM", "keep-developer", "keep-tool"} {
 		if strings.Contains(result.Body, secret) {
 			t.Fatal("system content retained")
 		}
@@ -29,7 +29,7 @@ func TestSystemMessageFilteringPreservesOtherRolesAndMessageOrder(t *testing.T) 
 	if err := json.Unmarshal([]byte(result.Body), &saved); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"user", "assistant", "tool"}
+	want := []string{"user", "assistant"}
 	if len(saved.Messages) != len(want) {
 		t.Fatal("wrong remaining messages")
 	}
@@ -109,5 +109,49 @@ func TestDeveloperFilteringDoesNotInterpretNestedBusinessCollections(t *testing.
 		if !bytes.Contains(filtered, []byte(text)) {
 			t.Fatal("non-message field changed")
 		}
+	}
+}
+
+func TestToolRoleFilteredOnlyAtRootMessagesAndNeverToolDefinitions(t *testing.T) {
+	user := `{"role":"user","content":"USER-KEPT"}`
+	tool := `{"role":"tool","tool_call_id":"SECRET-CALL-ID","content":"TOOL-RESULT-REMOVED"}`
+	for _, key := range []string{"messages", "input", "contents"} {
+		for _, items := range [][]string{{tool}, {tool, user}, {user, tool}, {tool, user, tool}, {user, tool, tool, user}} {
+			raw := []byte("{\"" + key + "\":[" + strings.Join(items, ",") + "],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"tool-name-kept\"}}],\"business\":{\"role\":\"tool\",\"content\":\"business-kept\"}}")
+			before := append([]byte(nil), raw...)
+			filtered, changed := FilterSystemMessages(raw)
+			if !changed || !json.Valid(filtered) || !bytes.Equal(raw, before) || bytes.Contains(filtered, []byte("TOOL-RESULT-REMOVED")) || bytes.Contains(filtered, []byte("SECRET-CALL-ID")) {
+				t.Fatalf("tool content not removed safely: %s", filtered)
+			}
+			if !bytes.Contains(filtered, []byte("tool-name-kept")) || !bytes.Contains(filtered, []byte("business-kept")) {
+				t.Fatal("tool definition or business content changed")
+			}
+		}
+	}
+	escaped := []byte(`[{"content":"escaped-tool-removed","role":"tool"},{"role":"assistant","tool_calls":[{"id":"call-kept","type":"function","function":{"name":"lookup","arguments":"{}"}}]}]`)
+	filtered, changed := FilterSystemMessages(escaped)
+	if !changed || !json.Valid(filtered) || bytes.Contains(filtered, []byte("escaped-tool-removed")) || !bytes.Contains(filtered, []byte("call-kept")) {
+		t.Fatal("escaped root tool filtering or assistant call retention failed")
+	}
+}
+
+func TestRoleFilterDenseScalarArraysUseBoundedAllocations(t *testing.T) {
+	raw := []byte("{\"messages\":[" + strings.Repeat("null,", 200000) + "null]}")
+	allocations := testing.AllocsPerRun(2, func() {
+		filtered, changed := FilterSystemMessages(raw)
+		if changed || !bytes.Equal(filtered, raw) {
+			t.Fatal("dense ordinary array changed")
+		}
+	})
+	if allocations > 64 {
+		t.Fatalf("per-element allocation returned: %f", allocations)
+	}
+}
+
+func TestToolRoleUnicodeEscapesAndDuplicateRoleCannotBypassFiltering(t *testing.T) {
+	raw := []byte(`{"messages":[{"r\u006fle":"t\u006fol","content":"escaped-drop"},{"role":"user","role":"tool","content":"duplicate-drop"},{"role":"assistant","content":"keep"}]}`)
+	filtered, changed := FilterSystemMessages(raw)
+	if !changed || !json.Valid(filtered) || bytes.Contains(filtered, []byte("escaped-drop")) || bytes.Contains(filtered, []byte("duplicate-drop")) || !bytes.Contains(filtered, []byte("keep")) {
+		t.Fatalf("escaped role filtering failed: %s", filtered)
 	}
 }

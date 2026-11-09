@@ -59,11 +59,10 @@ func (m *Manager) handleRequestInterceptBefore(raw []byte) ([]byte, error) {
 
 	apiKey := cfg.ResolveAPIKeyFromContext(req.Headers, nil, req.Metadata)
 	rule, _ := cfg.ResolveKeyRule(apiKey)
-	m.beginAudit(req, apiKey, rule.Name)
 
 	// 1. Check whether API Key is enabled/allowed
 	if !rule.IsEnabled() {
-		m.rejectAudit(req.RequestID, http.StatusForbidden)
+		m.beginRejectedAudit(req, apiKey, rule.Name, http.StatusForbidden)
 		return okEnvelope(authz.NewForbiddenKeyResponse("API key is not authorized or has been disabled"))
 	}
 
@@ -73,7 +72,7 @@ func (m *Manager) handleRequestInterceptBefore(raw []byte) ([]byte, error) {
 		displayModel = strings.TrimSpace(req.Model)
 	}
 	if !authz.AllowsModel(rule.AllowedModels, req.RequestedModel, req.Model) {
-		m.rejectAudit(req.RequestID, http.StatusForbidden)
+		m.beginRejectedAudit(req, apiKey, rule.Name, http.StatusForbidden)
 		return okEnvelope(authz.NewForbiddenModelResponse(displayModel))
 	}
 
@@ -85,7 +84,7 @@ func (m *Manager) handleRequestInterceptBefore(raw []byte) ([]byte, error) {
 			usedUSD = 0
 		}
 		if usedUSD >= rule.QuotaLimitUSD {
-			m.rejectAudit(req.RequestID, http.StatusTooManyRequests)
+			m.beginRejectedAudit(req, apiKey, rule.Name, http.StatusTooManyRequests)
 			return okEnvelope(authz.NewQuotaExceededResponse(usedUSD, rule.QuotaLimitUSD))
 		}
 	}
@@ -101,9 +100,12 @@ func (m *Manager) handleRequestInterceptBefore(raw []byte) ([]byte, error) {
 		AcquiredAt:     time.Now(),
 	}, rule.MaxConcurrency)
 	if !acquired {
-		m.rejectAudit(req.RequestID, http.StatusTooManyRequests)
+		m.beginRejectedAudit(req, apiKey, rule.Name, http.StatusTooManyRequests)
 		return okEnvelope(authz.NewConcurrencyLimitResponse(rule.MaxConcurrency))
 	}
+
+	// Audit full request bodies only after policy and concurrency admission.
+	m.beginAudit(req, apiKey, rule.Name)
 
 	// 5. Register in usage store for lifecycle tracking
 	m.usageStore.BeginRequest(req.RequestID, apiKey, rule.Name, req.Model, req.RequestedModel, req.SourceFormat, req.Stream)

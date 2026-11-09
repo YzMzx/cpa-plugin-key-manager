@@ -59,8 +59,8 @@ import (
 	"fmt"
 	"unsafe"
 
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 	"github.com/YzMzx/cpa-plugin-key-manager/internal/plugin"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 )
 
 var globalManager = plugin.NewManager(invokeHostABI)
@@ -84,10 +84,29 @@ func cliproxy_plugin_init(host *C.cliproxy_host_api, pluginOut *C.cliproxy_plugi
 }
 
 //export cliproxyPluginCall
-func cliproxyPluginCall(method *C.char, request *C.uint8_t, requestLen C.size_t, response *C.cliproxy_buffer) C.int {
+func cliproxyPluginCall(method *C.char, request *C.uint8_t, requestLen C.size_t, response *C.cliproxy_buffer) (result C.int) {
+	// Never propagate a Go panic across the C callback boundary or expose its value.
+	defer func() {
+		if recover() != nil {
+			if response != nil && response.ptr != nil {
+				C.free(response.ptr)
+				response.ptr = nil
+				response.len = 0
+			}
+			writeResponseBuffer(response, plugin.ErrorEnvelope("plugin_panic", "plugin call failed unexpectedly"))
+			result = 1
+		}
+	}()
+	if response == nil {
+		return 1
+	}
 	if response != nil {
 		response.ptr = nil
 		response.len = 0
+	}
+	if err := validateABICopy(uint64(requestLen), request != nil); err != nil {
+		writeResponseBuffer(response, plugin.ErrorEnvelope("invalid_buffer", err.Error()))
+		return 1
 	}
 	if method == nil {
 		writeResponseBuffer(response, plugin.ErrorEnvelope("invalid_method", "method is required"))
@@ -118,6 +137,8 @@ func cliproxyPluginFree(ptr unsafe.Pointer, length C.size_t) {
 
 //export cliproxyPluginShutdown
 func cliproxyPluginShutdown() {
+	// Shutdown has no result buffer; contain panics rather than unwind into C.
+	defer func() { _ = recover() }()
 	globalManager.Shutdown()
 }
 
@@ -152,7 +173,10 @@ func invokeHostABI(method string, payload []byte) ([]byte, error) {
 	if rc != 0 {
 		return nil, fmt.Errorf("host callback %s returned code %d", method, int(rc))
 	}
-	if respBuf.ptr == nil || respBuf.len == 0 {
+	if err := validateABICopy(uint64(respBuf.len), respBuf.ptr != nil); err != nil {
+		return nil, err
+	}
+	if respBuf.len == 0 {
 		return nil, nil
 	}
 	return C.GoBytes(respBuf.ptr, C.int(respBuf.len)), nil

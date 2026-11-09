@@ -13,6 +13,9 @@ import (
 )
 
 func validateConfig(cfg Config) error {
+	if settingsCacheConflicts(runtimeSettingsFromConfig(cfg), cfg) {
+		return fmt.Errorf("pricing cache path conflicts with protected storage")
+	}
 	if err := cfg.Audit.validate(); err != nil {
 		return err
 	}

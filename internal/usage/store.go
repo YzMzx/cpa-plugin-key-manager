@@ -154,9 +154,13 @@ type TrackedRequest struct {
 	billedPrice      pricing.ModelPrice
 	billedPriceFound bool
 	// BilledKey is the tuple bucket already billed for this request, if any.
-	BilledKey      string
-	CountedRequest bool
-	Failed         bool
+	BilledKey         string
+	CountedRequest    bool
+	Failed            bool
+	HostRequestID     string
+	HostUsageRecorded bool
+	LogicalRequest    bool
+	CompletionKnown   bool
 
 	// ledgerStamps are the ledger slices this request already contributed; they are
 	// subtracted when the request is later reported as failed.
@@ -178,6 +182,7 @@ type Store struct {
 	lastPersistenceError   string
 	lastAccountingError    string
 	flushInProgress        bool
+	closing                bool
 	mu                     sync.Mutex
 	pricing                *pricing.Engine
 	keys                   map[string]*KeyStats
@@ -249,6 +254,12 @@ func NewStore(pricingEngine *pricing.Engine) *Store {
 func (s *Store) ConfigureSQLite(dbPath string, flushInterval time.Duration) error {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
+	s.mu.Lock()
+	closePending := s.closing && s.db != nil
+	s.mu.Unlock()
+	if closePending {
+		return fmt.Errorf("usage store shutdown is still in progress")
+	}
 	if flushInterval <= 0 {
 		flushInterval = 10 * time.Second
 	}
@@ -259,6 +270,7 @@ func (s *Store) ConfigureSQLite(dbPath string, flushInterval time.Duration) erro
 	s.mu.Lock()
 	interval := s.flushInterval
 	if err == nil {
+		s.closing = false
 		interval = flushInterval
 		s.flushInterval = interval
 	}
@@ -271,7 +283,8 @@ func (s *Store) ConfigureSQLite(dbPath string, flushInterval time.Duration) erro
 }
 
 // Close stops the flusher and flushes before releasing the database. On failure
-// the handle and dirty state remain available so the caller can retry safely.
+// pre-close flush failure keeps dirty state retryable. Once driver shutdown starts,
+// later accounting is rejected and Close retries only driver drain/lock release.
 func (s *Store) Close() error {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
@@ -284,15 +297,18 @@ func (s *Store) Close() error {
 	if s.db == nil {
 		return nil
 	}
-	s.pruneLedgerLocked(time.Now())
-	batch := s.takeFlushBatchLocked()
-	if !batch.empty() {
-		if err := writeFlushBatch(s.db.Conn(), batch); err != nil {
-			s.restoreFlushBatchLocked(batch)
-			s.lastPersistenceError = err.Error()
-			return err
+	if !s.closing {
+		s.pruneLedgerLocked(time.Now())
+		batch := s.takeFlushBatchLocked()
+		if !batch.empty() {
+			if err := writeFlushBatch(s.db.Conn(), batch); err != nil {
+				s.restoreFlushBatchLocked(batch)
+				s.lastPersistenceError = err.Error()
+				return err
+			}
+			s.lastPersistenceSuccess, s.lastPersistenceError = time.Now().UTC(), ""
 		}
-		s.lastPersistenceSuccess, s.lastPersistenceError = time.Now().UTC(), ""
+		s.closing = true
 	}
 	if err := s.db.Close(); err != nil {
 		s.lastPersistenceError = err.Error()
@@ -381,6 +397,7 @@ func (s *Store) BeginRequest(requestID, apiKey, keyName, model, requestedModel, 
 	}
 
 	s.byRequestID[reqID] = &TrackedRequest{
+		LogicalRequest: true,
 		RequestID:      reqID,
 		APIKey:         apiKey,
 		KeyName:        keyName,
@@ -474,15 +491,6 @@ func (s *Store) CompleteRequest(completion pluginapi.RequestCompletion, fallback
 	if reqID != "" {
 		tr = s.byRequestID[reqID]
 	}
-	if tr == nil && traceID != "" {
-		if byTrace, ok := s.byTraceID[traceID]; ok {
-			tr = byTrace
-			if reqID != "" {
-				tr.RequestID = reqID
-				s.byRequestID[reqID] = tr
-			}
-		}
-	}
 	if tr == nil {
 		tr = s.ensureTrackerLocked(reqID, fallbackAPIKey, completion.Model, completion.RequestedModel, completion.SourceFormat, completion.Stream)
 	}
@@ -499,18 +507,34 @@ func (s *Store) CompleteRequest(completion pluginapi.RequestCompletion, fallback
 	if completion.RequestedModel != "" && tr.RequestedModel == "" {
 		tr.RequestedModel = strings.TrimSpace(completion.RequestedModel)
 	}
+	tr.LogicalRequest = true
 	if traceID != "" {
 		tr.TraceID = traceID
-		// An explicit shared TraceID is the only cross-request-id merge proof.
-		if existingTrace, ok := s.byTraceID[traceID]; ok && existingTrace != tr {
-			s.mergeTrackedRequestLocked(tr, existingTrace)
+		if tr.HostRequestID == "" {
+			var candidate *TrackedRequest
+			for _, attempt := range s.byRequestID {
+				if attempt == tr || !attempt.HostUsageRecorded || attempt.LogicalRequest || attempt.TraceID != traceID || attempt.Failed != failed || attempt.APIKey != tr.APIKey {
+					continue
+				}
+				if candidate == nil || attempt.CompletedAt.After(candidate.CompletedAt) {
+					candidate = attempt
+				}
+			}
+			if candidate != nil {
+				s.mergeTrackedRequestLocked(tr, candidate)
+				tr.HostRequestID = candidate.HostRequestID
+				tr.HostUsageRecorded = true
+			}
 		}
 		s.byTraceID[traceID] = tr
 	}
+	tr.CompletionKnown = true
 
 	tr.CompletedAt = time.Now()
-	tr.Failed = failed
-	if failed {
+	if !tr.HostUsageRecorded || reqID == tr.HostRequestID {
+		tr.Failed = failed
+	}
+	if tr.Failed {
 		// A stream may already have contributed tokens before the failure was known.
 		s.rollbackLedgerStampsLocked(tr)
 	}
@@ -540,14 +564,16 @@ func (s *Store) ObserveHostUsageRecord(rec pluginapi.UsageRecord, keyName string
 		s.seenHostReqID[hostReqID] = time.Now()
 	}
 
-	// 1. Try matching by TraceID
+	// A TraceID identifies an incoming request, not one upstream execution.
 	var tr *TrackedRequest
-	if traceID != "" {
-		tr = s.byTraceID[traceID]
-	}
-	// 2. Try matching by RequestID
-	if tr == nil && hostReqID != "" {
+	if hostReqID != "" {
 		tr = s.byRequestID[hostReqID]
+	}
+	if tr == nil && traceID != "" {
+		candidate := s.byTraceID[traceID]
+		if candidate != nil && candidate.APIKey == apiKey && candidate.HostRequestID == "" && (!candidate.CompletionKnown && !rec.Failed || candidate.CompletionKnown && candidate.Failed == rec.Failed) {
+			tr = candidate
+		}
 	}
 	// Only records without an explicit request identity may use a conservative
 	// fallback: one uncompleted, model-matching tracker, never "the latest".
@@ -605,9 +631,16 @@ func (s *Store) ObserveHostUsageRecord(rec pluginapi.UsageRecord, keyName string
 		s.byRequestID[id] = tr
 	}
 
+	if hostReqID != "" {
+		s.byRequestID[hostReqID] = tr
+		tr.HostRequestID = hostReqID
+	}
+	tr.HostUsageRecorded = true
 	if traceID != "" {
 		tr.TraceID = traceID
-		s.byTraceID[traceID] = tr
+		if existing := s.byTraceID[traceID]; existing == nil || !existing.LogicalRequest {
+			s.byTraceID[traceID] = tr
+		}
 	}
 	if apiKey != "__anonymous__" && (tr.APIKey == "" || tr.APIKey == "__anonymous__") {
 		tr.APIKey = apiKey
@@ -634,8 +667,8 @@ func (s *Store) ObserveHostUsageRecord(rec pluginapi.UsageRecord, keyName string
 		tr.AuthType = authType
 	}
 
+	tr.Failed = rec.Failed
 	if rec.Failed {
-		tr.Failed = true
 		s.rollbackLedgerStampsLocked(tr)
 	}
 	// Merge host usage with interceptor usage (taking the more complete value per bucket)
@@ -667,9 +700,6 @@ func (s *Store) ensureTrackerLocked(reqID, apiKey, model, requestedModel, source
 func isInvalidKeyID(k string) bool {
 	v := strings.TrimSpace(k)
 	if v == "" || v == "__anonymous__" || strings.EqualFold(v, "anonymous") {
-		return true
-	}
-	if v == "sk-tenant-alpha-prod" || v == "sk-tenant-beta-dev" {
 		return true
 	}
 	return false
@@ -1071,6 +1101,9 @@ func MaskAPIKey(key string) string {
 	k := strings.TrimSpace(key)
 	if k == "" || k == "__anonymous__" {
 		return "anonymous"
+	}
+	if len([]rune(k)) <= 2 {
+		return "***"
 	}
 	if len(k) <= 8 {
 		return k[:2] + "***"

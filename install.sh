@@ -19,7 +19,6 @@ cpa_dir="${CPA_DIR:-$(pwd)}"
 release_tag="${CPA_PLUGIN_VERSION:-}"
 local_source="${CPA_PLUGIN_LOCAL:-}"
 init_only=0
-reset_data=0
 skip_models_sync=0
 
 tmp_dir=""
@@ -47,11 +46,18 @@ Options:
   --version <tag>      Install a specific release tag (e.g. v0.2.0; default: latest)
   --local <file>       Install from a local archive (.tar.gz) or compiled library (.so/.dylib/.dll)
   --init-only          Only initialize the plugin data directory and config.yaml (skip binary download)
-  --reset-data         Move only SQLite database/WAL/SHM/lock files into data/backup-<timestamp>/
+  --reset-data         Unsupported: stop CPA, back up the actual usage_db_file, then reset manually
   --skip-models-sync   Skip initial models.dev reference pricing download
   -h, --help           Show this help message
 EOF
 }
+
+# Fail closed even when --help or another option precedes the removed reset flag.
+for option in "$@"; do
+  if [ "$option" = "--reset-data" ]; then
+    fail "--reset-data is disabled: the installer never resets databases automatically. Stop CPA, fully back up the actual storage.usage_db_file (or CPA_KEY_MANAGER_USAGE_DB) and its WAL/SHM files, then reset manually. 请停止 CPA，完整备份实际数据库后手动重置。"
+  fi
+done
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -75,8 +81,7 @@ while [ $# -gt 0 ]; do
       shift
       ;;
     --reset-data)
-      reset_data=1
-      shift
+      fail "--reset-data is disabled: the installer never resets databases automatically. Stop CPA, fully back up the actual storage.usage_db_file (or CPA_KEY_MANAGER_USAGE_DB) and its WAL/SHM files, then reset manually. 请停止 CPA，完整备份实际数据库后手动重置。"
       ;;
     --skip-models-sync)
       skip_models_sync=1
@@ -265,23 +270,7 @@ init_plugin_data() {
 
   # Runtime records live only in SQLite. The plugin creates its database on first start.
 
-  if [ "$reset_data" -eq 1 ]; then
-    backup_dir="${data_dir}/backup-$(date -u +%Y%m%d-%H%M%S 2>/dev/null || echo 0)"
-    mkdir -p "$backup_dir" || fail "failed to create backup directory: ${backup_dir}"
-    moved=0
-    for f in "${data_dir}"/key_usage.db "${data_dir}"/key_usage.db-wal "${data_dir}"/key_usage.db-shm "${data_dir}"/key_usage.db.lock; do
-      if [ -f "$f" ]; then
-        mv -f "$f" "$backup_dir/" && moved=1
-      fi
-    done
-    if [ "$moved" -eq 1 ]; then
-      info "Reset plugin data, previous files moved to: ${backup_dir}"
-      info "A fresh database will be created on the next start."
-    else
-      info "Nothing to reset in ${data_dir}"
-    fi
-    return
-  fi
+
 }
 
 init_plugin_config() {

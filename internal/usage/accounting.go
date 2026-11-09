@@ -11,6 +11,14 @@ import (
 // reconcileTrackerDeltaLocked replaces only this request's contribution. A late
 // served model, credential or terminal outcome must never move a shared bucket.
 func (s *Store) reconcileTrackerDeltaLocked(tr *TrackedRequest) {
+	if s.closing {
+		s.lastAccountingError = "usage store is shutting down; late accounting was rejected"
+		return
+	}
+	if tr.ExtractedUsage.Invalid || tr.BilledUsage.Invalid {
+		s.lastAccountingError = "usage token normalization exceeds supported range"
+		return
+	}
 	apiKey := normalizeAPIKey(tr.APIKey)
 	requested := requestedModelOf(tr)
 	if isInvalidKeyID(apiKey) || requested == "" {
@@ -125,6 +133,11 @@ func (s *Store) reconcileTrackerDeltaLocked(tr *TrackedRequest) {
 // mergeTrackedRequestLocked removes the duplicate tracker contribution before
 // transferring its observed data to a tracker sharing an explicit TraceID.
 func (s *Store) mergeTrackedRequestLocked(dst, src *TrackedRequest) {
+	if src.HostUsageRecorded {
+		dst.HostRequestID = src.HostRequestID
+		dst.HostUsageRecorded = true
+		dst.Failed = src.Failed
+	}
 	if dst.APIKey == "" || dst.APIKey == "__anonymous__" {
 		dst.APIKey = src.APIKey
 	}

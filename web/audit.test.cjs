@@ -296,3 +296,5 @@ test("omitted body codes merge into actionable categories and never reveal accid
  const contradictory=record("contradictory",{body_state:"stored_raw",body_truncated:true,request_body:'{"secret":"must-not-render"}'});
  assert.equal(Audit.bodyStatus(contradictory),"未保存正文");assert.doesNotMatch(Audit.bodyView(contradictory).json,/must-not-render/);
 });
+
+test("locally rejected request metadata never displays a request body",()=>{const value=Audit.bodyView(record("rejected-body",{body_state:"omitted_rejected",request_body:'{"private":"must-not-show"}'}));assert.equal(value.state,"未保存（请求已拒绝）");assert.equal(value.retainedBytes,0);assert.doesNotMatch(value.json,/must-not-show/);});

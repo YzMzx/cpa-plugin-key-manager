@@ -404,3 +404,30 @@ test("settings tab retains dirty unit draft on global refresh, saves with fresh 
  await env.run("settingsView.save()");assert.equal(env.run("settingsView.isDirty()"),false);assert.ok(calls.some(call=>call.url.endsWith("/settings")&&call.options.method==="PUT"));
  env.element("settingBootstrapDB").value="unsaved-path";env.run('lockAdminWorkspace("expired")');assert.equal(env.element("settingBootstrapDB").value,"");assert.equal(env.element("settingTimezone").value,"");assert.equal(env.element("settingsSave").disabled,true);
 });
+
+test("deleting a key never places its plaintext in the management URL",async()=>{
+ const calls=[];const key='sk-delete-sensitive-&?';
+ const env=environment(async(url,opts={})=>{calls.push({url,opts});return response({ok:true,overview:overview({rules_revision:5})});});
+ await env.run('deleteKeyRule('+JSON.stringify(key)+')');
+ const request=calls.find(call=>call.opts.method==="DELETE");assert.ok(request);assert.equal(request.url,"/v0/management/key-guard/keys");assert.deepEqual(JSON.parse(request.opts.body),{api_key:key});assert.ok(!request.url.includes(key));assert.equal(request.url.includes("api_key="),false);
+});
+
+test("default policy draft survives refresh and unrelated CRUD across all selector edit paths",()=>{
+ const env=environment();const initial=overview({rules_revision:4,default_policy:{allow_unlisted_keys:true,max_concurrency:1,allowed_models:["model-a"],upstream_binding:{strategy:"round-robin",credentials:["cred-a"]}},available_models:[{id:"model-a"},{id:"model-b"}],auth_files:[{name:"cred-a"},{name:"cred-b"}]});
+ env.context.initial=initial;env.run("applyOverviewData(initial)");
+ env.element("dpMaxConcurrency").value="7";env.element("dpMaxConcurrency").listeners.input();
+ env.run('toggleModelCheckItem("dp","model-b",true);toggleCredCheckItem("dp","cred-b",true)');
+ env.context.changed=overview({rules_revision:5,default_policy:{allow_unlisted_keys:false,max_concurrency:2,allowed_models:["server-only"],upstream_binding:{strategy:"fill-first",credentials:[]}},available_models:[{id:"model-a"},{id:"model-b"}],auth_files:[{name:"cred-a"},{name:"cred-b"}]});
+ env.run("applyOverviewData(changed)");assert.equal(env.element("dpMaxConcurrency").value,"7");assert.equal(env.element("dpAllowUnlisted").value,"true");assert.equal(env.run('selectorState.dp.selectedModels.has("model-b")'),true);assert.equal(env.run('selectorState.dp.selectedCreds.has("cred-b")'),true);assert.equal(env.run("defaultPolicyRevision"),4);assert.match(env.element("dpDraftStatus").textContent,/版本已变化/);
+ env.run("discardDefaultPolicyDraft()");assert.equal(env.element("dpMaxConcurrency").value,2);assert.equal(env.element("dpAllowUnlisted").value,"false");assert.equal(env.run("defaultPolicyDirty"),false);assert.equal(env.run("defaultPolicyRevision"),5);
+ for(const expression of ['onToggleAllModels("dp")','onToggleAllCreds("dp")','batchCheckModels("dp",true)','batchCheckCreds("dp",true)']){env.run(expression);assert.equal(env.run("defaultPolicyDirty"),true);env.run("discardDefaultPolicyDraft()");}
+});
+
+test("default policy saves its draft revision, rebases only after success and preserves 409 edits",async()=>{
+ const calls=[];let conflict=false;const env=environment(async(url,opts={})=>{calls.push({url,opts});if(url.includes("default-policy")){if(conflict)return response({error:{message:"stale"}},409);return response({ok:true,overview:overview({rules_revision:5,default_policy:JSON.parse(opts.body)})});}return response(overview());});
+ env.context.initial=overview({rules_revision:4,default_policy:{allow_unlisted_keys:true,max_concurrency:1,allowed_models:["*"],upstream_binding:{strategy:"round-robin",credentials:[]}}});env.run("applyOverviewData(initial)");
+ env.element("dpMaxConcurrency").value="8";env.element("dpMaxConcurrency").listeners.change();await env.run("saveDefaultPolicy()");
+ let request=calls.find(call=>call.url.includes("default-policy"));assert.equal(request.opts.headers.get("X-Key-Guard-Revision"),"4");assert.equal(JSON.parse(request.opts.body).max_concurrency,8);assert.equal(env.run("defaultPolicyDirty"),false);assert.equal(env.run("defaultPolicyRevision"),5);
+ conflict=true;env.element("dpMaxConcurrency").value="9";env.element("dpMaxConcurrency").listeners.input();env.run("overviewData.rules_revision=6");await env.run("saveDefaultPolicy()");assert.equal(env.run("defaultPolicyDirty"),true);assert.equal(env.element("dpMaxConcurrency").value,"9");assert.equal(env.run("defaultPolicyRevision"),5);assert.match(env.element("dpDraftStatus").textContent,/版本已变化/);
+ env.run('lockAdminWorkspace("expired")');assert.equal(env.run("defaultPolicyDirty"),false);assert.equal(env.run("defaultPolicyRevision"),null);
+});

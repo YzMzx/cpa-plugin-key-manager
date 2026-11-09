@@ -21,6 +21,11 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# Reject before directory creation, downloads, binary replacement or database access.
+if ($ResetData) {
+    throw "-ResetData is disabled: the installer never resets databases automatically. Stop CPA, fully back up the actual storage.usage_db_file (or CPA_KEY_MANAGER_USAGE_DB) and its WAL/SHM files, then reset manually."
+}
 $Repo = if ($env:CPA_PLUGIN_REPO) { $env:CPA_PLUGIN_REPO } else { "YzMzx/cpa-plugin-key-manager" }
 $PluginName = "cpa-plugin-key-manager"
 $PluginFile = "$PluginName.dll"
@@ -103,27 +108,6 @@ if (-not $InitOnly) {
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 
 # Runtime records live only in SQLite; the plugin creates its database on first start.
-$DbFiles = @("key_usage.db", "key_usage.db-wal", "key_usage.db-shm", "key_usage.db.lock")
-
-if ($ResetData) {
-    $BackupDir = Join-Path $DataDir ("backup-" + (Get-Date).ToUniversalTime().ToString("yyyyMMdd-HHmmss"))
-    New-Item -ItemType Directory -Force -Path $BackupDir | Out-Null
-    $Moved = 0
-    foreach ($name in $DbFiles) {
-        $path = Join-Path $DataDir $name
-        if (Test-Path $path) {
-            Move-Item -Force -Path $path -Destination $BackupDir
-            $Moved++
-        }
-    }
-    if ($Moved -gt 0) {
-        Write-Info "Reset plugin data, previous files moved to: $BackupDir"
-        Write-Info "A fresh database will be created on the next start."
-    } else {
-        Write-Info "Nothing to reset in $DataDir"
-    }
-}
-
 $PluginYamlBlock = @"
 
 # --- Added by cpa-plugin-key-manager installer ---

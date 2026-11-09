@@ -27,6 +27,8 @@ type NormalizedUsage struct {
 	TotalTokens         int64  `json:"total_tokens"`
 	ResponseModel       string `json:"response_model,omitempty"`
 	HasUsage            bool   `json:"has_usage"`
+	// Invalid preserves arithmetic errors through stream/host merging; never bill a normalized zero after overflow.
+	Invalid bool `json:"invalid,omitempty"`
 }
 
 // RecomputeTotal recalculates TotalTokens from the four orthogonal token buckets.
@@ -43,7 +45,12 @@ func (u *NormalizedUsage) RecomputeTotal() {
 	if u.CacheWriteTokens < 0 {
 		u.CacheWriteTokens = 0
 	}
-	calc := u.UncachedInputTokens + u.OutputTokens + u.CacheReadTokens + u.CacheWriteTokens
+	calc, valid := checkedTokenSum(u.UncachedInputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWriteTokens)
+	if !valid {
+		u.Invalid = true
+		u.HasUsage = true
+		return
+	}
 	if calc > 0 || u.TotalTokens < calc {
 		u.TotalTokens = calc
 	}
@@ -58,10 +65,11 @@ func (u *NormalizedUsage) RecomputeTotal() {
 // at the end of the stream only carries `output_tokens` (with input fields omitted or zero).
 // A later chunk's zero field NEVER overwrites an earlier chunk's non-zero field.
 func MergeUsage(existing, update NormalizedUsage) NormalizedUsage {
-	if !update.HasUsage && update.ResponseModel == "" {
+	if !update.HasUsage && !update.Invalid && update.ResponseModel == "" {
 		return existing
 	}
 	merged := existing
+	merged.Invalid = existing.Invalid || update.Invalid
 	if update.UncachedInputTokens > 0 {
 		merged.UncachedInputTokens = update.UncachedInputTokens
 	}
@@ -94,6 +102,7 @@ func MergeUsage(existing, update NormalizedUsage) NormalizedUsage {
 // Used when reconciling interceptor-extracted usage with host UsageRecord.Detail across protocol translations.
 func MergeMaxUsage(a, b NormalizedUsage) NormalizedUsage {
 	out := a
+	out.Invalid = a.Invalid || b.Invalid
 	if b.UncachedInputTokens > out.UncachedInputTokens {
 		out.UncachedInputTokens = b.UncachedInputTokens
 	}
@@ -432,7 +441,10 @@ func parseOpenAIOrResponsesUsageNode(node gjson.Result) NormalizedUsage {
 func parseGeminiUsageNode(node gjson.Result) NormalizedUsage {
 	promptTokens := node.Get("promptTokenCount").Int()
 	toolPromptTokens := node.Get("toolUsePromptTokenCount").Int()
-	rawInput := promptTokens + toolPromptTokens
+	rawInput, inputValid := checkedTokenSum(maxInt64(0, promptTokens), maxInt64(0, toolPromptTokens))
+	if !inputValid {
+		return NormalizedUsage{HasUsage: true, Invalid: true}
+	}
 
 	candidatesTokens := node.Get("candidatesTokenCount").Int()
 	thoughtsTokens := node.Get("thoughtsTokenCount").Int()
@@ -444,7 +456,10 @@ func parseGeminiUsageNode(node gjson.Result) NormalizedUsage {
 		uncachedInput = rawInput - cachedTokens
 	}
 
-	outputTokens := candidatesTokens + thoughtsTokens
+	outputTokens, outputValid := checkedTokenSum(maxInt64(0, candidatesTokens), maxInt64(0, thoughtsTokens))
+	if !outputValid {
+		return NormalizedUsage{HasUsage: true, Invalid: true}
+	}
 
 	hasAny := node.Get("promptTokenCount").Exists() ||
 		node.Get("candidatesTokenCount").Exists() ||

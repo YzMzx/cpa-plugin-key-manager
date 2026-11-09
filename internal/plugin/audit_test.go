@@ -108,8 +108,11 @@ func TestAuditRecordsLocallyRejectedRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	auditRequest(t, m, "audit-rejected")
+	for len(m.rejectedAuditSlots) > 0 {
+		time.Sleep(time.Millisecond)
+	}
 	records := auditRecords(t, m)
-	if len(records) != 1 || records[0].Outcome != "rejected" || records[0].StatusCode != 403 {
+	if len(records) != 1 || records[0].Outcome != "rejected" || records[0].StatusCode != 403 || records[0].BodyState != "omitted_rejected" {
 		t.Fatalf("rejection not audited: %+v", records)
 	}
 }
@@ -479,12 +482,12 @@ func TestAuditFiltersSystemAndDeveloperWithoutChangingUpstreamRequest(t *testing
 	if saved.BodyState != "stored_raw_system_filtered" || saved.BodyTruncated || saved.BodySHA256 == "" {
 		t.Fatal("filtered request body not persisted")
 	}
-	for _, secret := range []string{"PRIVATE-SYSTEM-PROMPT", "PRIVATE-DEVELOPER-PROMPT"} {
+	for _, secret := range []string{"PRIVATE-SYSTEM-PROMPT", "PRIVATE-DEVELOPER-PROMPT", "保留工具消息"} {
 		if strings.Contains(saved.RequestBody, secret) {
 			t.Fatal("excluded role body reached database")
 		}
 	}
-	for _, text := range []string{"保留用户消息", "保留助手消息", "保留工具消息"} {
+	for _, text := range []string{"保留用户消息", "保留助手消息"} {
 		if !strings.Contains(saved.RequestBody, text) {
 			t.Fatal("allowed role body lost")
 		}

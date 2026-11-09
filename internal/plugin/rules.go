@@ -153,6 +153,17 @@ func (m *Manager) UpsertKeyRuleFromJSON(rawBody []byte) (any, error) {
 		}
 	}
 	err := m.mutateRules(ruleMutation{op: "upsert", syncHostKeys: true}, func(state *DynamicRulesState) error {
+		// A retired key remains a billing source for late callbacks. Recreating it as
+		// an independent key would charge its new requests to the renamed key too.
+		// A rename back is safe only for the owner of that same lineage; its source
+		// list removes the new current key below. Other owners must still block it.
+		for _, owner := range m.cfg.Keys {
+			for _, source := range owner.QuotaSourceKeys {
+				if source == rule.APIKey && !(origKey != "" && origKey != rule.APIKey && owner.APIKey == origKey) {
+					return fmt.Errorf("api key is retained as a quota source; rename its current owner instead")
+				}
+			}
+		}
 		if origKey != "" && origKey != rule.APIKey {
 			for _, existing := range m.cfg.Keys {
 				if existing.APIKey == rule.APIKey {

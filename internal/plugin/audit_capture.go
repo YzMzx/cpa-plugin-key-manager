@@ -54,9 +54,7 @@ func (m *Manager) beginAudit(req pluginapi.RequestInterceptRequest, apiKey, keyL
 	rec := audit.Record{RequestID: auditCorrelationID(req.RequestID), TraceID: auditCorrelationID(req.TraceID), StartedAt: time.Now().UTC().UnixMilli(), Method: method, Path: auditSafeLabel(path, apiKey), KeyLabel: auditSafeLabel(keyLabel, apiKey), KeyFingerprint: fingerprint, RequestedModel: auditSafeLabel(req.RequestedModel, apiKey), ServedModel: auditSafeLabel(req.Model, apiKey), Protocol: auditSafeLabel(req.SourceFormat), Stream: req.Stream, Outcome: "running", BodyState: body.State, BodyTruncated: body.Truncated, RequestBody: body.Body, BodySHA256: body.SHA256}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := store.Begin(ctx, rec); err != nil {
-		m.recordAuditCaptureFailure()
-	}
+	m.writeCurrentAudit(store, func(current *audit.Store) error { return current.Begin(ctx, rec) })
 }
 func (m *Manager) rejectAudit(requestID string, status int) {
 	m.completeAudit(audit.Completion{RequestID: requestID, CompletedAt: time.Now().UTC().UnixMilli(), Outcome: "rejected", StatusCode: status})
@@ -73,9 +71,7 @@ func (m *Manager) completeAudit(completion audit.Completion) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
-	if err := store.Complete(ctx, completion); err != nil {
-		m.recordAuditCaptureFailure()
-	}
+	m.writeCurrentAudit(store, func(current *audit.Store) error { return current.Complete(ctx, completion) })
 }
 func (m *Manager) completeRequestAudit(completion pluginapi.RequestCompletion, apiKey string) {
 	m.mu.RLock()

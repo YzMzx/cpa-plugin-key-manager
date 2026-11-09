@@ -24,6 +24,9 @@
   let usageGroupsCache = new WeakMap();
   const requestGate = KeyGuardState.createRequestGate();
   let currentAdminTab = "tab-overview";
+  let defaultPolicyDirty = false;
+  let defaultPolicyRevision = null;
+  let defaultPolicySaveInFlight = false;
   const auditView = KeyGuardAudit.create({
     document, request: (...args) => callManagementAPI(...args), gate: requestGate,
     isAuthenticated: () => !!activeManagementKey,
@@ -211,6 +214,7 @@
     document.querySelectorAll("#adminWorkspace tbody, #modelPopover").forEach(element => { element.textContent = ""; });
     activeManagementKey = "";
     overviewData = null;
+    defaultPolicyDirty = false; defaultPolicyRevision = null; renderDefaultPolicyDraftStatus();
     try {
       sessionStorage.removeItem(SESSION_KEY_NAME);
       sessionStorage.removeItem(LEGACY_SESSION_KEY_NAME);
@@ -466,6 +470,7 @@
   }
 
   function onToggleAllModels(prefix) {
+    if (prefix === "dp") { if (defaultPolicySaveInFlight) return; markDefaultPolicyDirty(); }
     const st = selectorState[prefix];
     st.allModels = document.getElementById(prefix + "AllModelsCheck").checked;
     document.getElementById(prefix + "ModelPickerPanel").classList.toggle("hidden", st.allModels);
@@ -477,6 +482,7 @@
   }
 
   function onToggleAllCreds(prefix) {
+    if (prefix === "dp") { if (defaultPolicySaveInFlight) return; markDefaultPolicyDirty(); }
     const st = selectorState[prefix];
     st.allCreds = document.getElementById(prefix + "AllCredsCheck").checked;
     document.getElementById(prefix + "CredPickerPanel").classList.toggle("hidden", st.allCreds);
@@ -577,6 +583,7 @@
   }
 
   function toggleModelCheckItem(prefix, modelId, isChecked) {
+    if (prefix === "dp") { if (defaultPolicySaveInFlight) return; markDefaultPolicyDirty(); }
     const st = selectorState[prefix];
     if (isChecked) {
       st.selectedModels.add(modelId);
@@ -588,6 +595,7 @@
   }
 
   function batchCheckModels(prefix, checkAll) {
+    if (prefix === "dp") { if (defaultPolicySaveInFlight) return; markDefaultPolicyDirty(); }
     const st = selectorState[prefix];
     st.allModels = false;
     document.getElementById(prefix + "AllModelsCheck").checked = false;
@@ -647,6 +655,7 @@
   }
 
   function toggleCredCheckItem(prefix, credVal, isChecked) {
+    if (prefix === "dp") { if (defaultPolicySaveInFlight) return; markDefaultPolicyDirty(); }
     const st = selectorState[prefix];
     if (isChecked) {
       st.selectedCreds.add(credVal);
@@ -658,6 +667,7 @@
   }
 
   function batchCheckCreds(prefix, checkAll) {
+    if (prefix === "dp") { if (defaultPolicySaveInFlight) return; markDefaultPolicyDirty(); }
     const st = selectorState[prefix];
     st.allCreds = false;
     document.getElementById(prefix + "AllCredsCheck").checked = false;
@@ -1276,8 +1286,8 @@
   async function deleteKeyRule(apiKey) {
     if (!confirm(`确定要删除 API Key [${maskKeyStr(apiKey)}] 吗？`)) return;
     try {
-      const res = await callManagementAPI(API_KEYS_CRUD + "?api_key=" + encodeURIComponent(apiKey), {
-        method: "DELETE"
+      const res = await callManagementAPI(API_KEYS_CRUD, {
+        method: "DELETE", body: JSON.stringify({ api_key: apiKey })
       });
       showToast("API Key 删除规则已保存");
       await refreshAfterMutation(res, { ledger: true });
@@ -1705,8 +1715,31 @@
   }
 
   // ==================== TAB 3: DEFAULT POLICY & CREDENTIALS ====================
+  function renderDefaultPolicyDraftStatus(message = "") {
+    const status = document.getElementById("dpDraftStatus");
+    const conflict = defaultPolicyDirty && overviewData && defaultPolicyRevision !== overviewData.rules_revision;
+    if (status) status.textContent = message || (conflict ? "服务器策略版本已变化，草稿已保留；请放弃修改并重新加载后再保存。" : defaultPolicyDirty ? "有未保存修改；刷新不会覆盖草稿。" : "");
+    for (const id of ["dpAllowUnlisted", "dpMaxConcurrency", "dpBindStrategy", "dpAllModelsCheck", "dpAllCredsCheck"]) { const input = document.getElementById(id); if (input) input.disabled = defaultPolicySaveInFlight; }
+    document.querySelectorAll("#dpModelCheckList input, #dpCredCheckList input").forEach(input => { input.disabled = defaultPolicySaveInFlight; });
+    const discard = document.getElementById("dpDiscardBtn"); if (discard) discard.disabled = !defaultPolicyDirty || defaultPolicySaveInFlight;
+    const save = document.getElementById("dpSaveBtn"); if (save) save.disabled = defaultPolicySaveInFlight;
+  }
+  function markDefaultPolicyDirty() {
+    if (!overviewData || defaultPolicySaveInFlight) return;
+    if (!defaultPolicyDirty) defaultPolicyRevision = overviewData.rules_revision;
+    defaultPolicyDirty = true; renderDefaultPolicyDraftStatus();
+  }
+  function discardDefaultPolicyDraft() {
+    if (defaultPolicySaveInFlight) return;
+    defaultPolicyDirty = false; initDefaultPolicySelectors(); renderDefaultPolicyDraftStatus("已恢复服务器最新策略。");
+  }
   function initDefaultPolicySelectors() {
     if (!overviewData || !overviewData.default_policy) return;
+    if (defaultPolicyDirty || defaultPolicySaveInFlight) {
+      renderProviderPills("dp"); renderModelCheckList("dp"); renderCredCheckList("dp"); updateSelectorBadges("dp");
+      renderDefaultPolicyDraftStatus(); return;
+    }
+    defaultPolicyRevision = overviewData.rules_revision;
     const dp = overviewData.default_policy;
     document.getElementById("dpAllowUnlisted").value = dp.allow_unlisted_keys === false ? "false" : "true";
     document.getElementById("dpMaxConcurrency").value = dp.max_concurrency || 0;
@@ -1715,10 +1748,11 @@
 
     const boundCreds = Array.from(new Set([].concat(ub.auth_ids || [], ub.credentials || [])));
     const allowedModels = (dp.allowed_models && dp.allowed_models.length) ? dp.allowed_models : ["*"];
-    loadSelectorFromRule("dp", allowedModels, boundCreds);
+    loadSelectorFromRule("dp", allowedModels, boundCreds); renderDefaultPolicyDraftStatus();
   }
 
   async function saveDefaultPolicy() {
+    if (defaultPolicySaveInFlight) return;
     const { allowedModels, credentials } = exportSelectorValues("dp");
     if (!selectorState.dp.allModels && allowedModels.length === 0) {
       showToast("请至少勾选一个默认允许的模型，或勾选「允许访问全部模型」", true);
@@ -1738,16 +1772,20 @@
         credentials: credentials
       }
     };
+    defaultPolicySaveInFlight = true; renderDefaultPolicyDraftStatus();
     try {
       const res = await callManagementAPI(API_DEFAULT_POLICY, {
         method: "POST",
+        headers: defaultPolicyRevision === null ? {} : { "X-Key-Guard-Revision": String(defaultPolicyRevision) },
         body: JSON.stringify(payload)
       });
+      defaultPolicyDirty = false; defaultPolicySaveInFlight = false;
       showToast("全局默认策略已保存并立即生效");
       await refreshAfterMutation(res);
     } catch (err) {
-      showToast(err.message, true);
-    }
+      const message = err.status === 409 ? "策略已被其它会话更新，未保存草稿已保留；请放弃修改并重新加载后再保存。" : err.message;
+      renderDefaultPolicyDraftStatus(message); showToast(message, true);
+    } finally { defaultPolicySaveInFlight = false; renderDefaultPolicyDraftStatus(); }
   }
 
   function renderHostAuthTable() {
@@ -2661,8 +2699,14 @@
     }
   }
 
+  for (const id of ["dpAllowUnlisted", "dpMaxConcurrency", "dpBindStrategy"]) {
+    document.getElementById(id).addEventListener("input", markDefaultPolicyDirty);
+    document.getElementById(id).addEventListener("change", markDefaultPolicyDirty);
+  }
+
   KeyGuardEvents.bind(document, {
     actions: {
+      discardDefaultPolicy: () => discardDefaultPolicyDraft(),
       provider: (value, el) => setProviderFilter(el.dataset.prefix, value),
       entityPopover: (_value, el, event) => openEntityPopover(event, el),
       closePopover: () => closeModelPopover(), copyPopover: () => copyPopoverItems(),

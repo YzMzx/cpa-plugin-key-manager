@@ -18,13 +18,13 @@ CLIProxyAPI 的 API Key 管控与用量统计插件：多 Key 治理、模型白
 ### 访问控制
 - **模型白名单**：支持精确名、`*` / `?` 通配符、`!` 排除，命中失败返回 `403`（OpenAI / Anthropic 兼容 JSON），不触发上游请求。
 - **模型列表过滤**：用受限 Key 请求 `/v1/models` 时只返回白名单内的模型；面板请求不加过滤，`X-Key-Guard-Catalog: all` 可显式取全量。
-- **上游凭证绑定**：支持 `round-robin` / `fill-first` 调度与 `strict` 严格隔离。
+- **上游凭证绑定**：支持 `round-robin` / `fill-first` 调度与 `strict` 严格隔离；轮询只在最高可用匹配优先级内进行，绑定仅命中低优先级时仍可选择。
 - **并发限制**：按 Key 独立计数，流式请求在宿主终态回调时释放，超限返回 `429` + `Retry-After`。
 
 ### 用量统计
 - 支持 OpenAI Chat Completions、OpenAI Responses、Anthropic Claude、Google Gemini 四种 usage 格式，流式分片按字段增量合并。
 - 按「请求模型 + 服务端模型」二元组记账：上游替换只在明细里标注，不会拆成重复行。
-- 请求去重：`request.complete` 与 `usage.handle` 协同，单次请求只统计一次。
+- 执行去重：`request.complete` 与 `usage.handle` 协同，同一个上游执行 UUID 只统计一次；重试产生的不同执行实例分别累计费用、Token 和对应账号，不把它们按 TraceID 合并。执行次数可能大于入站 HTTP 请求数。
 - 全部 Token 数值自动按 K / M / B 显示（如 `12.3 M`、`1.02 B`）。
 
 ### 统一设置（管理员）
@@ -42,11 +42,12 @@ CLIProxyAPI 的 API Key 管控与用量统计插件：多 Key 治理、模型白
 - **明文留存模式：保存 JSON 请求正文，不对普通文字脱敏；入库前过滤图片、音频、视频等文件载荷，新记录按两空格缩进换行，仅改变字符串外的空白，不重排字段、不合并重复键、不转换数字精度。正文中自行携带的密码、token、API Key、对话及个人信息会原样保留。请严格限制管理员、数据库及备份的访问权限。**请求鉴权头、响应正文和 URL 查询参数仍不记录。
 - 默认启用，保留 7 天，最多 10,000 条，单正文 10 MiB（10,485,760 字节），审计逻辑总量 64 MiB；容量满时淘汰旧记录，接近 10 MiB 的正文通常只能保留约 6 条。
 - JSON 正文不再走脱敏器，不受旧版元素 4096、嵌套 16 或大正文脱敏繁忙限制。媒体文件载荷按新规则过滤为 `[OMITTED:media]`，保留同请求正常文字、数值和工具定义。保留合法 UTF-8 JSON 对象/数组和 10 MiB 上限；格式无效、非 JSON、压缩内容、超限仍整段略过，不留半截原文。底层 JSON 解析器本身也有防异常极深嵌套保护。
-- 审计保存前，从根请求的 `messages` / `input` / `contents` 数组（或根消息数组）移除 `role: "system"` 和 `role: "developer"` 的整条消息及其正文；保留 `user` / `assistant` / `tool` 等其它角色。仅处理审计副本，不修改实际发给上游的请求，不解释工具 Schema 或嵌套业务 JSON 中的同名字段。
+- 审计保存前，从根请求的 `messages` / `input` / `contents` 数组（或根消息数组）移除 `role: "system"`、`role: "developer"` 和 `role: "tool"` 的整条消息及其正文；保留 `user` / `assistant` 等其它角色及助手工具调用定义。仅处理审计副本，不修改实际发给上游的请求，不解释工具 Schema 或嵌套业务 JSON 中的同名字段。
 - 无过滤的新记录状态为 `stored_raw`，媒体已过滤为 `stored_raw_media_filtered`，角色已过滤为 `stored_raw_system_filtered`，两者均过滤为 `stored_raw_system_media_filtered`；默认格式化保存，哈希对应过滤后实际保存内容。若缩进使内容超过单条上限，则完整保留原始表示，绝不因格式化膨胀而丢弃正文。SHA-256 对实际保存内容计算，不是防篡改证明。详情默认以两空格格式化显示，也可切换「保存原文」核对字节对应内容；历史记录仅格式化展示，不改写数据库和旧哈希。重复键、大整数、数值字面量和 Unicode 转义均保留。旧版已脱敏/略过的正文无法恢复原始内容。
 - **IP 监控已移除：**不解析网络地址/代理头，不采集或显示客户端/Peer IP，不再提供 IP 筛选。数据库迁移清空旧的独立 IP 字段并移除索引；不修改用户正文自行包含的 IP 文本。旧备份/WAL/空闲页不保证安全擦除。
 - 页面可计算审计逻辑占用、正文大小、条数、占比，以及共享数据库/WAL 实际文件大小。逻辑删除不保证立即缩小物理文件。
 - 手动清理支持仅过期、1/3/7 天前、自定义日期前、全部审计；先预览再确认，5 分钟单次身份绑定令牌，只删除预览快照中的审计，不影响新增记录、密钥规则或用量。
+- 本地拒绝请求不解析/保存完整正文，仅尝试有界异步元数据留存；拥堵可丢弃并计入失败数，避免 403/429 被审计 SQL 阻塞。
 - 只记录进入插件模型执行生命周期的新请求，不是全站抓包；存储写入有限等待，不阻断代理请求，失败计数可见，不承诺零丢失。审计记录默认持久化，重启不丢，但并未做数据库加密。
 
 在 `plugins.configs.cpa-plugin-key-manager` 下可选配置：
@@ -126,7 +127,8 @@ irm https://raw.githubusercontent.com/YzMzx/cpa-plugin-key-manager/main/install.
 ./install.sh --dir /opt/CLIProxyAPI --version v0.9.7   # 指定根目录与版本
 ./install.sh --local ./cpa-plugin-key-manager-linux-amd64.tar.gz   # 本地包安装
 ./install.sh --init-only                                # 只补配置，不下载二进制
-./install.sh --init-only --reset-data                   # 重置数据：旧库移到 data/backup-<时间戳>/
+# 安装器不再自动重置数据库；--reset-data / -ResetData 会在任何写入前报错退出。
+# 如确需重置：先停止 CPA，核对实际 usage_db_file/环境变量并完整备份，再手动操作。
 ```
 
 ---

@@ -356,7 +356,7 @@
         <div>
           <h2 class="card-title">全局默认策略</h2>
         </div>
-        <button type="button" class="btn btn-sm" onclick="saveDefaultPolicy()">保存全局默认策略</button>
+        <div class="input-row"><button type="button" class="btn btn-sm" id="dpDiscardBtn" data-action="discardDefaultPolicy" disabled>放弃修改</button><button type="button" class="btn btn-sm" id="dpSaveBtn" onclick="saveDefaultPolicy()">保存全局默认策略</button></div>
       </div>
 
       <div class="form-grid">
@@ -381,6 +381,7 @@
         </div>
       </div>
 
+      <div id="dpDraftStatus" class="card-hint" role="status"></div>
       <!-- Default Policy Model Checkboxes -->
       <div class="form-group">
         <label class="form-label">

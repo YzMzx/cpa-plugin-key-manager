@@ -328,7 +328,15 @@ func (s *Store) Prune(ctx context.Context, now time.Time) error {
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	tx, err := s.db.Conn().BeginTx(ctx, nil)
+	// An explicit connection lease waits for database/sql automatic rollback on
+	// context cancellation before returning. Otherwise Close may finish while a
+	// cancelled cleanup still owns a driver handle (notably visible on Windows).
+	connection, err := s.db.Conn().Conn(ctx)
+	if err != nil {
+		return s.fail(ErrUnavailable)
+	}
+	defer connection.Close()
+	tx, err := connection.BeginTx(ctx, nil)
 	if err != nil {
 		return s.fail(ErrUnavailable)
 	}

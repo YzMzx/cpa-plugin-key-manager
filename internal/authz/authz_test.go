@@ -124,7 +124,7 @@ func TestSchedulerPickAndStrictTenantIsolation(t *testing.T) {
 		Model:      "claude-3-5-sonnet",
 		Candidates: candidates,
 	})
-	if !pick1.Handled || pick1.Reject || pick1.AuthID != "claude-alpha-1.json" {
+	if !pick1.Handled || pick1.Reject || pick1.AuthID != "claude-alpha-2.json" {
 		t.Fatalf("unexpected pick1: %+v", pick1)
 	}
 	if !pick2.Handled || pick2.Reject || pick2.AuthID != "claude-alpha-2.json" {

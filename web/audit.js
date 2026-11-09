@@ -19,7 +19,7 @@
     omitted_encoding: "未保存（格式不支持）", omitted_non_json: "未保存（格式不支持）", omitted_non_container: "未保存（格式不支持）", omitted_unknown_schema: "未保存（格式不支持）", non_json: "未保存（格式不支持）",
     omitted_invalid_json: "未保存（格式异常）", omitted_ambiguous_json: "未保存（格式异常）", invalid_json: "未保存（格式异常）",
     omitted_disabled: "未保存（采集关闭）", disabled: "未保存（采集关闭）",
-    omitted_busy: "未保存（采集繁忙）"
+    omitted_busy: "未保存（采集繁忙）", omitted_rejected: "未保存（请求已拒绝）"
   };
   function bodyStatus(record) {
     if (SAVED_BODY_STATES.has(record.body_state)) return record.body_state === "stored_partial" || !record.body_truncated ? "已保存 JSON 明文" : "未保存正文";

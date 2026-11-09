@@ -6,7 +6,7 @@ import (
 	"sort"
 )
 
-// FilterSystemMessages removes complete system/developer messages only from request message
+// FilterSystemMessages removes complete system/developer/tool messages only from request message
 // root collections (messages/input/contents or a root array). Tool schemas and ordinary
 // business objects are not interpreted as conversation messages. Input is read-only.
 func FilterSystemMessages(source []byte) ([]byte, bool) {
@@ -47,7 +47,7 @@ func (s *systemMessageScanner) isSystem(pos int) bool {
 		pos = s.whitespace(keyEnd)
 		pos = s.whitespace(pos + 1)
 		end := s.endValue(pos)
-		if key == "role" && s.source[pos] == '"' && (s.text(pos, end) == "system" || s.text(pos, end) == "developer") {
+		if key == "role" && s.source[pos] == '"' && (s.text(pos, end) == "system" || s.text(pos, end) == "developer" || s.text(pos, end) == "tool") {
 			return true
 		}
 		pos = s.whitespace(end)
@@ -82,39 +82,39 @@ func (s *systemMessageScanner) walk(pos int, messages, schema bool) int {
 			}
 		}
 	case '[':
-		type element struct {
-			start, end int
-			remove     bool
-		}
-		var elements []element
+		// Track only removal runs; a dense 10 MiB array must not allocate one
+		// bookkeeping struct for every scalar/message that will be retained.
 		current := s.whitespace(pos + 1)
+		previousEnd := -1
+		runStart, runEnd, runPrevious := -1, 0, -1
 		for current < len(s.source) && s.source[current] != ']' {
 			childEnd := s.endValue(current)
-			remove := messages && s.isSystem(current)
-			elements = append(elements, element{current, childEnd, remove})
+			if messages && s.isSystem(current) {
+				if runStart < 0 {
+					runStart = current
+					runPrevious = previousEnd
+				}
+				runEnd = childEnd
+			} else {
+				if runStart >= 0 {
+					s.removals = append(s.removals, mediaPatch{start: runStart, end: current})
+					runStart = -1
+				}
+				previousEnd = childEnd
+			}
 			current = s.whitespace(childEnd)
 			if current < len(s.source) && s.source[current] == ',' {
 				current = s.whitespace(current + 1)
 			}
 		}
-		for i := 0; i < len(elements); {
-			if !elements[i].remove {
-				i++
-				continue
+		if runStart >= 0 {
+			start := runStart
+			if runPrevious >= 0 {
+				start = runPrevious
 			}
-			j := i
-			for j+1 < len(elements) && elements[j+1].remove {
-				j++
-			}
-			start, finish := elements[i].start, elements[j].end
-			if j+1 < len(elements) {
-				finish = elements[j+1].start
-			} else if i > 0 {
-				start = elements[i-1].end
-			}
-			s.removals = append(s.removals, mediaPatch{start: start, end: finish})
-			i = j + 1
+			s.removals = append(s.removals, mediaPatch{start: start, end: runEnd})
 		}
+
 	}
 	return end
 }

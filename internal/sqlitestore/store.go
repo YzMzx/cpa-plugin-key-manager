@@ -33,11 +33,12 @@ type Options struct {
 
 // DB is an open, migrated database with an exclusive cross-process writer lock.
 type DB struct {
-	db        *sql.DB
-	path      string
-	lock      *fileLock
-	closeOnce sync.Once
-	closeErr  error
+	db       *sql.DB
+	path     string
+	lock     *fileLock
+	closeMu  sync.Mutex
+	closed   bool
+	closeErr error
 }
 
 // LockPath returns the lock file that guards the database.
@@ -129,19 +130,32 @@ func (d *DB) Close() error {
 	if d == nil {
 		return nil
 	}
-	d.closeOnce.Do(func() {
-		var dbErr, lockErr error
-		if d.db != nil {
-			dbErr = d.db.Close()
+	d.closeMu.Lock()
+	defer d.closeMu.Unlock()
+	if d.closed {
+		return d.closeErr
+	}
+	if d.db != nil {
+		if err := d.db.Close(); err != nil {
+			d.closeErr = err
+			return err
 		}
-		if d.lock != nil {
-			lockErr = d.lock.release()
+		// database/sql Close need not wait for checked-out connections. Retain
+		// our cross-process writer lock until their actual driver Close finished.
+		// Stats.OpenConnections decreases only after driverConn.finalClose.
+		deadline := time.Now().Add(5 * time.Second)
+		for d.db.Stats().OpenConnections > 0 {
+			if time.Now().After(deadline) {
+				return fmt.Errorf("sqlitestore: active connections have not closed; writer lock retained")
+			}
+			time.Sleep(time.Millisecond)
 		}
-		if dbErr != nil {
-			d.closeErr = dbErr
-		} else if lockErr != nil {
-			d.closeErr = lockErr
+	}
+	if d.lock != nil {
+		if err := d.lock.release(); err != nil {
+			return err
 		}
-	})
-	return d.closeErr
+	}
+	d.closed = true
+	return nil
 }
