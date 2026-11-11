@@ -38,7 +38,8 @@ function environment(fetchImpl = async () => response(overview())) {
   element("toastBox").appendChild = () => {};
   const store = new Map();
   const storage = { getItem: key => store.get(key) || null, setItem: (key, value) => store.set(key, value), removeItem: key => store.delete(key) };
-  const win = { location: { href: "http://localhost/ui", origin: "http://localhost", host: "localhost" }, history: { replaceState() {} }, addEventListener() {}, localStorage: storage };
+  const windowListeners = new Map();
+  const win = { location: { href: "http://localhost/ui", origin: "http://localhost", host: "localhost" }, history: { replaceState() {} }, addEventListener(type, handler) { if (!windowListeners.has(type)) windowListeners.set(type, []); windowListeners.get(type).push(handler); }, localStorage: storage };
   win.parent = win;
   const context = vm.createContext({ window: win, document: doc, location: win.location, navigator: { userAgent: "test", clipboard: { writeText: async () => {} } }, sessionStorage: storage,
     KeyGuardClient: Client, KeyGuardState: State, KeyGuardFormat: Format, KeyGuardAuth: Auth, KeyGuardEvents: Events, KeyGuardAudit: Audit, KeyGuardSettings: Settings,
@@ -49,7 +50,7 @@ function environment(fetchImpl = async () => response(overview())) {
   vm.runInContext(source, context);
   const run = code => vm.runInContext(code, context);
   run("activeManagementKey = 'test-admin'");
-  return { run, context, element, listeners, doc, store };
+  return { run, context, element, listeners, windowListeners, doc, store };
 }
 
 test("API validates status, JSON, content type, schemas and optimistic revision", async () => {
@@ -115,6 +116,78 @@ test("calendar custom range uses local inclusive end, including DST", () => {
   const range = Format.rangeBounds("custom", "America/New_York", new Date("2026-03-08T12:00:00Z"), { from: "2026-03-08", to: "2026-03-08" });
   assert.equal(range.from.toISOString(), "2026-03-08T05:00:00.000Z");
   assert.equal(range.to.toISOString(), "2026-03-09T03:59:59.999Z");
+});
+
+test("embedded login prefers live host credentials over stale cached sessions", async () => {
+  const env = environment();
+  const win = env.context.window;
+  const listeners = new Set();
+  win.crypto = require("node:crypto").webcrypto;
+  win.addEventListener = (_type, fn) => listeners.add(fn);
+  win.removeEventListener = (_type, fn) => listeners.delete(fn);
+  win.parent = { location: win.location, postMessage(data) {
+    queueMicrotask(() => { for (const fn of [...listeners]) fn({ source: win.parent, origin: win.location.origin, data: { ...data, type: "response", managementKey: "live-host" } }); });
+  } };
+  env.store.set("cpa_plugin_key_manager_mgmt_session", "stale-session");
+  env.store.set("managementKey", "stale-storage");
+  env.run('activeManagementKey = ""');
+  assert.equal(await env.run("discoverCPAManagementKey()"), "live-host");
+});
+
+test("bridge credentials stay in memory when iframe removal drops logout notifications", async () => {
+  const env = environment();
+  env.store.set("cpa_plugin_key_manager_mgmt_session", "old-cache");
+  env.store.set("cpa_plugin_key_mgmt_session", "old-legacy-cache");
+  env.run('parentBridgeAvailable = true; unlockAdminWorkspace("ephemeral-host-key")');
+  assert.equal(env.run("activeManagementKey"), "ephemeral-host-key");
+  assert.equal(env.store.has("cpa_plugin_key_manager_mgmt_session"), false);
+  assert.equal(env.store.has("cpa_plugin_key_mgmt_session"), false);
+  // A new document shares the tab storage, but the destroyed iframe receives no logout.
+  const next = environment();
+  for (const [key, value] of env.store) next.store.set(key, value);
+  next.run('activeManagementKey = ""');
+  assert.equal(await next.run("discoverCPAManagementKey()"), "");
+});
+
+test("host logout cancels overview and prevents a late response from unlocking the page", async () => {
+  const pending = deferred();
+  const env = environment(() => pending.promise);
+  const win = env.context.window;
+  win.parent = {};
+  env.store.set("cpa_plugin_key_manager_mgmt_session", "cached");
+  const loading = env.run("loadAdminOverview()");
+  const receive = data => { for (const fn of env.windowListeners.get("message")) fn({ source: win.parent, origin: win.location.origin, data: { channel: Auth.CHANNEL, ...data } }); };
+  receive({ type: "logout" });
+  pending.resolve(response(overview()));
+  await loading;
+  assert.equal(env.run("activeManagementKey"), "");
+  assert.equal(env.run("overviewData"), null);
+  assert.equal(env.store.has("cpa_plugin_key_manager_mgmt_session"), false);
+  assert.equal(env.element("adminWorkspace").classList.contains("hidden"), true);
+  assert.equal(await env.run("discoverCPAManagementKey()"), "");
+});
+
+test("live bridge authentication survives unrelated saved host metadata updates", () => {
+  const env = environment();
+  env.run('parentBridgeAvailable = true; unlockAdminWorkspace("live-host")');
+  env.store.set("cli-proxy-auth", JSON.stringify({ state: { rememberPassword: false, serverVersion: "new-version" } }));
+  for (const listener of env.windowListeners.get("storage")) listener({ key: "cli-proxy-auth" });
+  assert.equal(env.run("activeManagementKey"), "live-host");
+  env.run("parentBridgeAvailable = false");
+  for (const listener of env.windowListeners.get("storage")) listener({ key: "cli-proxy-auth" });
+  assert.equal(env.run("activeManagementKey"), "");
+});
+
+test("host ready retries a missing initial login and retry button stays bounded", async () => {
+  const env = environment();
+  env.context.window.parent = {};
+  env.run('activeManagementKey = ""; var loginAttempts = 0; loadAdminOverview = async () => { loginAttempts++; };');
+  for (const fn of env.windowListeners.get("message")) fn({ source: env.context.window.parent, origin: env.context.window.location.origin, data: { channel: Auth.CHANNEL, type: "ready" } });
+  await tick();
+  assert.equal(env.run("loginAttempts"), 1);
+  await env.run("retryHostAuthentication()");
+  assert.equal(env.run("loginAttempts"), 2);
+  assert.equal(env.element("authGateRetryBtn").disabled, false);
 });
 
 test("bridge requires exact parent, origin, channel and nonce", async () => {

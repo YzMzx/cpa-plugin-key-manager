@@ -102,7 +102,7 @@ func TestReleaseWorkflowUsesImmutableVersionMatchedInputs(t *testing.T) {
 	for _, step := range tests.Steps {
 		node = node || (strings.HasPrefix(step.Uses, "actions/setup-node@") && step.With["node-version"] == "24")
 		vet = vet || strings.Contains(step.Run, "go vet ./...")
-		frontend = frontend || strings.Contains(step.Run, "node --test web/settings.test.cjs web/runtime.test.cjs web/audit.test.cjs")
+		frontend = frontend || strings.Contains(step.Run, "node --test web/auth.test.cjs web/settings.test.cjs web/runtime.test.cjs web/audit.test.cjs")
 	}
 	if !node || !vet || !frontend {
 		t.Fatal("release tests must include Node 24, static analysis and frontend regressions")

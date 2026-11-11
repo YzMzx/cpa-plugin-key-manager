@@ -1,0 +1,667 @@
+diff --git a/src/features/plugins/PluginResourcePage.tsx b/src/features/plugins/PluginResourcePage.tsx
+index 051f035..8fbd787 100644
+--- a/src/features/plugins/PluginResourcePage.tsx
++++ b/src/features/plugins/PluginResourcePage.tsx
+@@ -1,4 +1,4 @@
+-import { useCallback, useEffect, useMemo, useState } from 'react';
++import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+ import { useParams } from 'react-router-dom';
+ import { useTranslation } from 'react-i18next';
+ import { EmptyState } from '@/components/ui/EmptyState';
+@@ -12,6 +12,7 @@ import {
+   PLUGIN_RESOURCES_REFRESH_EVENT,
+   resolvePluginAssetURL,
+ } from './pluginResources';
++import { createPluginAuthBridge, type PluginAuthBridge } from './pluginAuthBridge';
+ import styles from './PluginResourcePage.module.scss';
+ 
+ const hasStatus = (error: unknown, status: number) => isRecord(error) && error.status === status;
+@@ -34,6 +35,8 @@ export function PluginResourcePage() {
+   const params = useParams<{ pluginId: string; menuIndex: string }>();
+   const connectionStatus = useAuthStore((state) => state.connectionStatus);
+   const apiBase = useAuthStore((state) => state.apiBase);
++  const iframeRef = useRef<HTMLIFrameElement>(null);
++  const authBridgeRef = useRef<PluginAuthBridge | null>(null);
+ 
+   const [data, setData] = useState<PluginListResponse | null>(null);
+   const [loading, setLoading] = useState(true);
+@@ -86,6 +89,29 @@ export function PluginResourcePage() {
+   }, [data?.plugins, menuIndex, pluginID]);
+ 
+   const iframeSrc = resource ? resolvePluginAssetURL(resource.menu.path, apiBase) : '';
++  const frameVisible = !loading && !error && Boolean(resource && iframeSrc);
++
++  useEffect(() => {
++    const frame = iframeRef.current;
++    if (!frameVisible || !frame) return;
++
++    const bridge = createPluginAuthBridge({
++      host: window,
++      frame,
++      getFrame: () => iframeRef.current,
++      pluginID,
++      src: iframeSrc,
++      getAuth: () => useAuthStore.getState(),
++    });
++    authBridgeRef.current = bridge;
++    // Synchronous store subscription revokes the old iframe even before React renders logout.
++    const unsubscribe = useAuthStore.subscribe(bridge.syncAuth);
++    return () => {
++      unsubscribe();
++      bridge.dispose();
++      if (authBridgeRef.current === bridge) authBridgeRef.current = null;
++    };
++  }, [frameVisible, iframeSrc, pluginID]);
+ 
+   return (
+     <div className={styles.page}>
+@@ -113,6 +139,9 @@ export function PluginResourcePage() {
+         </div>
+       ) : (
+         <iframe
++          key={`${pluginID}:${iframeSrc}`}
++          ref={iframeRef}
++          onLoad={() => authBridgeRef.current?.ready()}
+           className={styles.frame}
+           src={iframeSrc}
+           title={resource.label}
+diff --git a/src/features/plugins/pluginAuthBridge.ts b/src/features/plugins/pluginAuthBridge.ts
+new file mode 100644
+index 0000000..c1c7edc
+--- /dev/null
++++ b/src/features/plugins/pluginAuthBridge.ts
+@@ -0,0 +1,201 @@
++import { normalizeApiBase } from '@/utils/connection';
++
++export const KEY_MANAGER_AUTH_CHANNEL = 'cpa-plugin-key-manager:auth:v1';
++// internal/handler/management.go declares ResourcePathUI = "/ui" under this plugin prefix.
++export const KEY_MANAGER_RESOURCE_PATH = '/v0/resource/plugins/cpa-plugin-key-manager/ui';
++const KEY_MANAGER_PLUGIN_ID = 'cpa-plugin-key-manager';
++const KEY_MANAGER_TABS = new Set([
++  'overview',
++  'keys',
++  'dashboard',
++  'routing',
++  'pricing',
++  'audit',
++  'settings',
++]);
++
++const isResourceLocation = (location: URL, origin: string) => {
++  const params = Array.from(location.searchParams.entries());
++  return (
++    location.origin === origin &&
++    location.pathname === KEY_MANAGER_RESOURCE_PATH &&
++    !location.username &&
++    !location.password &&
++    !location.hash &&
++    (params.length === 0 ||
++      (params.length === 1 && params[0][0] === 'tab' && KEY_MANAGER_TABS.has(params[0][1])))
++  );
++};
++
++interface AuthSnapshot {
++  isAuthenticated: boolean;
++  connectionStatus: string;
++  apiBase: string;
++  managementKey: string;
++}
++
++interface ResourceFrame {
++  readonly src: string;
++  readonly contentWindow: Pick<Window, 'postMessage' | 'location'> | null;
++}
++
++interface BridgeHost {
++  readonly location: Pick<Location, 'href' | 'origin'>;
++  addEventListener(type: 'message', listener: (event: MessageEvent<unknown>) => void): void;
++  removeEventListener(type: 'message', listener: (event: MessageEvent<unknown>) => void): void;
++}
++
++interface BridgeOptions {
++  host: BridgeHost;
++  frame: ResourceFrame;
++  getFrame: () => ResourceFrame | null;
++  pluginID: string;
++  src: string;
++  getAuth: () => AuthSnapshot;
++}
++
++interface Session {
++  target: NonNullable<ResourceFrame['contentWindow']>;
++  origin: string;
++  apiBase: string;
++  managementKey: string;
++}
++
++export interface PluginAuthBridge {
++  ready: () => void;
++  syncAuth: () => void;
++  dispose: () => void;
++}
++
++/** Explicitly scoped opt-in, not a general credential bridge for plugin resources. */
++export function createPluginAuthBridge(options: BridgeOptions): PluginAuthBridge {
++  const { host, frame } = options;
++  let disposed = false;
++  let session: Session | null = null;
++
++  const currentSession = (): Session | null => {
++    if (disposed || options.pluginID !== KEY_MANAGER_PLUGIN_ID || options.getFrame() !== frame) {
++      return null;
++    }
++    const auth = options.getAuth(); // Read live state, never a render-time key/session closure.
++    if (
++      !auth.isAuthenticated ||
++      auth.connectionStatus !== 'connected' ||
++      !auth.managementKey.trim()
++    ) {
++      return null;
++    }
++    try {
++      const origin = host.location.origin;
++      const api = new URL(normalizeApiBase(auth.apiBase));
++      const resource = new URL(options.src, host.location.href);
++      const target = frame.contentWindow;
++      if (
++        !target ||
++        !['http:', 'https:'].includes(resource.protocol) ||
++        api.origin !== origin ||
++        api.username ||
++        api.password ||
++        resource.origin !== origin ||
++        resource.pathname !== KEY_MANAGER_RESOURCE_PATH ||
++        resource.search ||
++        resource.hash ||
++        resource.username ||
++        resource.password ||
++        new URL(frame.src, host.location.href).href !== resource.href ||
++        // A matching WindowProxy alone is insufficient: the iframe may have redirected/navigated.
++        // The child uses history.replaceState to persist a known UI tab on the same resource.
++        !isResourceLocation(new URL(target.location.href), origin)
++      ) {
++        return null;
++      }
++      return { target, origin, apiBase: auth.apiBase, managementKey: auth.managementKey };
++    } catch {
++      // Cross-origin navigation and malformed/opaque URLs fail closed.
++      return null;
++    }
++  };
++
++  const post = (recipient: Session, type: 'ready' | 'logout') => {
++    try {
++      recipient.target.postMessage({ channel: KEY_MANAGER_AUTH_CHANNEL, type }, recipient.origin);
++    } catch {
++      // The old iframe can already be detached. Never log credentials or broaden targetOrigin.
++    }
++  };
++
++  const syncAuth = () => {
++    if (disposed) return false;
++    const next = currentSession();
++    if (
++      session?.target === next?.target &&
++      session?.origin === next?.origin &&
++      session?.apiBase === next?.apiBase &&
++      session?.managementKey === next?.managementKey
++    ) {
++      return false;
++    }
++    if (session) post(session, 'logout');
++    session = next;
++    if (session) post(session, 'ready');
++    return true;
++  };
++
++  const ready = () => {
++    const changed = syncAuth();
++    if (!disposed && !changed && session) post(session, 'ready');
++  };
++
++  const receive = (event: MessageEvent<unknown>) => {
++    const data = event.data;
++    if (
++      disposed ||
++      event.source !== frame.contentWindow ||
++      event.origin !== host.location.origin ||
++      !data ||
++      typeof data !== 'object' ||
++      Array.isArray(data) ||
++      !('channel' in data) ||
++      data.channel !== KEY_MANAGER_AUTH_CHANNEL ||
++      !('type' in data) ||
++      data.type !== 'request' ||
++      !('nonce' in data) ||
++      typeof data.nonce !== 'string' ||
++      !data.nonce.trim() ||
++      data.nonce.length > 256
++    ) {
++      return;
++    }
++    syncAuth();
++    if (!session) return;
++    try {
++      session.target.postMessage(
++        {
++          channel: KEY_MANAGER_AUTH_CHANNEL,
++          type: 'response',
++          nonce: data.nonce,
++          managementKey: session.managementKey,
++        },
++        session.origin
++      );
++    } catch {
++      // Navigation may race the reply; exact targetOrigin still prevents a foreign delivery.
++    }
++  };
++
++  host.addEventListener('message', receive);
++  ready(); // Listener is installed before asking the child to (re)request.
++
++  return {
++    ready,
++    syncAuth,
++    dispose: () => {
++      if (disposed) return;
++      disposed = true;
++      host.removeEventListener('message', receive);
++      if (session) post(session, 'logout');
++      session = null;
++      // StrictMode reattachment sends ready again; never retain a key in a disposed helper.
++    },
++  };
++}
+diff --git a/tests/pluginAuthBridge.test.ts b/tests/pluginAuthBridge.test.ts
+new file mode 100644
+index 0000000..d974a3c
+--- /dev/null
++++ b/tests/pluginAuthBridge.test.ts
+@@ -0,0 +1,387 @@
++import { describe, expect, test } from 'bun:test';
++import { readFileSync } from 'node:fs';
++import {
++  createPluginAuthBridge,
++  KEY_MANAGER_AUTH_CHANNEL,
++  KEY_MANAGER_RESOURCE_PATH,
++} from '../src/features/plugins/pluginAuthBridge';
++
++const ORIGIN = 'https://cpa.example.test';
++const RESOURCE = ORIGIN + KEY_MANAGER_RESOURCE_PATH;
++const request = (nonce: unknown = 'test-nonce') => ({
++  channel: KEY_MANAGER_AUTH_CHANNEL,
++  type: 'request',
++  nonce,
++});
++
++function harness() {
++  const messages: {
++    message: Record<string, unknown>;
++    origin: string;
++    listenerInstalled: boolean;
++  }[] = [];
++  const listeners = new Set<(event: MessageEvent<unknown>) => void>();
++  const target = {
++    location: { href: RESOURCE } as Location,
++    postMessage(message: Record<string, unknown>, origin: string) {
++      messages.push({ message, origin, listenerInstalled: listeners.size > 0 });
++    },
++  };
++  const frame = { src: RESOURCE, contentWindow: target };
++  let currentFrame: typeof frame | null = frame;
++  const auth = {
++    isAuthenticated: true,
++    connectionStatus: 'connected',
++    apiBase: ORIGIN,
++    managementKey: 'fixture-management-key',
++  };
++  const host = {
++    location: { href: ORIGIN + '/management.html', origin: ORIGIN },
++    addEventListener(_type: 'message', listener: (event: MessageEvent<unknown>) => void) {
++      listeners.add(listener);
++    },
++    removeEventListener(_type: 'message', listener: (event: MessageEvent<unknown>) => void) {
++      listeners.delete(listener);
++    },
++  };
++  const options = {
++    host,
++    frame,
++    getFrame: () => currentFrame,
++    pluginID: 'cpa-plugin-key-manager',
++    src: RESOURCE,
++    getAuth: () => auth,
++  };
++  const dispatch = (data: unknown = request(), origin = ORIGIN, source: unknown = target) => {
++    const event = { data, origin, source } as MessageEvent<unknown>;
++    for (const listener of listeners) listener(event);
++  };
++  return {
++    auth,
++    frame,
++    target,
++    host,
++    options,
++    messages,
++    listeners,
++    dispatch,
++    replaceFrame: (value: typeof frame | null) => {
++      currentFrame = value;
++    },
++    types: () => messages.map(({ message }) => message.type),
++  };
++}
++
++describe('key manager host auth bridge', () => {
++  test('installs before ready and replies with exact nonce, current key and target origin', () => {
++    const h = harness();
++    const bridge = createPluginAuthBridge(h.options);
++    expect(h.messages).toEqual([
++      {
++        message: { channel: KEY_MANAGER_AUTH_CHANNEL, type: 'ready' },
++        origin: ORIGIN,
++        listenerInstalled: true,
++      },
++    ]);
++    h.dispatch(request('opaque-request-nonce'));
++    expect(h.messages.at(-1)).toEqual({
++      message: {
++        channel: KEY_MANAGER_AUTH_CHANNEL,
++        type: 'response',
++        nonce: 'opaque-request-nonce',
++        managementKey: 'fixture-management-key',
++      },
++      origin: ORIGIN,
++      listenerInstalled: true,
++    });
++    bridge.dispose();
++  });
++
++  test('requires the exact intended source and origin', () => {
++    const h = harness();
++    const bridge = createPluginAuthBridge(h.options);
++    for (const origin of [
++      'null',
++      'http://cpa.example.test',
++      'https://cpa.example.test:444',
++      'https://cpa.example.test.evil.test',
++    ]) {
++      h.dispatch(request(), origin);
++    }
++    h.dispatch(request(), ORIGIN, null);
++    h.dispatch(request(), ORIGIN, { ...h.target });
++    h.dispatch(request(), ORIGIN, h.host);
++    expect(h.types()).toEqual(['ready']);
++    bridge.dispose();
++  });
++
++  test('ignores malformed, unrelated and non-request messages', () => {
++    const h = harness();
++    const bridge = createPluginAuthBridge(h.options);
++    for (const data of [
++      null,
++      'request',
++      [],
++      {},
++      { ...request(), channel: 'another-plugin:auth:v1' },
++      { ...request(), type: 'response' },
++      { ...request(), type: 'logout' },
++      { ...request(), nonce: undefined },
++      request(null),
++      request(2),
++      request(''),
++      request(' '),
++      request('x'.repeat(257)),
++    ]) {
++      h.dispatch(data);
++    }
++    h.dispatch({ channel: KEY_MANAGER_AUTH_CHANNEL, type: 'request' });
++    expect(h.types()).toEqual(['ready']);
++    bridge.dispose();
++  });
++
++  for (const [name, src] of [
++    ['foreign origin', 'https://other.example.test' + KEY_MANAGER_RESOURCE_PATH],
++    ['another plugin', ORIGIN + '/v0/resource/plugins/other/ui'],
++    ['management endpoint', ORIGIN + '/v8/management/key-guard/ui'],
++    [
++      'undeclared key-guard resource path',
++      ORIGIN + '/v0/resource/plugins/cpa-plugin-key-manager/key-guard/ui',
++    ],
++    ['resource suffix', RESOURCE + '/extra'],
++    ['trailing slash', RESOURCE + '/'],
++    ['query operation', RESOURCE + '?op=overview'],
++    ['fragment', RESOURCE + '#other'],
++    ['credential URL', 'https://name:password@cpa.example.test' + KEY_MANAGER_RESOURCE_PATH],
++    ['opaque URL', 'data:text/html,plugin'],
++    ['invalid URL', 'https://['],
++  ]) {
++    test('does not authorize ' + name, () => {
++      const h = harness();
++      h.options.src = src;
++      h.frame.src = src;
++      h.target.location.href = src;
++      const bridge = createPluginAuthBridge(h.options);
++      h.dispatch();
++      bridge.ready();
++      expect(h.messages).toEqual([]);
++      bridge.dispose();
++    });
++  }
++
++  test('never authorizes another plugin even when its menu copies the allowed path', () => {
++    const h = harness();
++    h.options.pluginID = 'another-plugin';
++    const bridge = createPluginAuthBridge(h.options);
++    h.dispatch();
++    expect(h.messages).toEqual([]);
++    bridge.dispose();
++  });
++
++  for (const apiBase of [
++    'https://other.example.test',
++    'http://cpa.example.test',
++    'https://cpa.example.test:444',
++    '',
++    'https://[',
++    'https://user:pass@cpa.example.test',
++  ]) {
++    test('requires the current API target origin: ' + apiBase, () => {
++      const h = harness();
++      h.auth.apiBase = apiBase;
++      const bridge = createPluginAuthBridge(h.options);
++      h.dispatch();
++      expect(h.messages).toEqual([]);
++      bridge.dispose();
++    });
++  }
++
++  for (const auth of [
++    { isAuthenticated: false },
++    { connectionStatus: 'connecting' },
++    { connectionStatus: 'disconnected' },
++    { connectionStatus: 'error' },
++    { managementKey: '' },
++    { managementKey: ' ' },
++  ]) {
++    test('requires a live authenticated connected session: ' + JSON.stringify(auth), () => {
++      const h = harness();
++      Object.assign(h.auth, auth);
++      const bridge = createPluginAuthBridge(h.options);
++      h.dispatch();
++      expect(h.messages).toEqual([]);
++      bridge.dispose();
++    });
++  }
++
++  test('reads current auth on requests and revokes logout before a React rerender', () => {
++    const h = harness();
++    const bridge = createPluginAuthBridge(h.options);
++    h.auth.isAuthenticated = false;
++    h.dispatch(); // No syncAuth/render required to deny this request.
++    expect(h.types()).toEqual(['ready', 'logout']);
++    bridge.syncAuth();
++    bridge.dispose();
++    expect(h.types()).toEqual(['ready', 'logout']);
++  });
++
++  test('rotates credentials with logout then ready, never returns a stale key', () => {
++    const h = harness();
++    const bridge = createPluginAuthBridge(h.options);
++    h.auth.managementKey = 'rotated-fixture-key';
++    bridge.syncAuth();
++    expect(h.types()).toEqual(['ready', 'logout', 'ready']);
++    h.dispatch();
++    expect(h.messages.at(-1)?.message.managementKey).toBe('rotated-fixture-key');
++    bridge.syncAuth();
++    expect(h.types()).toEqual(['ready', 'logout', 'ready', 'response']);
++    bridge.dispose();
++  });
++
++  test('revokes the old iframe when switching to a foreign API target', () => {
++    const h = harness();
++    const bridge = createPluginAuthBridge(h.options);
++    h.auth.apiBase = 'https://other.example.test';
++    bridge.syncAuth();
++    h.dispatch();
++    expect(h.types()).toEqual(['ready', 'logout']);
++    expect(h.messages.at(-1)?.origin).toBe(ORIGIN);
++    bridge.dispose();
++  });
++
++  test('a changed same-origin API target invalidates the previous session', () => {
++    const h = harness();
++    const bridge = createPluginAuthBridge(h.options);
++    h.auth.apiBase = ORIGIN + '/another-target';
++    bridge.syncAuth();
++    expect(h.types()).toEqual(['ready', 'logout', 'ready']);
++    bridge.dispose();
++  });
++
++  test('never trusts a replaced or detached iframe, including an old source', () => {
++    const h = harness();
++    const bridge = createPluginAuthBridge(h.options);
++    h.replaceFrame({ ...h.frame });
++    h.dispatch();
++    expect(h.types()).toEqual(['ready', 'logout']);
++    h.replaceFrame(null);
++    h.dispatch();
++    expect(h.types()).toEqual(['ready', 'logout']);
++    bridge.dispose();
++  });
++
++  test('checks actual iframe location as well as src, failing closed after navigation', () => {
++    const h = harness();
++    const bridge = createPluginAuthBridge(h.options);
++    h.target.location.href = ORIGIN + '/another-resource';
++    h.dispatch();
++    expect(h.types()).toEqual(['ready', 'logout']);
++    h.target.location.href = RESOURCE;
++    h.frame.src = ORIGIN + '/another-resource';
++    h.dispatch();
++    expect(h.types()).toEqual(['ready', 'logout']);
++    bridge.dispose();
++  });
++
++  for (const tab of ['overview', 'keys', 'dashboard', 'routing', 'pricing', 'audit', 'settings']) {
++    test('keeps ready and rotation working after child history navigation to ' + tab, () => {
++      const h = harness();
++      const bridge = createPluginAuthBridge(h.options);
++      h.target.location.href = RESOURCE + '?tab=' + tab;
++      bridge.ready();
++      h.auth.managementKey = 'tab-rotated-fixture';
++      bridge.syncAuth();
++      h.dispatch();
++      expect(h.types()).toEqual(['ready', 'ready', 'logout', 'ready', 'response']);
++      expect(h.messages.at(-1)?.message.managementKey).toBe('tab-rotated-fixture');
++      bridge.dispose();
++    });
++  }
++
++  for (const suffix of [
++    '?op=overview',
++    '?tab=unknown',
++    '?tab=',
++    '?tab=audit&tab=keys',
++    '?tab=audit&op=overview',
++    '?other=audit',
++    '?tab=audit#other',
++    '#audit',
++  ]) {
++    test('denies unexpected actual iframe URL state ' + suffix, () => {
++      const h = harness();
++      const bridge = createPluginAuthBridge(h.options);
++      h.target.location.href = RESOURCE + suffix;
++      h.dispatch();
++      expect(h.types()).toEqual(['ready', 'logout']);
++      bridge.dispose();
++    });
++  }
++
++  test('fails closed when reading location throws after a cross-origin redirect', () => {
++    const h = harness();
++    Object.defineProperty(h.target, 'location', {
++      get() {
++        throw new Error('SecurityError');
++      },
++    });
++    const bridge = createPluginAuthBridge(h.options);
++    h.dispatch();
++    bridge.ready();
++    expect(h.messages).toEqual([]);
++    bridge.dispose();
++  });
++
++  test('iframe load retries after about:blank and after the child initial timeout', () => {
++    const h = harness();
++    h.target.location.href = 'about:blank';
++    const bridge = createPluginAuthBridge(h.options);
++    expect(h.messages).toEqual([]);
++    h.target.location.href = RESOURCE;
++    bridge.ready();
++    bridge.ready();
++    expect(h.types()).toEqual(['ready', 'ready']);
++    h.dispatch();
++    expect(h.types()).toEqual(['ready', 'ready', 'response']);
++    bridge.dispose();
++  });
++
++  test('cleanup revokes old frame, removes listener, and StrictMode setup allows re-request', () => {
++    const h = harness();
++    const first = createPluginAuthBridge(h.options);
++    first.dispose();
++    first.dispose();
++    first.ready();
++    first.syncAuth();
++    h.dispatch();
++    expect(h.types()).toEqual(['ready', 'logout']);
++    expect(h.listeners.size).toBe(0);
++    const second = createPluginAuthBridge(h.options);
++    expect(h.types()).toEqual(['ready', 'logout', 'ready']);
++    h.dispatch();
++    expect(h.types()).toEqual(['ready', 'logout', 'ready', 'response']);
++    second.dispose();
++  });
++
++  test('unrelated auth-store updates do not automatically log out the child', () => {
++    const h = harness();
++    const bridge = createPluginAuthBridge(h.options);
++    bridge.syncAuth();
++    bridge.syncAuth();
++    expect(h.types()).toEqual(['ready']);
++    bridge.dispose();
++  });
++
++  test('page uses intended iframe ref, live auth subscription and load readiness', () => {
++    const source = readFileSync(
++      new URL('../src/features/plugins/PluginResourcePage.tsx', import.meta.url),
++      'utf8'
++    );
++    expect(source).toContain('ref={iframeRef}');
++    expect(source).toContain('getFrame: () => iframeRef.current');
++    expect(source).toContain('getAuth: () => useAuthStore.getState()');
++    expect(source).toContain('useAuthStore.subscribe(bridge.syncAuth)');
++    expect(source).toContain('onLoad={() => authBridgeRef.current?.ready()}');
++    expect(source).toContain('bridge.dispose()');
++  });
++});

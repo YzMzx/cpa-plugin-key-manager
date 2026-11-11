@@ -118,76 +118,45 @@
     return val.replace(/^Bearer\s+/i, "").trim();
   }
 
-  // Try reading obfuscated or plaintext storage from current window or same-origin parent window
   function readStoredManagementKeyFromStorage(storageObj) {
-    if (!storageObj) return "";
-    try {
-      const decodeRaw = (raw) => {
-        if (!raw) return "";
-        const prefix = "enc::v1::";
-        if (raw.startsWith(prefix)) {
-          const secret = new TextEncoder().encode("cli-proxy-api-webui::secure-storage|" + location.host + "|" + navigator.userAgent);
-          const binary = atob(raw.slice(prefix.length));
-          const bytes = new Uint8Array(binary.length);
-          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i) ^ secret[i % secret.length];
-          return new TextDecoder().decode(bytes);
-        }
-        return raw;
-      };
-
-      const rawAuth = storageObj.getItem("cli-proxy-auth");
-      if (rawAuth) {
-        let parsed = JSON.parse(decodeRaw(rawAuth));
-        if (typeof parsed === "string") {
-          try { parsed = JSON.parse(parsed); } catch (_) {}
-        }
-        const st = (parsed && typeof parsed === "object" && parsed.state) ? parsed.state : parsed;
-        if (st && typeof st.managementKey === "string" && st.managementKey.trim()) {
-          return cleanBearerToken(st.managementKey);
-        }
-      }
-
-      for (const kName of ["managementKey", "cpa-management-key", "management_key"]) {
-        const rawVal = storageObj.getItem(kName);
-        if (!rawVal) continue;
-        const dec = decodeRaw(rawVal);
-        try {
-          const parsed = JSON.parse(dec);
-          if (typeof parsed === "string" && parsed.trim()) return cleanBearerToken(parsed);
-        } catch (_) {
-          if (typeof dec === "string" && dec.trim()) return cleanBearerToken(dec);
-        }
-      }
-    } catch (_) {}
-    return "";
+    return KeyGuardAuth.readStoredKey(storageObj, location, navigator.userAgent);
   }
 
-  // Reuse supported same-origin storage first; ephemeral host sessions require the explicit bridge.
+  // Prefer the live host session so an old plugin cache cannot mask a rotated key.
+  let parentSessionRevoked = false;
+  let parentBridgeAvailable = false;
   async function discoverCPAManagementKey() {
     if (activeManagementKey) return activeManagementKey;
-    try {
-      const sessKey = sessionStorage.getItem(SESSION_KEY_NAME) || sessionStorage.getItem(LEGACY_SESSION_KEY_NAME);
-      if (sessKey && sessKey.trim()) return cleanBearerToken(sessKey);
-    } catch (_) {}
-
+    if (window.parent !== window) {
+      const fromBridge = await KeyGuardAuth.requestParentKey(window);
+      if (parentSessionRevoked) return "";
+      if (fromBridge) { parentBridgeAvailable = true; return cleanBearerToken(fromBridge); }
+      if (parentBridgeAvailable) return "";
+    }
     const fromLocal = readStoredManagementKeyFromStorage(window.localStorage);
     if (fromLocal) return fromLocal;
-
     if (window.parent !== window) {
       try {
         const fromParentLocal = readStoredManagementKeyFromStorage(window.parent.localStorage);
         if (fromParentLocal) return fromParentLocal;
       } catch (_) {}
-
-      const fromBridge = await KeyGuardAuth.requestParentKey(window);
-      if (fromBridge) return cleanBearerToken(fromBridge);
     }
+    try {
+      const sessKey = sessionStorage.getItem(SESSION_KEY_NAME) || sessionStorage.getItem(LEGACY_SESSION_KEY_NAME);
+      if (sessKey && sessKey.trim()) return cleanBearerToken(sessKey);
+    } catch (_) {}
     return "";
   }
 
   function unlockAdminWorkspace(validKey) {
     activeManagementKey = validKey;
-    try { sessionStorage.setItem(SESSION_KEY_NAME, validKey); } catch (_) {}
+    try {
+      if (parentBridgeAvailable) {
+        // Host logout can destroy the iframe before its queued notification arrives.
+        sessionStorage.removeItem(SESSION_KEY_NAME);
+        sessionStorage.removeItem(LEGACY_SESSION_KEY_NAME);
+      } else { sessionStorage.setItem(SESSION_KEY_NAME, validKey); }
+    } catch (_) {}
     document.getElementById("authGateError").classList.add("hidden");
     document.getElementById("authGateView").classList.add("hidden");
     document.getElementById("adminWorkspace").classList.remove("hidden");
@@ -2728,8 +2697,28 @@
     tip: { pointerover: showTrendTip, pointermove: moveTrendTip, pointerout: hideTrendTip }
   }, error => { if (!isCancelled(error)) showToast(error.message || "操作失败", true); });
 
+  KeyGuardAuth.listenParentSession(window, {
+    onReady: () => {
+      parentBridgeAvailable = true;
+      parentSessionRevoked = false;
+      if (!activeManagementKey) loadAdminOverview().catch(() => {});
+    },
+    onLogout: () => {
+      parentBridgeAvailable = true;
+      parentSessionRevoked = true;
+      lockAdminWorkspace("管理中心会话已退出或变更，请重新登录");
+    }
+  });
+
+  async function retryHostAuthentication() {
+    const button = document.getElementById("authGateRetryBtn");
+    if (button) button.disabled = true;
+    try { await loadAdminOverview(); } catch (_) {}
+    finally { if (button) button.disabled = false; }
+  }
+
   window.addEventListener("storage", event => {
-    if (event.key === "cli-proxy-auth" && activeManagementKey && !readStoredManagementKeyFromStorage(window.localStorage)) lockAdminWorkspace("管理中心会话已退出，请重新验证");
+    if (!parentBridgeAvailable && event.key === "cli-proxy-auth" && activeManagementKey && !readStoredManagementKeyFromStorage(window.localStorage)) lockAdminWorkspace("管理中心会话已退出，请重新验证");
   });
   window.addEventListener("pagehide", () => { requestGate.cancelAll(); apiClient.cancelAll(); });
 

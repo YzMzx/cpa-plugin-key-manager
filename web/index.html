@@ -24,6 +24,7 @@
       </div>
       <div class="input-row" style="justify-content:space-between;margin-top:14px">
         <a href="/management.html" target="_top" class="btn btn-sm" style="text-decoration:none">前往管理中心登录</a>
+        <button type="button" class="btn btn-sm" id="authGateRetryBtn" onclick="retryHostAuthentication()">重试后台登录</button>
         <button type="button" class="btn btn-primary" id="authGateSubmitBtn" onclick="submitAuthGateKey()">验证并进入</button>
       </div>
       <div id="authGateError" class="auth-gate-error hidden"></div>

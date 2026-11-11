@@ -25,21 +25,25 @@ Mutations may return the complete overview or `{ok:true, overview:...}`. Key CRU
 
 ## Parent authentication bridge
 
-Existing plugin session and same-origin saved CPA storage continue to unlock without another prompt. Framework-private hooks and XHR interception are not used. For non-persisted host sessions the parent can implement this explicit bridge:
+Embedded pages prefer the live same-origin CPA parent session over cached plugin credentials. Saved CPA storage supports `enc::v2::` (host-bound, independent of user agent), legacy `enc::v1::`, and existing plaintext formats; records for a different API origin or with `rememberPassword:false` are not reused. Malformed records do not prevent independent legacy aliases from being checked. Framework-private hooks and XHR interception are not used. The parent bridge uses this protocol:
 
 1. Plugin posts to its exact origin: `{channel:"cpa-plugin-key-manager:auth:v1", type:"request", nonce}`.
 2. Parent must verify the event origin and that event.source is the intended plugin iframe, and only reply while authenticated.
 3. Parent responds to event.source with the same exact target origin: `{channel:"cpa-plugin-key-manager:auth:v1", type:"response", nonce, managementKey}`.
 4. Plugin accepts only its actual parent, exact origin, exact channel/type and matching unpredictable nonce. Waiting is bounded to 450ms. Browser crypto.getRandomValues supplies the fallback nonce on HTTP contexts without randomUUID.
 
-No parent-side bridge is added by this project. Without saved/shared state or an implemented bridge, manual Management Key input is the explicit safe fallback. Backend validation still authorizes the key. Logout/401/403 closes modals, clears sensitive state and cancels outstanding operations.
+5. Parent announces `{channel:"cpa-plugin-key-manager:auth:v1",type:"ready"}` when its bridge is ready or the iframe loads. The child retries discovery only when locked. Parent sends the same channel with `type:"logout"` when the session changes, ends, or the resource is removed. Both notifications must come from the actual parent and exact origin. Bridge-derived credentials stay in memory and clear previous plugin session caches, so iframe removal cannot leave a reusable temporary host key in tab storage. Logout cancels discovery/API work and clears sensitive state; late responses cannot unlock the page. After a bridge has been detected, a timeout never falls back to stale saved credentials.
+
+The matching parent implementation is in the CPA management frontend (`src/features/plugins/PluginResourcePage.tsx` and `pluginAuthBridge.ts`). Deploy its built single-file management page together with the rebuilt plugin to unlock non-persisted sessions automatically. The parent restricts sharing to this plugin's declared `/v0/resource/plugins/cpa-plugin-key-manager/ui` frame. This protocol intentionally requires same-origin hosting. The portable parent patch, pinned upstream revision and deployment steps are tracked in `integrations/README.md` and included in release archives.
+
+Older CPA pages without the bridge can still reuse compatible saved credentials or the plugin tab session. Without those, manual Management Key input remains available, with a “重试后台登录” action for a delayed host connection. Backend validation still authorizes every request. There are no automatic retries after rejected credentials or replayed writes. Logout/401/403 closes modals, clears sensitive state and cancels outstanding operations.
 
 ## Tests
 
 Run from repository root, without npm installation:
 
 ~~~text
-node --test web/runtime.test.cjs web/audit.test.cjs web/settings.test.cjs
+node --test web/auth.test.cjs web/runtime.test.cjs web/audit.test.cjs web/settings.test.cjs
 go test ./web
 ~~~
 

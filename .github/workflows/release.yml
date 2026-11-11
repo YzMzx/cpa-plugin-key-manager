@@ -103,7 +103,7 @@ jobs:
 
       - name: Run frontend regressions
         working-directory: cpa-plugin-key-manager
-        run: node --test web/settings.test.cjs web/runtime.test.cjs web/audit.test.cjs
+        run: node --test web/auth.test.cjs web/settings.test.cjs web/runtime.test.cjs web/audit.test.cjs
 
   build:
     name: Build (${{ matrix.target }})
@@ -205,11 +205,12 @@ jobs:
 
           cp "dist/out/${RAW_LIB}" "dist/stage/${STD_LIB}"
           cp config.example.yaml README.md install.sh install.ps1 dist/stage/
+          cp -R integrations dist/stage/
 
           if [ "${{ matrix.archive }}" = "zip" ]; then
-            (cd dist/stage && 7z a -tzip "../out/cpa-plugin-key-manager-${{ matrix.target }}.zip" "${STD_LIB}" config.example.yaml README.md install.sh install.ps1)
+            (cd dist/stage && 7z a -tzip "../out/cpa-plugin-key-manager-${{ matrix.target }}.zip" "${STD_LIB}" config.example.yaml README.md install.sh install.ps1 integrations)
           else
-            tar -C dist/stage -czvf "dist/out/cpa-plugin-key-manager-${{ matrix.target }}.tar.gz" "${STD_LIB}" config.example.yaml README.md install.sh install.ps1
+            tar -C dist/stage -czvf "dist/out/cpa-plugin-key-manager-${{ matrix.target }}.tar.gz" "${STD_LIB}" config.example.yaml README.md install.sh install.ps1 integrations
           fi
 
           ls -lh dist/out/
