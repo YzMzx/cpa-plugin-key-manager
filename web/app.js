@@ -2701,6 +2701,7 @@
     onReady: () => {
       parentBridgeAvailable = true;
       parentSessionRevoked = false;
+      try { sessionStorage.removeItem(SESSION_KEY_NAME); sessionStorage.removeItem(LEGACY_SESSION_KEY_NAME); } catch (_) {}
       if (!activeManagementKey) loadAdminOverview().catch(() => {});
     },
     onLogout: () => {

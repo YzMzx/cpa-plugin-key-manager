@@ -26,6 +26,6 @@ bun run build
 
 ## 验证记录
 
-插件前端 97 项测试、Go 页面嵌入测试及 Windows 插件构建通过。配套管理前端 53 项认证桥回归和 4 项两端联合测试通过，lint、TypeScript、单文件构建通过。本地使用 Bun 1.3.14（上游声明 1.4.3）；上游完整测试的 13 项失败已在未修改的同一提交复现：3 项 CRLF 源码断言、8 项 Windows Bun 子进程 ENOENT、2 项地区货币显示差异。没有进行实际运行 CPA 的浏览器登录验收。
+插件前端 98 项测试、Go 页面嵌入测试及 Windows 插件构建通过。配套管理前端 53 项认证桥回归和 4 项两端联合测试通过，lint、TypeScript、单文件构建通过。本地使用 Bun 1.3.14（上游声明 1.4.3）；上游完整测试的 13 项失败已在未修改的同一提交复现：3 项 CRLF 源码断言、8 项 Windows Bun 子进程 ENOENT、2 项地区货币显示差异。没有进行实际运行 CPA 的浏览器登录验收。
 
 上游管理前端：https://github.com/router-for-me/Cli-Proxy-API-Management-Center

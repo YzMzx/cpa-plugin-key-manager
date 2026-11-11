@@ -167,6 +167,18 @@ test("host logout cancels overview and prevents a late response from unlocking t
   assert.equal(await env.run("discoverCPAManagementKey()"), "");
 });
 
+test("late host ready clears a session cached before bridge detection", () => {
+  const env = environment();
+  env.run('unlockAdminWorkspace("fallback-key")');
+  env.store.set("cpa_plugin_key_mgmt_session", "legacy-cache");
+  assert.equal(env.store.get("cpa_plugin_key_manager_mgmt_session"), "fallback-key");
+  env.context.window.parent = {};
+  for (const listener of env.windowListeners.get("message")) listener({ source: env.context.window.parent, origin: env.context.window.location.origin, data: { channel: Auth.CHANNEL, type: "ready" } });
+  assert.equal(env.store.has("cpa_plugin_key_manager_mgmt_session"), false);
+  assert.equal(env.store.has("cpa_plugin_key_mgmt_session"), false);
+  assert.equal(env.run("activeManagementKey"), "fallback-key");
+});
+
 test("live bridge authentication survives unrelated saved host metadata updates", () => {
   const env = environment();
   env.run('parentBridgeAvailable = true; unlockAdminWorkspace("live-host")');
