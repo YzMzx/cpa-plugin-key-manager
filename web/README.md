@@ -23,6 +23,10 @@ GET overview provides the existing summary, keys, default_policy, usage, auth_fi
 
 Mutations may return the complete overview or `{ok:true, overview:...}`. Key CRUD never PUTs CPA's global key list. Refresh GETs overview and ledger only; host synchronization is owned by the backend. Requests do not automatically retry writes, because a timeout can have an unknown commit outcome.
 
+## Credential binding picker
+
+The picker offers only current usable credentials. Disabled, unavailable and unknown entries are hidden unless already selected. Missing existing references are retained as visibly unregistered/deleted restrictions, never fabricated as active. They can be unchecked, but batch select and synthetic events cannot add them. Saving an unrelated field preserves these restrictions; clearing the last selection does not silently switch to the unrestricted pool. New draft selections that become invalid before save are rejected with a message instead of being grandfathered as saved bindings. Partial credential refreshes surface a safe auth_files_error warning without replaying stale active entries. Native labelled checkboxes retain keyboard semantics. Name, ID and auth_index refer to the same row, and unchecking/batch clearing removes all matching aliases. Refresh updates an open key editor without discarding its draft.
+
 ## Parent authentication bridge
 
 Embedded pages prefer the live same-origin CPA parent session over cached plugin credentials. Saved CPA storage supports `enc::v2::` (host-bound, independent of user agent), legacy `enc::v1::`, and existing plaintext formats; records for a different API origin or with `rememberPassword:false` are not reused. Malformed records do not prevent independent legacy aliases from being checked. Framework-private hooks and XHR interception are not used. The parent bridge uses this protocol:

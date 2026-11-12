@@ -47,6 +47,7 @@
   });
   function overviewHealthMessage(data) {
     const messages = [];
+    if (data && data.auth_files_error) messages.push(String(data.auth_files_error));
     const sync = data && data.host_sync;
     if (sync && sync.pending) messages.push("规则已保存，宿主同步待重试" + (sync.error ? "：" + sync.error : ""));
     const persistence = data && data.diagnostics && data.diagnostics.persistence;
@@ -71,14 +72,16 @@
       selectedModels: new Set(),
       providerFilter: "all",
       allCreds: true,
-      selectedCreds: new Set()
+      selectedCreds: new Set(),
+      loadedCreds: new Set()
     },
     dp: {
       allModels: true,
       selectedModels: new Set(),
       providerFilter: "all",
       allCreds: true,
-      selectedCreds: new Set()
+      selectedCreds: new Set(),
+      loadedCreds: new Set()
     }
   };
 
@@ -174,7 +177,7 @@
     ["kmModelCheckList", "kmCredCheckList", "dpModelCheckList", "dpCredCheckList", "pmRefHint", "authGateKeyInput"].forEach(id => {
       const element = document.getElementById(id); if (element) { if ("value" in element) element.value = ""; else element.textContent = ""; }
     });
-    for (const state of Object.values(selectorState)) { state.selectedModels.clear(); state.selectedCreds.clear(); }
+    for (const state of Object.values(selectorState)) { state.selectedModels.clear(); state.selectedCreds.clear(); state.loadedCreds.clear(); }
     revealedKeys = {}; expandedDashKeys = {}; expandedDashAccounts = {};
     overviewState.data = null;
     overviewTrendGeom = null;
@@ -377,6 +380,10 @@
     renderDashboardTables();
     initDefaultPolicySelectors();
     renderHostAuthTable();
+    if (document.getElementById("keyModalBackdrop").classList.contains("open")) {
+      renderCredCheckList("km");
+      updateSelectorBadges("km");
+    }
     renderPricingTab();
     return true;
   }
@@ -426,6 +433,7 @@
     const isAllCreds = normCreds.length === 0;
     st.allCreds = isAllCreds;
     st.selectedCreds = new Set(normCreds);
+    st.loadedCreds = new Set(normCreds);
 
     document.getElementById(prefix + "AllModelsCheck").checked = st.allModels;
     document.getElementById(prefix + "ModelPickerPanel").classList.toggle("hidden", st.allModels);
@@ -580,19 +588,43 @@
     updateSelectorBadges(prefix);
   }
 
+  function credentialIdentities(file) {
+    return [file.name, file.id, file.auth_index].filter(Boolean);
+  }
+
+  function credentialIsSelected(prefix, file) {
+    return credentialIdentities(file).some(id => selectorState[prefix].selectedCreds.has(id));
+  }
+
+  function credentialCanBind(file) {
+    if (!file || file.disabled || file.unavailable) return false;
+    const status = String(file.status || "").toLowerCase();
+    return !["disabled", "error", "unknown", "unavailable", "removed", "missing"].includes(status);
+  }
+
+  function credentialPickerStatus(file) {
+    if (file.status === "missing") return "未登记 / 已删除";
+    if (file.disabled || file.status === "disabled") return "已禁用";
+    if (file.unavailable || file.status === "error" || file.status === "unavailable") return "暂不可用";
+    if (file.status === "unknown") return "状态未确认";
+    return file.status || "active";
+  }
+
   function getFilteredCredsForSelector(prefix) {
     const st = selectorState[prefix];
     const q = (document.getElementById(prefix + "CredSearch")?.value || "").toLowerCase().trim();
     const files = getAvailableCredentials();
-    const knownVals = new Set(files.map(af => af.name || af.id || af.auth_index));
+    const knownVals = new Set(files.flatMap(credentialIdentities));
     const merged = files.slice();
     st.selectedCreds.forEach(c => {
       if (!knownVals.has(c)) {
-        merged.unshift({ id: c, name: c, provider: "bound", status: "active" });
+        // Preserve existing restrictions, but never invent an active credential.
+        merged.unshift({ id: c, name: c, provider: "bound", status: "missing" });
       }
     });
 
     return merged.filter(af => {
+      if (!credentialCanBind(af) && !credentialIsSelected(prefix, af)) return false;
       if (!q) return true;
       const hay = [af.name, af.id, af.provider, af.type, af.email, af.account, af.label].filter(Boolean).join(" ").toLowerCase();
       return hay.includes(q);
@@ -609,16 +641,18 @@
     }
     container.innerHTML = list.map(af => {
       const val = af.name || af.id || af.auth_index;
-      const checked = st.selectedCreds.has(val) || st.selectedCreds.has(af.id) || st.selectedCreds.has(af.name);
-      const sub = [af.provider || af.type, af.email || af.account || af.label].filter(Boolean).join(" · ");
-      const statusOk = !af.disabled && !af.unavailable;
+      const checked = credentialIsSelected(prefix, af);
+      const statusOk = credentialCanBind(af);
+      const sub = [af.provider || af.type, af.email || af.account || af.label,
+        !statusOk ? "所选凭证当前不可用；可取消勾选移除，不会自动放宽权限" : ""].filter(Boolean).join(" · ");
+      const disabled = (!statusOk && !checked) || (prefix === "dp" && defaultPolicySaveInFlight);
       return `<label class="check-item ${checked ? "checked" : ""}">
-        <input type="checkbox" ${checked ? "checked" : ""} data-change="credCheck" data-prefix="${escapeHtml(prefix)}" data-value="${escapeHtml(val)}">
+        <input type="checkbox" ${checked ? "checked" : ""} ${disabled ? "disabled" : ""} data-change="credCheck" data-prefix="${escapeHtml(prefix)}" data-value="${escapeHtml(val)}">
         <div class="check-item-body">
           <div class="check-item-title mono">${escapeHtml(val)}</div>
           <div class="check-item-sub">${escapeHtml(sub || "可用凭证")}</div>
         </div>
-        <span class="tag ${statusOk ? "ok" : "bad"}">${escapeHtml(af.status || (statusOk ? "active" : "disabled"))}</span>
+        <span class="tag ${statusOk ? "ok" : "bad"}">${escapeHtml(credentialPickerStatus(af))}</span>
       </label>`;
     }).join("");
   }
@@ -626,10 +660,12 @@
   function toggleCredCheckItem(prefix, credVal, isChecked) {
     if (prefix === "dp") { if (defaultPolicySaveInFlight) return; markDefaultPolicyDirty(); }
     const st = selectorState[prefix];
+    const file = getAvailableCredentials().find(f => credentialIdentities(f).includes(credVal));
     if (isChecked) {
+      if (!credentialCanBind(file)) { renderCredCheckList(prefix); return; }
       st.selectedCreds.add(credVal);
     } else {
-      st.selectedCreds.delete(credVal);
+      for (const id of file ? credentialIdentities(file) : [credVal]) st.selectedCreds.delete(id);
     }
     renderCredCheckList(prefix);
     updateSelectorBadges(prefix);
@@ -644,12 +680,29 @@
 
     const visible = getFilteredCredsForSelector(prefix);
     if (checkAll) {
-      visible.forEach(af => st.selectedCreds.add(af.name || af.id || af.auth_index));
+      visible.filter(credentialCanBind).forEach(af => {
+        if (!credentialIsSelected(prefix, af)) st.selectedCreds.add(af.name || af.id || af.auth_index);
+      });
     } else {
-      visible.forEach(af => st.selectedCreds.delete(af.name || af.id || af.auth_index));
+      visible.forEach(af => credentialIdentities(af).forEach(id => st.selectedCreds.delete(id)));
     }
     renderCredCheckList(prefix);
     updateSelectorBadges(prefix);
+  }
+
+  function validateCredentialDraft(prefix) {
+    const st = selectorState[prefix];
+    if (st.allCreds) return true;
+    const invalidNew = Array.from(st.selectedCreds).some(id => {
+      if (st.loadedCreds.has(id)) return false;
+      const file = getAvailableCredentials().find(f => credentialIdentities(f).includes(id));
+      return !credentialCanBind(file);
+    });
+    if (!invalidNew) return true;
+    showToast("新勾选的凭证已失效或状态未确认，请取消该项或重新选择后再保存", true);
+    const input = document.querySelectorAll("#" + prefix + "CredCheckList input")[0];
+    if (input) input.focus();
+    return false;
   }
 
   function exportSelectorValues(prefix) {
@@ -790,14 +843,15 @@
     const files = ((overviewData && overviewData.auth_files) || []);
     const target = String(credentialID || "").toLowerCase();
     return files.find(f => {
-      const candidates = [f.id, f.name, f.label, f.email, f.account];
+      const candidates = [f.id, f.name, f.auth_index, f.label, f.email, f.account];
       return candidates.some(c => String(c || "").toLowerCase() === target);
     }) || null;
   }
 
   function credentialStatusOf(credentialID) {
     const file = authFileFor(credentialID);
-    if (!file) return { key: "unknown", label: "未登记" };
+    if (!file || file.status === "missing" || file.status === "removed") return { key: "unknown", label: "未登记 / 已删除" };
+    if (file.status === "unknown") return { key: "unknown", label: "状态未确认" };
     if (file.unavailable || file.status === "error") {
       const reason = String(file.status_message || "").toLowerCase();
       if (reason.includes("quota") || reason.includes("rate")) return { key: "limited", label: "限流中" };
@@ -1200,6 +1254,7 @@
       return;
     }
 
+    if (!validateCredentialDraft("km")) return;
     const { allowedModels, credentials } = exportSelectorValues("km");
     if (!selectorState.km.allModels && allowedModels.length === 0) {
       showToast("请至少勾选一个允许访问的模型，或勾选「允许访问全部模型」", true);
@@ -1722,6 +1777,7 @@
 
   async function saveDefaultPolicy() {
     if (defaultPolicySaveInFlight) return;
+    if (!validateCredentialDraft("dp")) return;
     const { allowedModels, credentials } = exportSelectorValues("dp");
     if (!selectorState.dp.allModels && allowedModels.length === 0) {
       showToast("请至少勾选一个默认允许的模型，或勾选「允许访问全部模型」", true);

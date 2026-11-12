@@ -63,7 +63,12 @@ func (m *Manager) authFilesWithUsage(files []pluginapi.HostAuthFileEntry) []map[
 // BuildAdminOverview returns the complete state needed by the Admin Dashboard in a single call.
 func (m *Manager) BuildAdminOverview(hostCallbackID string) map[string]any {
 	snap := m.BuildSnapshot("", "", false)
-	rawAuthFiles := m.cachedHostAuthFiles(hostCallbackID)
+	// Do not cache authorization state or replay stale active entries on errors.
+	rawAuthFiles, authErr := m.ListHostAuthFiles(hostCallbackID)
+	authFilesError := ""
+	if authErr != nil {
+		authFilesError = "上游凭证状态读取不完整，未确认的凭证已隐藏；请稍后刷新，勿据此清除已有绑定"
+	}
 	authFiles := m.authFilesWithUsage(rawAuthFiles)
 	availableModels := m.ListAvailableModels(hostCallbackID, snap)
 	pStatus := m.PricingStatus()
@@ -128,6 +133,7 @@ func (m *Manager) BuildAdminOverview(hostCallbackID string) map[string]any {
 		"default_policy":    dpCopy,
 		"usage":             snap,
 		"auth_files":        authFiles,
+		"auth_files_error":  authFilesError,
 		"available_models":  availableModels,
 		"pricing_status":    pStatus,
 		"diagnostics":       m.BuildPersistenceDiagnostics(),

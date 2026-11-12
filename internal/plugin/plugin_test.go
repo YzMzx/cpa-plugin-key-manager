@@ -3,6 +3,7 @@ package plugin
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -1130,14 +1131,18 @@ func TestModelsDevSyncAndCustomPriceOverride(t *testing.T) {
 		}
 	}`
 
+	// Price catalogs use the cancellable direct HTTP fetcher, not host.http.do.
+	// Keep the initial sync deterministic and fully local.
+	catalog := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(sampleModelsDev))
+	}))
+	defer catalog.Close()
 	hostInvoker := func(method string, payload []byte) ([]byte, error) {
 		switch method {
 		case pluginabi.MethodHostHTTPDo:
-			resp := pluginapi.ExecutorHTTPResponse{
-				StatusCode: 200,
-				Body:       []byte(sampleModelsDev),
-			}
-			return okEnvelope(resp)
+			t.Fatal("price sync unexpectedly used host.http.do")
+			return nil, nil
 		case pluginabi.MethodHostAuthModels:
 			resp := pluginapi.HostAuthModelsResponse{
 				Credentials: []pluginapi.HostAuthModels{
@@ -1158,7 +1163,7 @@ storage:
   usage_db_file: "` + filepath.ToSlash(usageDB) + `"
   pricing_cache_file: "` + filepath.ToSlash(cacheFile) + `"
 pricing:
-  sync_url: "https://models.dev/api.json"
+  sync_url: "` + catalog.URL + `"
 `
 	regReq, _ := json.Marshal(lifecycleRequest{
 		ConfigYAML:    []byte(cfgYAML),

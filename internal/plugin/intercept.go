@@ -147,29 +147,9 @@ func (m *Manager) handleSchedulerPick(raw []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	m.mu.Lock()
+	m.mu.RLock()
 	cfg := m.cfg
-	for _, cand := range req.Candidates {
-		id := strings.TrimSpace(cand.ID)
-		if id == "" {
-			continue
-		}
-		name := id
-		if fn := strings.TrimSpace(cand.Attributes["filename"]); fn != "" {
-			name = fn
-		}
-		m.seenAuthFiles[id] = pluginapi.HostAuthFileEntry{
-			ID:       id,
-			Name:     name,
-			Provider: cand.Provider,
-			Status:   cand.Status,
-			Priority: cand.Priority,
-			Email:    cand.Attributes["email"],
-			Account:  cand.Attributes["account"],
-			Label:    cand.Attributes["label"],
-		}
-	}
-	m.mu.Unlock()
+	m.mu.RUnlock()
 
 	apiKey := cfg.ResolveAPIKeyFromContext(http.Header(req.Options.Headers), nil, req.Options.Metadata)
 	rule, _ := cfg.ResolveKeyRule(apiKey)

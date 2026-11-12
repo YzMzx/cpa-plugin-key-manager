@@ -428,9 +428,9 @@ test("quota table uses authoritative renamed-key usage, with backward compatible
 
 test("overview exposes persistence and accounting failures instead of hiding them", () => {
  const env = environment();
- env.context.health = overview({diagnostics:{persistence:{last_error:"disk full", accounting_error:"aggregate overflow"}}});
+ env.context.health = overview({auth_files_error:"凭证状态读取不完整",diagnostics:{persistence:{last_error:"disk full", accounting_error:"aggregate overflow"}}});
  const message = env.run("overviewHealthMessage(health)");
- assert.match(message,/disk full/); assert.match(message,/aggregate overflow/);
+ assert.match(message,/disk full/); assert.match(message,/aggregate overflow/); assert.match(message,/凭证状态读取不完整/);
 });
 
 test("audit tab uses administrator endpoints and tab exit cancels its detail", async () => {
@@ -515,4 +515,82 @@ test("default policy saves its draft revision, rebases only after success and pr
  let request=calls.find(call=>call.url.includes("default-policy"));assert.equal(request.opts.headers.get("X-Key-Guard-Revision"),"4");assert.equal(JSON.parse(request.opts.body).max_concurrency,8);assert.equal(env.run("defaultPolicyDirty"),false);assert.equal(env.run("defaultPolicyRevision"),5);
  conflict=true;env.element("dpMaxConcurrency").value="9";env.element("dpMaxConcurrency").listeners.input();env.run("overviewData.rules_revision=6");await env.run("saveDefaultPolicy()");assert.equal(env.run("defaultPolicyDirty"),true);assert.equal(env.element("dpMaxConcurrency").value,"9");assert.equal(env.run("defaultPolicyRevision"),5);assert.match(env.element("dpDraftStatus").textContent,/版本已变化/);
  env.run('lockAdminWorkspace("expired")');assert.equal(env.run("defaultPolicyDirty"),false);assert.equal(env.run("defaultPolicyRevision"),null);
+});
+
+test("credential picker hides disabled, unavailable and unknown entries", () => {
+  const env = environment();
+  env.context.data = overview({ auth_files: [{id:"live",status:"active"},{id:"disabled",disabled:true},{id:"down",unavailable:true},{id:"unknown",status:"unknown"},{id:"error",status:"error"},{id:"status-disabled",status:"disabled"}] });
+  env.run('applyOverviewData(data); loadSelectorFromRule("km", ["*"], []); batchCheckCreds("km", true)');
+  assert.equal(env.run('JSON.stringify(Array.from(selectorState.km.selectedCreds))'), '["live"]');
+  env.run('toggleCredCheckItem("km", "disabled", true); toggleCredCheckItem("km", "deleted", true)');
+  assert.equal(env.run('selectorState.km.selectedCreds.size'), 1);
+  assert.doesNotMatch(env.element("kmCredCheckList").innerHTML, /data-value="disabled"|data-value="down"|data-value="unknown"/);
+});
+
+test("invalid existing bindings stay restricted, labelled honestly and can be removed", () => {
+  for (const prefix of ["km", "dp"]) {
+    const env = environment();
+    env.context.data = overview({ auth_files: [{id:"disabled",status:"disabled"}] });
+    env.context.prefix = prefix;
+    env.run('applyOverviewData(data); loadSelectorFromRule(prefix, ["*"], ["deleted", "disabled"])');
+    const html = env.element(prefix + "CredCheckList").innerHTML;
+    assert.ok(html.includes("未登记 / 已删除")); assert.match(html, /已禁用/); assert.doesNotMatch(html, />active</);
+    assert.match(html, /不会自动放宽权限/);
+    assert.equal(env.run('JSON.stringify(exportSelectorValues(prefix).credentials)'), '["deleted","disabled"]');
+    env.run('toggleCredCheckItem(prefix, "deleted", false); toggleCredCheckItem(prefix, "disabled", false); batchCheckCreds(prefix, true)');
+    assert.equal(env.run('selectorState[prefix].selectedCreds.size'), 0);
+    assert.equal(env.run('selectorState[prefix].allCreds'), false);
+  }
+});
+
+test("credential aliases neither create ghosts nor survive deselection", () => {
+  const env = environment();
+  env.context.data = overview({ auth_files: [{id:"live-id",name:"live-name",auth_index:"live-index",status:"active"}] });
+  env.run('applyOverviewData(data); loadSelectorFromRule("km", ["*"], ["live-id", "live-index"])');
+  assert.equal(env.run('getFilteredCredsForSelector("km").length'), 1);
+  env.run('batchCheckCreds("km", true)'); assert.equal(env.run('selectorState.km.selectedCreds.size'), 2);
+  env.run('toggleCredCheckItem("km", "live-name", false)'); assert.equal(env.run('selectorState.km.selectedCreds.size'), 0);
+  env.run('loadSelectorFromRule("km", ["*"], ["live-index"]); batchCheckCreds("km", false)');
+  assert.equal(env.run('selectorState.km.selectedCreds.size'), 0);
+  assert.equal(env.run('credentialStatusOf("live-index").key'), "active");
+});
+
+test("refresh updates open credential editor without dropping removed restrictions", () => {
+  const env = environment();
+  env.context.initial = overview({auth_files:[{id:"removed-later",status:"active"}]});
+  env.run('applyOverviewData(initial); loadSelectorFromRule("km", ["*"], ["removed-later"]); document.getElementById("keyModalBackdrop").classList.add("open")');
+  env.context.changed = overview(); env.run('applyOverviewData(changed)');
+  assert.ok(env.element("kmCredCheckList").innerHTML.includes("未登记 / 已删除"));
+  assert.equal(env.run('selectorState.km.selectedCreds.has("removed-later")'), true);
+  assert.equal(env.run('selectorState.km.allCreds'), false);
+});
+
+test("unrelated key edits preserve invalid binding restrictions in submitted payload", async () => {
+  const calls = [];
+  const env = environment(async (url, opts = {}) => { calls.push({url,opts}); return response({ok:true,overview:overview()}); });
+  env.context.data = overview();
+  env.run('applyOverviewData(data); loadSelectorFromRule("km", ["*"], ["deleted"])');
+  env.element("kmApiKey").value = "test-key"; env.element("kmOriginalApiKey").value = "test-key";
+  await env.run('submitKeyModal()');
+  const request = calls.find(call => call.opts.method === "POST");
+  assert.deepEqual(JSON.parse(request.opts.body).upstream_binding.credentials, ["deleted"]);
+});
+
+test("new draft credentials that disappear cannot be saved as existing restrictions", async () => {
+  for (const prefix of ["km", "dp"]) for (const state of ["missing", "disabled", "unknown"]) {
+    const calls = [];
+    const env = environment(async (url, opts = {}) => { calls.push({url,opts}); return response({ok:true,overview:overview()}); });
+    env.context.data = overview({auth_files:[{id:"keep",status:"active"},{id:"new",status:"active"}]});
+    env.context.prefix = prefix;
+    env.run('applyOverviewData(data); loadSelectorFromRule(prefix, ["*"], ["keep"]); toggleCredCheckItem(prefix, "new", true)');
+    env.context.changed = overview({auth_files:[{id:"keep",status:"active"}, ...(state === "missing" ? [] : [{id:"new",status:state}])]});
+    env.run('if (prefix === "km") document.getElementById("keyModalBackdrop").classList.add("open"); applyOverviewData(changed)');
+    env.element("kmApiKey").value = "test-key"; env.element("kmOriginalApiKey").value = "test-key";
+    await env.run(prefix === "km" ? 'submitKeyModal()' : 'saveDefaultPolicy()');
+    assert.equal(calls.length, 0, prefix + ": " + state);
+    assert.equal(env.run('selectorState[prefix].selectedCreds.has("new")'), true);
+    assert.equal(env.run('selectorState[prefix].allCreds'), false);
+    env.run('toggleCredCheckItem(prefix, "new", false)');
+    assert.equal(env.run('validateCredentialDraft(prefix)'), true);
+  }
 });
