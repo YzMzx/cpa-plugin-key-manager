@@ -19,6 +19,11 @@ class Element {
  addEventListener(type,fn){this.listeners[type]=fn;}
  setAttribute(name,value){(this.attributes ||= {})[name]=String(value);}
  getAttribute(name){return this.attributes?.[name]??null;}
+ removeAttribute(name){delete this.attributes?.[name];}
+ getAnimations(){return [];}
+ showModal(){if(this.open)return;this.open=true;this.showCount=(this.showCount||0)+1;this.invoker=this.ownerDocument.activeElement;this.ownerDocument.getElementById("auditDetailClose").focus();}
+ close(){if(!this.open)return;this.open=false;this.invoker?.focus();this.listeners.close?.();}
+ getBoundingClientRect(){return {left:100,top:0,right:1000,bottom:800};}
  focus(){if(this.ownerDocument)this.ownerDocument.activeElement=this;}
  contains(node){return node===this||this.children.some(child=>child.contains&&child.contains(node));}
  querySelectorAll(){return this.focusable||[];}
@@ -66,7 +71,7 @@ test("late detail cannot overwrite a new record or return after close",async()=>
  const a=deferred(),b=deferred();const f=fixture(url=>url.includes("/detail?id=a")?a.promise:url.includes("/detail?id=b")?b.promise:Promise.resolve(list([record("a"),record("b")])));
  await f.view.enter();const first=f.view.showDetail("a");const second=f.view.showDetail("b");b.resolve({record:record("b",{request_body:{selected:"b"}}),status:status()});await second;
  a.resolve({record:record("a",{request_body:{selected:"a"}}),status:status()});await first;assert.match(f.node("auditRequestBody").textContent,/"b"/);assert.doesNotMatch(f.node("auditRequestBody").textContent,/"a"/);
- const c=deferred();const g=fixture(url=>url.includes("/detail?")?c.promise:Promise.resolve(list([record("a")])));await g.view.enter();const pending=g.view.showDetail("a");g.view.closeDetail();c.resolve({record:record("a",{request_body:{secret:"gone"}}),status:status()});await pending;assert.equal(g.node("auditRequestBody").textContent,"");assert.ok(g.node("auditDetail").classList.contains("hidden"));
+ const c=deferred();const g=fixture(url=>url.includes("/detail?")?c.promise:Promise.resolve(list([record("a")])));await g.view.enter();const pending=g.view.showDetail("a");g.view.closeDetail();c.resolve({record:record("a",{request_body:{secret:"gone"}}),status:status()});await pending;assert.equal(g.node("auditRequestBody").textContent,"");assert.ok(!g.node("auditDetailPanel").open);
 });
 
 test("late list cannot replace new filters even when transport ignores abort",async()=>{
@@ -99,7 +104,8 @@ test("audit UI uses fixed drawer, four filters and no removed privacy banner",()
  assert.ok(!html.includes("请求正文可能包含对话、个人信息和业务数据。"));
  for(const id of ["auditKey","auditKeyLabel","auditModel","auditOutcome"])assert.ok(html.includes('id="'+id+'"'));
  for(const id of ["auditRequestId","auditTraceId","auditKeyFingerprint","auditFrom","auditTo","auditIP"])assert.ok(!html.includes('id="'+id+'"'));
- assert.match(html,/role="dialog" aria-modal="true"/);assert.match(css,/audit-drawer-overlay[^}]+position: fixed/);
+ assert.match(html,/<dialog id="auditDetailPanel"[^>]+closedby="any"/);assert.match(css,/\.audit-drawer[^}]+position: fixed/);
+ assert.doesNotMatch(html,/aria-modal="true"|modal-backdrop|audit-drawer-overlay/);
  for(const forbidden of ["innerHTML","eval(","new Function","response_body"])assert.ok(!source.includes(forbidden));
 });
 
@@ -147,22 +153,21 @@ test("detail drawer opens in viewport, changes adjacent record, Esc restores tri
  await f.view.enter();
  const trigger=f.node("auditListBody").children[0].children[7].children[0];trigger.focus();
  await f.view.showDetail("a",trigger);
- assert.equal(f.node("auditDetail").classList.contains("hidden"),false);assert.equal(f.doc.body.classList.contains("audit-detail-open"),true);
+ assert.equal(!f.node("auditDetailPanel").open,false);assert.equal(f.doc.body.classList.contains("audit-detail-open"),false);
  assert.equal(f.doc.activeElement,f.node("auditDetailClose"));assert.equal(f.node("auditDetailContent").scrollTop,0);assert.equal(f.node("auditDetailPrev").disabled,true);assert.equal(trigger.getAttribute("aria-expanded"),"true");
  await f.node("auditDetailNext").listeners.click();assert.ok(f.node("auditDetailPosition").textContent.includes("2 / 2"));assert.equal(f.node("auditDetailNext").disabled,true);
- let prevented=false;f.node("auditDetail").listeners.keydown({key:"Escape",preventDefault(){prevented=true},stopPropagation(){}});
- assert.equal(prevented,true);assert.equal(f.node("auditDetail").classList.contains("hidden"),true);assert.equal(f.doc.activeElement,trigger);assert.equal(f.doc.body.classList.contains("audit-detail-open"),false);assert.equal(f.node("auditRequestBody").textContent,"");
+ let prevented=false;f.node("auditDetailPanel").listeners.cancel({preventDefault(){prevented=true}});
+ assert.equal(prevented,true);assert.equal(!f.node("auditDetailPanel").open,true);assert.equal(f.doc.activeElement,trigger);assert.equal(f.doc.body.classList.contains("audit-detail-open"),false);assert.equal(f.node("auditRequestBody").textContent,"");
 });
 
-test("drawer backdrop closes while panel clicks do not; Tab remains inside",async()=>{
+test("drawer delegates focus to native dialog and uses coordinate-aware backdrop fallback",async()=>{
  const f=fixture(async url=>url.includes("/detail?")?{record:record("a",{request_body:"{}"}),status:status()}:list([record("a")]));
  await f.view.enter();await f.view.showDetail("a");
- f.node("auditDetail").listeners.click({target:f.node("auditDetailPanel")});assert.equal(f.node("auditDetail").classList.contains("hidden"),false);
- const first=f.node("auditDetailPrev"),last=f.node("auditRequestBody");f.node("auditDetailPanel").focusable=[first,last];last.focus();
- let trapped=false;f.node("auditDetail").listeners.keydown({key:"Tab",preventDefault(){trapped=true}});assert.equal(trapped,true);assert.equal(f.doc.activeElement,first);
- f.node("auditDetail").listeners.click({target:f.node("auditDetail")});assert.equal(f.node("auditDetail").classList.contains("hidden"),true);
+ const panel=f.node("auditDetailPanel");
+ assert.equal(panel.listeners.keydown,undefined);
+ panel.listeners.pointerdown({button:0,clientX:120,clientY:20});panel.listeners.pointerup({button:0,clientX:120,clientY:20});assert.equal(panel.open,true);
+ panel.listeners.pointerdown({button:0,clientX:10,clientY:20});panel.listeners.pointerup({button:0,clientX:10,clientY:20});assert.equal(panel.open,false);
 });
-
 test("API key selector sends only fingerprints and remark/model search text",async()=>{
  const f=fixture(async url=>list([record("a",{key_fingerprint:"a".repeat(64)})]));await f.view.enter();
  assert.match(f.node("auditKey").textContent,/工作密钥/);f.node("auditKey").value="a".repeat(64);f.node("auditKeyLabel").value="生产团队";f.node("auditModel").value="sonnet";

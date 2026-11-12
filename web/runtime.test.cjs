@@ -10,6 +10,7 @@ const Auth = require("./auth.js");
 const Events = require("./events.js");
 const Audit = require("./audit.js");
 const Settings = require("./settings.js");
+const Dialogs = require("./dialogs.js");
 const response = (body, status = 200, type = "application/json") => new Response(typeof body === "string" ? body : JSON.stringify(body), { status, headers: { "Content-Type": type } });
 const overview = (extra = {}) => ({ summary: { total_tokens: 12, total_requests: 2, total_cost_nano_usd: 10 }, keys: [], usage: { keys: {}, accounts: {} }, default_policy: {}, available_models: [], auth_files: [], timezone: "UTC", rules_revision: 4, ...extra });
 const ledger = (extra = {}) => ({ series: [], models: [], requests: 2, total_tokens: 12, from: "2026-01-01T00:00:00Z", to: "2026-01-02T00:00:00Z", ...extra });
@@ -23,13 +24,14 @@ function environment(fetchImpl = async () => response(overview())) {
   const classes = () => { const set = new Set(); return { add: (...items) => items.forEach(item => set.add(item)), remove: (...items) => items.forEach(item => set.delete(item)), contains: item => set.has(item), toggle: (item, force) => { const add = force === undefined ? !set.has(item) : force; if (add) set.add(item); else set.delete(item); return add; } }; };
   const element = id => {
     if (/^(?:setting|settings)/.test(id)) assert.ok(htmlIds.has(id), "page accessed missing settings DOM: " + id);
-    if (!elements.has(id)) elements.set(id, { id, value: "", textContent: "", innerHTML: "", disabled: false, checked: false, style: {}, dataset: {}, classList: classes(), focus() {}, setSelectionRange() {}, getAttribute() { return null; }, setAttribute() {}, addEventListener(type, handler) { (this.listeners ||= {})[type] = handler; }, replaceChildren() { this.textContent = ""; this.children = []; }, appendChild(child) { (this.children ||= []).push(child); return child; }, remove() {} });
+    if (!elements.has(id)) elements.set(id, { id, value: "", textContent: "", innerHTML: "", disabled: false, checked: false, style: {}, dataset: {}, classList: classes(), focus() {}, setSelectionRange() {}, getAttribute(name) { return this.attributes?.[name] ?? null; }, setAttribute(name, value) { (this.attributes ||= {})[name] = value; }, removeAttribute(name) { delete this.attributes?.[name]; }, open: false, getAnimations() { return []; }, showModal() { this.open = true; }, close() { this.open = false; this.listeners?.close?.(); }, addEventListener(type, handler) { (this.listeners ||= {})[type] = handler; }, replaceChildren() { this.textContent = ""; this.children = []; }, appendChild(child) { (this.children ||= []).push(child); return child; }, remove() {} });
+    elements.get(id).ownerDocument = doc;
     return elements.get(id);
   };
   const doc = { body: { classList: classes() }, getElementById: element,
     createElement: () => ({ className: "", style: {}, dataset: {}, textContent: "", children: [], classList: classes(), setAttribute() {}, focus() {}, appendChild(child) { this.children.push(child); return child; }, replaceChildren() { this.children = []; this.textContent = ""; }, remove() {} }),
     querySelectorAll: selector => {
-      if (selector.includes(".modal-backdrop input")) return [element("kmApiKey"), element("kmOriginalApiKey"), element("pmModelInput")];
+      if (selector.includes("dialog.modal input")) return [element("kmApiKey"), element("kmOriginalApiKey"), element("pmModelInput")];
       if (selector.includes("#adminWorkspace tbody")) return [element("crudKeysTableBody"), element("dashKeyTableBody"), element("dashAccountTableBody"), element("modelPopover")];
       return [];
     },
@@ -42,7 +44,7 @@ function environment(fetchImpl = async () => response(overview())) {
   const win = { location: { href: "http://localhost/ui", origin: "http://localhost", host: "localhost" }, history: { replaceState() {} }, addEventListener(type, handler) { if (!windowListeners.has(type)) windowListeners.set(type, []); windowListeners.get(type).push(handler); }, localStorage: storage };
   win.parent = win;
   const context = vm.createContext({ window: win, document: doc, location: win.location, navigator: { userAgent: "test", clipboard: { writeText: async () => {} } }, sessionStorage: storage,
-    KeyGuardClient: Client, KeyGuardState: State, KeyGuardFormat: Format, KeyGuardAuth: Auth, KeyGuardEvents: Events, KeyGuardAudit: Audit, KeyGuardSettings: Settings,
+    KeyGuardClient: Client, KeyGuardState: State, KeyGuardFormat: Format, KeyGuardAuth: Auth, KeyGuardEvents: Events, KeyGuardAudit: Audit, KeyGuardSettings: Settings, KeyGuardDialogs: Dialogs,
     fetch: fetchImpl, Headers, Response, AbortController, URL, URLSearchParams, TextEncoder, TextDecoder, atob, console, confirm: () => true,
     setTimeout: (fn, ms) => { const timer = setTimeout(fn, ms); timer.unref(); return timer; }, clearTimeout });
   // Skip only automatic page boot. All production functions and delegated bindings execute unchanged.
@@ -276,7 +278,7 @@ test("late reference price cannot fill a different or closed model modal", async
   const pending = deferred();
   const env = environment(() => pending.promise);
   env.element("pmModelInput").value = "model-a";
-  env.element("priceModalBackdrop").classList.add("open");
+  env.element("priceModal").showModal();
   const task = env.run("fillPriceModalFromModelsDev()");
   env.run("openPriceModalWithValues('model-b', 2, 3, 4, 5)");
   pending.resolve(response({ query: { found: true, price: { input: 99, output: 99 } } }));
@@ -301,19 +303,45 @@ test("late price search cannot overwrite the current query", async () => {
 test("lock closes all modals, clears sensitive fields and cancels old async work", async () => {
   const pending = deferred();
   const env = environment(() => pending.promise);
-  env.element("keyModalBackdrop").classList.add("open"); env.element("priceModalBackdrop").classList.add("open");
+  env.element("keyModal").showModal(); env.element("priceModal").showModal();
   env.element("kmApiKey").value = "sensitive"; env.element("kmOriginalApiKey").value = "sensitive";
   env.element("pmModelInput").value = "secret-model";
   const old = env.run("callManagementAPI('/overview')");
   const rejected = assert.rejects(old, error => error.name === "AbortError");
   env.run("lockAdminWorkspace('expired')"); await rejected;
-  assert.equal(env.element("keyModalBackdrop").classList.contains("open"), false);
-  assert.equal(env.element("priceModalBackdrop").classList.contains("open"), false);
+  assert.equal(env.element("keyModal").open, false);
+  assert.equal(env.element("priceModal").open, false);
   assert.equal(env.element("kmApiKey").value, ""); assert.equal(env.element("kmOriginalApiKey").value, "");
   assert.equal(env.run("activeManagementKey"), "");
   pending.resolve(response(overview()));
   await tick();
   assert.equal(env.run("overviewData"), null);
+});
+
+test("modal validation feedback stays inside the native top layer and clears on reopen or lock", () => {
+  const env = environment();
+  env.run("openPriceModal(''); submitPriceModal()");
+  assert.match(env.element("priceModalMessage").textContent, /不能为空/);
+  assert.equal(env.element("priceModalMessage").dataset.error, "true");
+  env.run("closePriceModal(); openPriceModal('next')");
+  assert.equal(env.element("priceModalMessage").textContent, "");
+  env.run("closePriceModal(); openKeyModal(null); submitKeyModal()");
+  assert.match(env.element("keyModalMessage").textContent, /不能为空/);
+  env.run("lockAdminWorkspace('expired')");
+  assert.equal(env.element("keyModalMessage").textContent, "");
+});
+
+test("native price cancellation aborts its request and rejects a late response", async () => {
+  const pending = deferred();
+  let signal;
+  const env = environment(async (_url, options) => { signal = options.signal; return pending.promise; });
+  env.run("openPriceModal('same')");
+  const work = env.run("fillPriceModalFromModelsDev()");
+  env.element("priceModal").listeners.cancel({ preventDefault() {} });
+  assert.equal(signal.aborted, true);
+  pending.resolve(response({ query: { found: true, price: { input: 999 } } }));
+  await work;
+  assert.notEqual(env.element("pmInputPrice").value, 999);
 });
 
 test("indexes retain key order and special identifiers without prototype collisions", () => {
@@ -442,7 +470,7 @@ test("audit tab uses administrator endpoints and tab exit cancels its detail", a
  const pending = env.run('auditView.showDetail("audit-a")'); const request = calls.find(call=>call.url.includes("/audit/detail"));
  env.run('switchAdminTab("tab-pricing")'); assert.ok(request.opts.signal.aborted);
  detail.resolve(response({record:{id:"audit-a",request_body:{secret:"late"}},status})); await pending;
- assert.equal(env.element("auditRequestBody").textContent, ""); assert.equal(env.element("auditDetail").classList.contains("hidden"),true);
+ assert.equal(env.element("auditRequestBody").textContent, ""); assert.equal(!env.element("auditDetailPanel").open,true);
  assert.ok(calls.filter(call=>call.url.includes("/audit")).every(call=>call.url.startsWith("/v0/management/")&&call.opts.method==="GET"));
 });
 
@@ -453,14 +481,14 @@ test("global refresh reloads active audit tab and lock clears its detail and fil
  env.element("auditKeyLabel").value="sensitive-trace"; const before=calls.filter(url=>url.includes("/audit?")).length;
  await env.run("refreshAllData()"); assert.ok(calls.filter(url=>url.includes("/audit?")).length>before);
  await env.run('auditView.showDetail("audit-a")');assert.match(env.element("auditRequestBody").textContent,/sensitive/);
- env.run('lockAdminWorkspace("expired")');assert.equal(env.element("auditRequestBody").textContent,"");assert.equal(env.element("auditKeyLabel").value,"");assert.equal(env.element("auditDetail").classList.contains("hidden"),true);
+ env.run('lockAdminWorkspace("expired")');assert.equal(env.element("auditRequestBody").textContent,"");assert.equal(env.element("auditKeyLabel").value,"");assert.equal(!env.element("auditDetailPanel").open,true);
 });
 
 test("audit 401 clears detail and filters through the production API auth lifecycle", async () => {
  const status={enabled:true,retention_days:7,max_records:100,max_body_bytes:1024,max_total_bytes:10000};let detailRequests=0;
  const env=environment(async url=>{if(url.endsWith("/audit/status"))return response({status});if(url.includes("/audit?"))return response({items:[{id:"audit-a"},{id:"audit-b"}],total:2,limit:50,offset:0,status});if(url.includes("/audit/detail")){detailRequests++;return detailRequests===1?response({record:{id:"audit-a",body_state:"stored",request_body:{private:"conversation"}},status}):response("unauthorized",401,"text/plain");}return response(overview());});
  env.run('switchAdminTab("tab-audit")');await tick();await tick();await env.run('auditView.showDetail("audit-a")');assert.match(env.element("auditRequestBody").textContent,/conversation/);
- env.element("auditKeyLabel").value="sensitive-remark";await env.run('auditView.showDetail("audit-b")');assert.equal(env.run("activeManagementKey"),"");assert.equal(env.element("auditRequestBody").textContent,"");assert.equal(env.element("auditKeyLabel").value,"");assert.equal(env.element("auditDetail").classList.contains("hidden"),true);
+ env.element("auditKeyLabel").value="sensitive-remark";await env.run('auditView.showDetail("audit-b")');assert.equal(env.run("activeManagementKey"),"");assert.equal(env.element("auditRequestBody").textContent,"");assert.equal(env.element("auditKeyLabel").value,"");assert.equal(!env.element("auditDetailPanel").open,true);
 });
 
 test("production API client accepts audit cleanup preview then confirmed apply",async()=>{
@@ -558,7 +586,7 @@ test("credential aliases neither create ghosts nor survive deselection", () => {
 test("refresh updates open credential editor without dropping removed restrictions", () => {
   const env = environment();
   env.context.initial = overview({auth_files:[{id:"removed-later",status:"active"}]});
-  env.run('applyOverviewData(initial); loadSelectorFromRule("km", ["*"], ["removed-later"]); document.getElementById("keyModalBackdrop").classList.add("open")');
+  env.run('applyOverviewData(initial); loadSelectorFromRule("km", ["*"], ["removed-later"]); keyDialog.show()');
   env.context.changed = overview(); env.run('applyOverviewData(changed)');
   assert.ok(env.element("kmCredCheckList").innerHTML.includes("未登记 / 已删除"));
   assert.equal(env.run('selectorState.km.selectedCreds.has("removed-later")'), true);
@@ -584,7 +612,7 @@ test("new draft credentials that disappear cannot be saved as existing restricti
     env.context.prefix = prefix;
     env.run('applyOverviewData(data); loadSelectorFromRule(prefix, ["*"], ["keep"]); toggleCredCheckItem(prefix, "new", true)');
     env.context.changed = overview({auth_files:[{id:"keep",status:"active"}, ...(state === "missing" ? [] : [{id:"new",status:state}])]});
-    env.run('if (prefix === "km") document.getElementById("keyModalBackdrop").classList.add("open"); applyOverviewData(changed)');
+    env.run('if (prefix === "km") keyDialog.show(); applyOverviewData(changed)');
     env.element("kmApiKey").value = "test-key"; env.element("kmOriginalApiKey").value = "test-key";
     await env.run(prefix === "km" ? 'submitKeyModal()' : 'saveDefaultPolicy()');
     assert.equal(calls.length, 0, prefix + ": " + state);

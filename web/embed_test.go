@@ -33,7 +33,7 @@ func TestDashboardHTMLIsSelfContained(t *testing.T) {
 func TestRuntimeModulesPrecedePageAndHaveNoExternalAssets(t *testing.T) {
 	html := DashboardHTML()
 	page := strings.Index(html, appJS)
-	for _, name := range []string{"client.js", "state.js", "formatters.js", "auth.js", "events.js", "audit.js", "settings.js"} {
+	for _, name := range []string{"client.js", "state.js", "formatters.js", "auth.js", "events.js", "dialogs.js", "audit.js", "settings.js"} {
 		raw, err := runtimeFiles.ReadFile(name)
 		if err != nil {
 			t.Fatal(err)

@@ -1,9 +1,9 @@
 /* Administrator-only, read-only request audit. Bodies are fetched only on explicit selection. */
 (function (root, factory) {
-  const api = factory();
+  const api = factory(typeof module === "object" && module.exports ? require("./dialogs.js") : root.KeyGuardDialogs);
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.KeyGuardAudit = api;
-})(typeof globalThis !== "undefined" ? globalThis : this, function () {
+})(typeof globalThis !== "undefined" ? globalThis : this, function (Dialogs) {
   "use strict";
   const BASE = "/v0/management/key-guard/audit";
   const object = value => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -142,7 +142,6 @@
     let offset = 0;
     let loading = false;
     let filters = {};
-    let returnFocus = null;
     let cleanupPreview = null;
     let cleanupBusy = false;
     let bodyRecord = null;
@@ -150,6 +149,7 @@
     const rowButtons = new Map();
     const rowsById = new Map();
     const element = id => doc.getElementById(id);
+    const detailDialog = Dialogs.create(element("auditDetailPanel"), { onClose: resetDetail });
     const set = (id, value) => { const node = element(id); if (node) node.textContent = value; };
     const clear = node => { if (node) node.replaceChildren(); };
     function cell(parent, value, className) { const node = doc.createElement("td"); if (className) node.className = className; node.textContent = value; parent.appendChild(node); return node; }
@@ -207,31 +207,21 @@
       for (const [id, button] of rowButtons) button.setAttribute("aria-expanded", String(id === selectedId));
       for (const [id, row] of rowsById) { if (id === selectedId) row.classList.add("audit-row-selected"); else row.classList.remove("audit-row-selected"); }
     }
-    function clearDetail(restoreFocus = false) {
+    function resetDetail() {
       gate.cancel("audit-detail"); selectedId = ""; bodyRecord = null; bodyMode = "formatted";
-      element("auditDetail").classList.add("hidden");
-      if (doc.body) doc.body.classList.remove("audit-detail-open");
       for (const id of ["auditDetailMessage", "auditRequestBody", "auditBodyState", "auditBodyInfo", "auditBodyHash", "auditDetailPosition"]) set(id, "");
       clear(element("auditDetailMetadata")); drawerState();
-      const target = returnFocus; returnFocus = null;
-      if (restoreFocus && active && isAuthenticated() && target && target.isConnected !== false && typeof target.focus === "function") target.focus({ preventScroll: true });
+    }
+    function clearDetail() {
+      resetDetail();
+      // Tab exit, refresh and authentication lock bypass exit animation.
+      return detailDialog.close({ immediate: true });
     }
     function shiftDetail(delta) {
       const index = items.findIndex(record => record.id === selectedId);
       const next = index + delta;
       if (index >= 0 && next >= 0 && next < items.length) return showDetail(items[next].id, null, true);
       return Promise.resolve();
-    }
-    function handleDrawerKey(event) {
-      if (!selectedId || element("auditDetail").classList.contains("hidden")) return;
-      if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); clearDetail(true); return; }
-      if (event.key !== "Tab") return;
-      const panel = element("auditDetailPanel");
-      const focusable = typeof panel.querySelectorAll === "function" ? Array.from(panel.querySelectorAll('button:not([disabled]),a[href],input:not([disabled]),select:not([disabled]),textarea:not([disabled]),summary,[tabindex="0"]')) : [];
-      if (!focusable.length) { event.preventDefault(); panel.focus({ preventScroll: true }); return; }
-      const first = focusable[0], last = focusable[focusable.length - 1];
-      if (event.shiftKey && (doc.activeElement === first || !panel.contains(doc.activeElement))) { event.preventDefault(); last.focus({ preventScroll: true }); }
-      else if (!event.shiftKey && (doc.activeElement === last || !panel.contains(doc.activeElement))) { event.preventDefault(); first.focus({ preventScroll: true }); }
     }
     function renderDetail(record) {
       const metadata = element("auditDetailMetadata"); clear(metadata);
@@ -358,14 +348,12 @@
     }
     async function showDetail(id, trigger = null, preserveDrawer = false) {
       if (!active || !isAuthenticated() || !items.some(record => record.id === id)) return;
-      const oldFocus = returnFocus;
-      clearDetail(); selectedId = id; returnFocus = preserveDrawer ? oldFocus : trigger || rowButtons.get(id) || doc.activeElement;
-      element("auditDetail").classList.remove("hidden");
-      if (doc.body) doc.body.classList.add("audit-detail-open");
+      resetDetail(); selectedId = id;
+      // Keep the same native opening while changing records so focus and invoker survive.
+      detailDialog.show();
       element("auditDetailContent").scrollTop = 0;
       if (!preserveDrawer) element("auditMetadataSection").open = false;
       drawerState();
-      if (!preserveDrawer) element("auditDetailClose").focus({ preventScroll: true });
       set("auditDetailMessage", "正在读取所选记录的请求详情…");
       const ticket = gate.begin("audit-detail");
       try {
@@ -402,15 +390,13 @@
       element("auditFilterReset").addEventListener("click", resetFilters);
       element("auditPrevPage").addEventListener("click", () => page(-1)); element("auditNextPage").addEventListener("click", () => page(1));
       element("auditPageSize").addEventListener("change", () => { const next = Number(element("auditPageSize").value); limit = [25, 50, 100].includes(next) ? next : 50; offset = 0; loadList(); });
-      element("auditDetailClose").addEventListener("click", () => clearDetail(true));
+      element("auditDetailClose").addEventListener("click", () => detailDialog.close());
       element("auditDetailPrev").addEventListener("click", () => shiftDetail(-1));
       element("auditDetailNext").addEventListener("click", () => shiftDetail(1));
-      element("auditDetail").addEventListener("click", event => { if (event.target === element("auditDetail")) clearDetail(true); });
-      element("auditDetail").addEventListener("keydown", handleDrawerKey);
       element("auditListBody").addEventListener("click", event => { const button = event.target.closest && event.target.closest("button[data-audit-id]"); if (button) showDetail(button.dataset.auditId, button); });
     }
     bind(); renderPagination();
-    return { enter, leave, lock, refresh, applyFilters, resetFilters, page, showDetail, closeDetail: () => clearDetail(true), loadStorage, previewCleanup, confirmCleanup, isActive: () => active };
+    return { enter, leave, lock, refresh, applyFilters, resetFilters, page, showDetail, closeDetail: () => detailDialog.close(), loadStorage, previewCleanup, confirmCleanup, isActive: () => active };
   }
   return { create, queryString, timestamp, bodyView, bodyStatus, formatJSONText, validateStatus, validateList, validateDetail, statusPayload };
 });

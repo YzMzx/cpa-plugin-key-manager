@@ -1148,29 +1148,73 @@
     text-overflow: ellipsis;
   }
 
-  /* Modals */
-  .modal-backdrop {
+  /* Native dialogs: keep closed dialogs under the user-agent display rule. */
+  .app-dialog {
+    box-sizing: border-box;
+    margin: auto;
+    padding: 0;
+    color: var(--text-primary);
+    opacity: 0;
+    transition-property: opacity, transform, display, overlay;
+    transition-duration: 0.18s;
+    transition-timing-function: ease;
+    transition-behavior: allow-discrete;
+  }
+  dialog.app-dialog:modal {
+    overscroll-behavior: contain;
+  }
+  .app-dialog::backdrop {
+    background-color: rgba(15, 14, 12, 0);
+    backdrop-filter: blur(4px);
+    overflow: hidden;
+    overscroll-behavior: contain;
+    transition-property: background-color, display, overlay;
+    transition-duration: 0.18s;
+    transition-timing-function: ease;
+    transition-behavior: allow-discrete;
+  }
+  :is(dialog.app-dialog[open]):where(:not([data-closing])) {
+    opacity: 1;
+  }
+  :is(dialog.app-dialog[open]):where(:not([data-closing]))::backdrop {
+    background-color: rgba(15, 14, 12, 0.58);
+  }
+  @starting-style {
+    :is(dialog.app-dialog[open]):where(:not([data-closing])) {
+      opacity: 0;
+    }
+    :is(dialog.app-dialog[open]):where(:not([data-closing]))::backdrop {
+      background-color: rgba(15, 14, 12, 0);
+    }
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .app-dialog.modal { transform: translateY(12px) scale(0.98); }
+    .app-dialog.audit-drawer { transform: translateX(100%); }
+    :is(dialog.app-dialog[open]):where(:not([data-closing])) { transform: none; }
+    @starting-style {
+      :is(dialog.app-dialog.modal[open]):where(:not([data-closing])) { transform: translateY(12px) scale(0.98); }
+      :is(dialog.app-dialog.audit-drawer[open]):where(:not([data-closing])) { transform: translateX(100%); }
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .app-dialog, .app-dialog::backdrop { transition-duration: 0.1s; }
+  }
+  .app-dialog[data-immediate], .app-dialog[data-immediate]::backdrop {
+    transition: none;
+  }
+  .modal {
     position: fixed;
     inset: 0;
-    background: rgba(15, 14, 12, 0.58);
-    backdrop-filter: blur(4px);
-    display: none;
-    align-items: center;
-    justify-content: center;
-    z-index: 1000;
-    padding: 16px;
-  }
-  .modal-backdrop.open { display: flex; }
-  .modal {
     background: var(--floating-surface);
     border: 1px solid var(--border-primary);
     border-radius: var(--radius-lg);
-    width: 100%;
+    width: calc(100% - 32px);
     max-width: 740px;
-    max-height: 92vh;
+    max-height: min(92dvh, calc(100dvh - 32px));
     overflow-y: auto;
     box-shadow: var(--floating-shadow);
   }
+  #priceModal { max-width: 540px; }
   .modal-header {
     padding: 16px 20px;
     border-bottom: 1px solid var(--border-color);
@@ -1178,7 +1222,12 @@
     align-items: center;
     justify-content: space-between;
   }
+  .modal-header .card-title { min-width: 0; overflow-wrap: anywhere; }
+  .modal-header > button { flex-shrink: 0; }
   .modal-body { padding: 18px 20px; }
+  .modal-message { color: var(--text-secondary); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+  .modal-message:not(:empty) { padding: 10px 12px; margin-bottom: 14px; border: 1px solid var(--border-color); border-radius: var(--radius-md); }
+  .modal-message[data-error="true"] { color: var(--error-color); }
   .modal-footer {
     padding: 14px 20px;
     border-top: 1px solid var(--border-color);
@@ -1270,10 +1319,8 @@
   @media(max-width:520px) { .audit-filters { grid-template-columns: 1fr; }.audit-metadata { grid-template-columns: 1fr; gap:4px; }.audit-metadata dd { margin-bottom:8px; } }
 
   /* Audit details stay in the viewport; closing never scrolls the result list. */
-  body.audit-detail-open { overflow: hidden; }
-  .audit-drawer-overlay { position: fixed; inset: 0; z-index: 1500; display: flex; justify-content: flex-end; background: rgba(0,0,0,.34); }
-  .audit-drawer-overlay.hidden { display: none; }
-  .audit-drawer { display: flex; flex-direction: column; width: min(960px,90vw); height: 100%; max-height: 100dvh; background: var(--floating-surface); color: var(--text-primary); border-left: 1px solid var(--border-primary); box-shadow: -12px 0 36px rgba(0,0,0,.18); outline: none; }
+  .audit-drawer { position: fixed; inset: 0; flex-direction: column; width: min(960px,90vw); height: 100dvh; max-width: none; max-height: 100dvh; margin: 0 0 0 auto; padding: 0; overflow: hidden; background: var(--floating-surface); border: 0; border-left: 1px solid var(--border-primary); border-radius: 0; box-shadow: -12px 0 36px rgba(0,0,0,.18); }
+  .audit-drawer[open] { display: flex; }
   .audit-drawer-header { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding: 18px 22px; border-bottom: 1px solid var(--border-color); background: var(--floating-surface); }
   .audit-drawer-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
   .audit-drawer-content { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 18px 22px 26px; }

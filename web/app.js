@@ -27,6 +27,10 @@
   let defaultPolicyDirty = false;
   let defaultPolicyRevision = null;
   let defaultPolicySaveInFlight = false;
+  const keyDialog = KeyGuardDialogs.create(document.getElementById("keyModal"));
+  const priceDialog = KeyGuardDialogs.create(document.getElementById("priceModal"), {
+    onClose: () => { priceModalEpoch++; requestGate.cancel("modalPrice"); }
+  });
   const auditView = KeyGuardAudit.create({
     document, request: (...args) => callManagementAPI(...args), gate: requestGate,
     isAuthenticated: () => !!activeManagementKey,
@@ -86,6 +90,9 @@
   };
 
   function showToast(msg, isError = false) {
+    // Page-level toasts sit below a native modal and cannot announce inside its inert background.
+    const modalMessage = priceDialog.isOpen() ? document.getElementById("priceModalMessage") : keyDialog.isOpen() ? document.getElementById("keyModalMessage") : null;
+    if (modalMessage) { modalMessage.textContent = msg; modalMessage.dataset.error = String(isError); return; }
     const box = document.getElementById("toastBox");
     const el = document.createElement("div");
     el.className = "toast";
@@ -172,11 +179,12 @@
     overviewState.loading = false;
     clearTimeout(modelsDevSearchTimer);
     priceModalEpoch++;
-    closeKeyModal(); closePriceModal(); closeModelPopover();
-    document.querySelectorAll(".modal-backdrop input, .modal-backdrop select").forEach(input => { input.value = ""; });
+    keyDialog.close({ immediate: true }); priceDialog.close({ immediate: true }); closeModelPopover();
+    document.querySelectorAll("dialog.modal input, dialog.modal select").forEach(input => { input.value = ""; });
     ["kmModelCheckList", "kmCredCheckList", "dpModelCheckList", "dpCredCheckList", "pmRefHint", "authGateKeyInput"].forEach(id => {
       const element = document.getElementById(id); if (element) { if ("value" in element) element.value = ""; else element.textContent = ""; }
     });
+    for (const id of ["keyModalMessage", "priceModalMessage"]) document.getElementById(id).textContent = "";
     for (const state of Object.values(selectorState)) { state.selectedModels.clear(); state.selectedCreds.clear(); state.loadedCreds.clear(); }
     revealedKeys = {}; expandedDashKeys = {}; expandedDashAccounts = {};
     overviewState.data = null;
@@ -380,7 +388,7 @@
     renderDashboardTables();
     initDefaultPolicySelectors();
     renderHostAuthTable();
-    if (document.getElementById("keyModalBackdrop").classList.contains("open")) {
+    if (keyDialog.isOpen()) {
       renderCredCheckList("km");
       updateSelectorBadges("km");
     }
@@ -1064,7 +1072,7 @@
 
   document.addEventListener("click", event => { if (!event.target.closest("[data-action], #modelPopover")) closeModelPopover(); });
   document.addEventListener("keydown", e => {
-    if (e.key === "Escape") { closeModelPopover(); closeKeyModal(); closePriceModal(); }
+    if (e.key === "Escape") closeModelPopover();
   });
   window.addEventListener("resize", () => closeModelPopover());
 
@@ -1239,11 +1247,12 @@
     const allowedModels = (rule && rule.allowed_models && rule.allowed_models.length) ? rule.allowed_models : ["*"];
 
     loadSelectorFromRule("km", allowedModels, boundCreds);
-    document.getElementById("keyModalBackdrop").classList.add("open");
+    document.getElementById("keyModalMessage").textContent = "";
+    keyDialog.show();
   }
 
   function closeKeyModal() {
-    document.getElementById("keyModalBackdrop").classList.remove("open");
+    return keyDialog.close();
   }
 
   async function submitKeyModal() {
@@ -2635,7 +2644,8 @@
     document.getElementById("pmOutputPrice").value = Number(p.output || 0);
     document.getElementById("pmCacheReadPrice").value = Number(p.cache_read || 0);
     document.getElementById("pmCacheWritePrice").value = Number(p.cache_write || 0);
-    document.getElementById("priceModalBackdrop").classList.add("open");
+    document.getElementById("priceModalMessage").textContent = "";
+    priceDialog.show();
   }
 
   function openPriceModalWithValues(modelName, input, output, cacheRead, cacheWrite) {
@@ -2647,12 +2657,12 @@
     document.getElementById("pmCacheReadPrice").value = Number(cacheRead || 0);
     document.getElementById("pmCacheWritePrice").value = Number(cacheWrite || 0);
     document.getElementById("pmRefHint").textContent = "已载入 models.dev 基准价格，修改后保存即可作为自定义覆盖规则生效。";
-    document.getElementById("priceModalBackdrop").classList.add("open");
+    document.getElementById("priceModalMessage").textContent = "";
+    priceDialog.show();
   }
 
   function closePriceModal() {
-    priceModalEpoch++; requestGate.cancel("modalPrice");
-    document.getElementById("priceModalBackdrop").classList.remove("open");
+    return priceDialog.close();
   }
 
   async function fillPriceModalFromModelsDev() {
@@ -2667,7 +2677,7 @@
     }
     try {
       const res = await callManagementAPI(API_PRICING + "?model=" + encodeURIComponent(model), { method: "GET", signal: ticket.signal });
-      if (!ticket.current() || modalVersion !== priceModalEpoch || document.getElementById("pmModelInput").value.trim() !== model || !document.getElementById("priceModalBackdrop").classList.contains("open")) return;
+      if (!ticket.current() || modalVersion !== priceModalEpoch || document.getElementById("pmModelInput").value.trim() !== model || !priceDialog.isOpen()) return;
       const q = res.query || {};
       const p = q.price || {};
       if (!q.found) {

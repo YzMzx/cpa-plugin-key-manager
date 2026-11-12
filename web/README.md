@@ -9,6 +9,7 @@ The page remains one self-contained HTML document. Go embeds and concatenates th
 - `formatters.js`: configured IANA timezone formatting and local calendar boundaries, including DST days.
 - `auth.js`: explicit same-origin parent authentication handshake.
 - `events.js`: delegated events for generated data attributes; values are never interpreted as JavaScript.
+- `dialogs.js`: native modal lifecycle, close/cancel cleanup, feature-detected backdrop dismissal and bounded CSS exit fallback without manual focus traps.
 - `audit.js`: administrator-only request audit controller, metadata paging/filtering, explicit read-only body fetch and sensitive-state cleanup.
 - `app.js`: page rendering and orchestration. Static HTML handlers remain supported. The default-policy draft behavior (review item 16) is intentionally unchanged.
 
@@ -47,7 +48,7 @@ Older CPA pages without the bridge can still reuse compatible saved credentials 
 Run from repository root, without npm installation:
 
 ~~~text
-node --test web/auth.test.cjs web/runtime.test.cjs web/audit.test.cjs web/settings.test.cjs
+node --test web/*.test.cjs
 go test ./web
 ~~~
 
@@ -55,12 +56,18 @@ Node tests exercise pure helpers and the actual page functions in a minimal DOM/
 
 Performance changes are structural (snapshot indexes, cached model grouping, account/key-only repaint, cached timezone formatters). They are not a measured production throughput claim; data-scale profiling should precede pagination/virtualization or backend query redesign.
 
+## Native modal dialogs
+
+The key and price editors and audit drawer use `showModal()`/`close()`, labelled headings and explicit autofocus controls. CSS `@starting-style`, `display`/`overlay` transitions and `transition-behavior: allow-discrete` animate entry/exit and backdrops; transforms only apply for no-preference motion, with a short fade for reduced motion. Modal validation errors render inside the active dialog because page-level toasts are behind the top layer.
+
+Without native `closedby`, primary pointer down/up must both be outside the dialog bounds to dismiss; padding clicks and text-selection drags stay open. Exit support is checked with both `overlay` and an actual computed-display transition probe (CSS parsing alone can lie). Missing support keeps the dialog open with `data-closing` until all CSS animations settle, bounded to two seconds; reopening invalidates old close work. Close/cancel clears async price/audit ownership. Authentication loss and audit tab exit force immediate close and clear sensitive content, not an animated linger. Native focus containment and focus return are never recreated in JavaScript.
+
 ## Request audit contract
 
 The administrator audit list uses only four visible filters: API Key (masked dropdown), key remark, model name and outcome. API Key selection sends only the backend-generated 64-hex fingerprint, never a plaintext key in the URL. Remarks and requested/served models use literal case-insensitive contains matching; outcome uses an exact match. Legacy request/trace/time query parameters remain backend-compatible but are not shown in the form.
 
 - GET `/v0/management/key-guard/audit?limit=50&offset=0&key_fingerprint=&key_label=&model=&outcome=` returns `{items,total,limit,offset,status}`, without request bodies.
-- GET `/audit/detail?id=<opaque-id>` returns `{record,status}` on an explicit click. A viewport-fixed responsive drawer opens immediately, tracks the selected row, supports previous/next on the same page, Esc/backdrop close, focus trapping and focus restoration without scrolling the list. Body scroll is locked while open. Provenance metadata is collapsed initially, so the body is near the top. Closing/tab-exit/lock aborts and clears the detail.
+- GET `/audit/detail?id=<opaque-id>` returns `{record,status}` on an explicit click. A viewport-fixed responsive native `<dialog>` drawer opens immediately, tracks the selected row, supports previous/next on the same page and Esc/backdrop close. The browser owns focus containment/restoration and inert background behavior. CSS contains scroll chains on the modal and backdrop without changing root overflow; non-scrollable containment degrades progressively in older browsers. Provenance metadata is collapsed initially, so the body is near the top. Closing/tab-exit/lock aborts and clears the detail.
 - GET `/audit/status` returns safe health/limits. GET `/audit/storage` calculates audit logical bytes, retained body bytes, active/expired counts and shared database/WAL file sizes. Physical bytes include other tables; cleanup does not guarantee an immediate smaller file or secure erasure.
 - POST `/audit/cleanup/preview` accepts `{scope:"expired"|"before"|"all",before?:RFC3339}` and returns an identity-bound five-minute single-use token plus the snapshot count/bytes. UI offers expired, 1/3/7 days ago, custom cutoff, all.
 - POST `/audit/cleanup` requires `{token,confirm:true}`. The checkbox and explicit confirm are required; changing scope/date invalidates the local preview. Requests never automatically retry a write. Only snapshotted audit rows are deleted; newer rows, rules and usage remain untouched.

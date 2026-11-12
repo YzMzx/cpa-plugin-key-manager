@@ -601,11 +601,10 @@
       <div class="table-wrap"><table><thead><tr><th>开始时间</th><th>请求 / Trace</th><th>密钥</th><th>请求 / 服务模型</th><th>结果 / 状态码</th><th>耗时</th><th>正文状态</th><th>操作</th></tr></thead><tbody id="auditListBody"><tr><td colspan="8" class="cell-empty">尚未加载审计记录</td></tr></tbody></table></div>
       <div class="audit-pagination"><span id="auditPageInfo">第 1 页</span><div class="input-row"><label for="auditPageSize">每页</label><select id="auditPageSize"><option value="25">25</option><option value="50" selected>50</option><option value="100">100</option></select><button type="button" class="btn btn-sm" id="auditPrevPage">上一页</button><button type="button" class="btn btn-sm" id="auditNextPage">下一页</button></div></div>
     </div>
-    <div id="auditDetail" class="audit-drawer-overlay hidden">
-      <div id="auditDetailPanel" class="audit-drawer" role="dialog" aria-modal="true" aria-labelledby="auditDetailTitle" aria-describedby="auditDetailPosition" tabindex="-1">
+    <dialog id="auditDetailPanel" class="app-dialog audit-drawer" aria-labelledby="auditDetailTitle" aria-describedby="auditDetailPosition" closedby="any">
         <div class="audit-drawer-header">
           <div><h2 class="card-title" id="auditDetailTitle">只读请求详情</h2><div id="auditDetailPosition" class="card-subtitle"></div></div>
-          <div class="audit-drawer-actions"><button type="button" class="btn btn-sm" id="auditDetailPrev" aria-label="查看本页上一条请求">上一条</button><button type="button" class="btn btn-sm" id="auditDetailNext" aria-label="查看本页下一条请求">下一条</button><button type="button" class="btn btn-sm" id="auditDetailClose" aria-label="关闭请求详情并返回列表">关闭 <span aria-hidden="true">×</span></button></div>
+          <div class="audit-drawer-actions"><button type="button" class="btn btn-sm" id="auditDetailPrev" aria-label="查看本页上一条请求">上一条</button><button type="button" class="btn btn-sm" id="auditDetailNext" aria-label="查看本页下一条请求">下一条</button><button type="button" class="btn btn-sm" id="auditDetailClose" autofocus aria-label="关闭请求详情并返回列表">关闭 <span aria-hidden="true">×</span></button></div>
         </div>
         <div id="auditDetailContent" class="audit-drawer-content">
           <div id="auditDetailMessage" class="card-hint" role="status"></div>
@@ -614,8 +613,7 @@
           <pre id="auditRequestBody" class="audit-json" tabindex="0" aria-label="请求 JSON 原文"></pre>
           <div class="card-hint">下方 SHA-256 仅用于核对已保存内容，不是防篡改证明。</div><div id="auditBodyHash" class="mono audit-hash"></div>
         </div>
-      </div>
-    </div>
+    </dialog>
   </section>
   <!-- Unified runtime settings and separately staged startup configuration. -->
   <section id="tab-settings" class="admin-tab hidden">
@@ -663,20 +661,20 @@
 </div><!-- /.wrap -->
 
 <!-- ==================== MODAL: EDIT / OVERRIDE MODEL PRICE ==================== -->
-<div class="modal-backdrop" id="priceModalBackdrop">
-  <div class="modal" style="max-width:540px" role="dialog" aria-modal="true" aria-labelledby="priceModalTitle">
+<dialog class="app-dialog modal" id="priceModal" aria-labelledby="priceModalTitle" closedby="any">
     <div class="modal-header">
-      <h3 class="card-title" id="priceModalTitle">修改模型价格</h3>
-      <button type="button" class="btn btn-sm" onclick="closePriceModal()">×</button>
+      <h2 class="card-title" id="priceModalTitle">修改模型价格</h2>
+      <button type="button" class="btn btn-sm" onclick="closePriceModal()" aria-label="关闭模型价格设置">×</button>
     </div>
     <div class="modal-body">
+      <div class="modal-message" id="priceModalMessage" role="status"></div>
       <div class="form-group">
-        <label class="form-label">
+        <label class="form-label" for="pmModelInput">
           <span>模型名称 / 通配符规则 *</span>
           <span class="txt-muted-xs">支持精确模型名或 * 通配符（如 gemini-3.8-*）；填 __default__ 表示全局兜底默认价</span>
         </label>
         <div class="input-row">
-          <input type="text" class="input mono" style="flex:1" id="pmModelInput" placeholder="例如: gemini-3.8-flash-high 或 claude-sonnet-4-*">
+          <input type="text" class="input mono" style="flex:1" id="pmModelInput" autofocus placeholder="例如: gemini-3.8-flash-high 或 claude-sonnet-4-*">
           <button type="button" class="btn btn-sm" onclick="fillPriceModalFromModelsDev()">从 models.dev 填入基准价</button>
         </div>
         <div id="pmRefHint" style="font-size:11.5px;color:var(--text-tertiary);margin-top:4px"></div>
@@ -684,22 +682,22 @@
 
       <div class="form-grid">
         <div class="form-group">
-          <label class="form-label">Input 价格 ($ / 1M Tokens)</label>
+          <label class="form-label" for="pmInputPrice">Input 价格 ($ / 1M Tokens)</label>
           <input type="number" step="0.0001" min="0" class="input mono" id="pmInputPrice" value="0">
         </div>
         <div class="form-group">
-          <label class="form-label">Output 价格 ($ / 1M Tokens)</label>
+          <label class="form-label" for="pmOutputPrice">Output 价格 ($ / 1M Tokens)</label>
           <input type="number" step="0.0001" min="0" class="input mono" id="pmOutputPrice" value="0">
         </div>
       </div>
 
       <div class="form-grid" style="margin-bottom:0">
         <div class="form-group" style="margin-bottom:0">
-          <label class="form-label">Cache Read 价格 ($ / 1M Tokens)</label>
+          <label class="form-label" for="pmCacheReadPrice">Cache Read 价格 ($ / 1M Tokens)</label>
           <input type="number" step="0.0001" min="0" class="input mono" id="pmCacheReadPrice" value="0">
         </div>
         <div class="form-group" style="margin-bottom:0">
-          <label class="form-label">Cache Write 价格 ($ / 1M Tokens)</label>
+          <label class="form-label" for="pmCacheWritePrice">Cache Write 价格 ($ / 1M Tokens)</label>
           <input type="number" step="0.0001" min="0" class="input mono" id="pmCacheWritePrice" value="0">
         </div>
       </div>
@@ -708,43 +706,42 @@
       <button type="button" class="btn" onclick="closePriceModal()">取消</button>
       <button type="button" class="btn btn-primary" onclick="submitPriceModal()">保存价格配置</button>
     </div>
-  </div>
-</div>
+</dialog>
 
 <!-- ==================== MODAL: CREATE / EDIT UNIFIED API KEY ==================== -->
-<div class="modal-backdrop" id="keyModalBackdrop">
-  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="keyModalTitle">
+<dialog class="app-dialog modal" id="keyModal" aria-labelledby="keyModalTitle" closedby="any">
     <div class="modal-header">
-      <h3 class="card-title" id="keyModalTitle">新建 / 编辑 API Key 规则</h3>
-      <button type="button" class="btn btn-sm" onclick="closeKeyModal()">×</button>
+      <h2 class="card-title" id="keyModalTitle">新建 / 编辑 API Key 规则</h2>
+      <button type="button" class="btn btn-sm" onclick="closeKeyModal()" aria-label="关闭 API Key 规则设置">×</button>
     </div>
     <div class="modal-body">
+      <div class="modal-message" id="keyModalMessage" role="status"></div>
       <input type="hidden" id="kmOriginalApiKey" value="">
       <div class="form-grid">
         <div class="form-group">
-          <label class="form-label">API Key *</label>
+          <label class="form-label" for="kmApiKey">API Key *</label>
           <div class="input-row">
-            <input type="text" class="input mono" style="flex:1" id="kmApiKey" placeholder="sk-...">
+            <input type="text" class="input mono" style="flex:1" id="kmApiKey" autofocus placeholder="sk-...">
             <button type="button" class="btn btn-sm" onclick="generateRandomSkKey()">随机生成</button>
           </div>
         </div>
         <div class="form-group">
-          <label class="form-label">备注名称</label>
+          <label class="form-label" for="kmName">备注名称</label>
           <input type="text" class="input" id="kmName" placeholder="选填备注">
         </div>
       </div>
 
       <div class="form-grid">
         <div class="form-group">
-          <label class="form-label">最大并发数限制</label>
+          <label class="form-label" for="kmMaxConcurrency">最大并发数限制</label>
           <input type="number" min="0" class="input" id="kmMaxConcurrency" value="0" placeholder="0 表示不限并发">
         </div>
         <div class="form-group">
-          <label class="form-label">可用额度（USD，0 表示不限额）</label>
+          <label class="form-label" for="kmQuotaLimit">可用额度（USD，0 表示不限额）</label>
           <input type="number" min="0" step="0.01" class="input" id="kmQuotaLimit" value="0" placeholder="例如 20.00">
         </div>
         <div class="form-group">
-          <label class="form-label">启用状态</label>
+          <label class="form-label" for="kmEnabled">启用状态</label>
           <select id="kmEnabled">
             <option value="true">启用</option>
             <option value="false">禁用</option>
@@ -814,8 +811,7 @@
       <button type="button" class="btn" onclick="closeKeyModal()">取消</button>
       <button type="button" class="btn btn-primary" onclick="submitKeyModal()">保存并同步至 CPA</button>
     </div>
-  </div>
-</div>
+</dialog>
 
 <div class="toast-box" id="toastBox"></div>
 
