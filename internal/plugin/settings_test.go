@@ -35,12 +35,12 @@ func TestRuntimeSettingsPartialPersistHotApplyAndRestartPriority(t *testing.T) {
 	}
 	oldPolicy := m.cfg.DefaultPolicy
 	oldPrices := m.cfg.Pricing.CustomPrices
-	raw := settingsRequest(t, m, map[string]any{"audit": map[string]any{"max_total_bytes": int64(1 << 30)}, "storage": map[string]any{"flush_interval_seconds": 23, "timezone": "UTC"}, "pricing": map[string]any{"auto_inject_include_usage": false}}, false)
+	raw := settingsRequest(t, m, map[string]any{"audit": map[string]any{"max_total_bytes": int64(10 << 30)}, "storage": map[string]any{"flush_interval_seconds": 23, "timezone": "UTC"}, "pricing": map[string]any{"auto_inject_include_usage": false}}, false)
 	result, err := m.SaveRuntimeSettings(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result["ok"] != true || m.cfg.Storage.FlushIntervalSeconds != 23 || m.cfg.Storage.Timezone != "UTC" || m.cfg.Audit.MaxTotalBytes != 1<<30 || m.cfg.ShouldAutoInjectIncludeUsage() {
+	if result["ok"] != true || m.cfg.Storage.FlushIntervalSeconds != 23 || m.cfg.Storage.Timezone != "UTC" || m.cfg.Audit.MaxTotalBytes != 10<<30 || m.cfg.ShouldAutoInjectIncludeUsage() {
 		t.Fatalf("not effective: %v", result)
 	}
 	if m.usageStore.DB() != db {
@@ -52,7 +52,7 @@ func TestRuntimeSettingsPartialPersistHotApplyAndRestartPriority(t *testing.T) {
 	if rule, ok := m.cfg.ResolveKeyRule("settings-key"); !ok || rule.Name != "unchanged" {
 		t.Fatal("key changed")
 	}
-	if m.AuditStatus()["max_total_bytes"] != float64(1<<30) {
+	if m.AuditStatus()["max_total_bytes"] != float64(10<<30) {
 		t.Fatal("audit configuration not hot applied")
 	}
 	m.Shutdown()
@@ -60,7 +60,7 @@ func TestRuntimeSettingsPartialPersistHotApplyAndRestartPriority(t *testing.T) {
 	if err := m.Configure(request); err != nil {
 		t.Fatal(err)
 	}
-	if m.cfg.Storage.Timezone != "UTC" || m.cfg.Storage.FlushIntervalSeconds != 23 || m.cfg.Audit.MaxTotalBytes != 1<<30 {
+	if m.cfg.Storage.Timezone != "UTC" || m.cfg.Storage.FlushIntervalSeconds != 23 || m.cfg.Audit.MaxTotalBytes != 10<<30 {
 		t.Fatal("seed overwrote persisted settings after restart")
 	}
 }
@@ -74,7 +74,7 @@ func TestRuntimeSettingsCASStrictValidationAndPruneAcknowledgment(t *testing.T) 
 			t.Fatalf("missing/stale CAS: %v", err)
 		}
 	}
-	invalid := []string{`{"audit":{"max_records":0}}`, `{"storage":{"timezone":"Invalid/Zone"}}`, `{"storage":{"flush_interval_seconds":1.5}}`, `{"pricing":{"sync_url":"file:///tmp/private"}}`, `{"pricing":{"sync_url":"https://user:password@example.com/prices"}}`, `{"pricing":{"sync_url":"https://example.com/prices?token=secret"}}`, `{"audit":{"enabled":null}}`, `{"audit":{"enabled":true,"Enabled":false}}`, `{"keys":[]}`, `{"storage":{"usage_db_file":"other.db"}}`}
+	invalid := []string{`{"audit":{"max_total_bytes":10737418241}}`, `{"audit":{"max_records":0}}`, `{"storage":{"timezone":"Invalid/Zone"}}`, `{"storage":{"flush_interval_seconds":1.5}}`, `{"pricing":{"sync_url":"file:///tmp/private"}}`, `{"pricing":{"sync_url":"https://user:password@example.com/prices"}}`, `{"pricing":{"sync_url":"https://example.com/prices?token=secret"}}`, `{"audit":{"enabled":null}}`, `{"audit":{"enabled":true,"Enabled":false}}`, `{"keys":[]}`, `{"storage":{"usage_db_file":"other.db"}}`}
 	for _, patch := range invalid {
 		request := []byte(`{"settings":` + patch + `,"expected_revision":` + jsonNumber(revision) + `}`)
 		if _, err := m.SaveRuntimeSettings(request); !errors.Is(err, ErrSettingsInvalid) {

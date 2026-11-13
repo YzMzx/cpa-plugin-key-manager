@@ -626,7 +626,7 @@
           <label>保留天数<input id="settingAuditRetention" class="input" type="number" min="1" max="90" step="1"><small>默认 7 天</small></label>
           <label>最大记录条数<input id="settingAuditRecords" class="input" type="number" min="1" max="100000" step="1"></label>
           <label>单条正文上限（MiB）<input id="settingAuditBodyMiB" class="input" type="number" min="0.000244140625" max="10" step="any"><small>最大 10 MiB；1 MiB = 1,048,576 字节</small></label>
-          <label>审计总量上限（MiB）<input id="settingAuditTotalMiB" class="input" type="number" min="1" max="1024" step="any"><small>最大 1024 MiB（1 GiB）；先达到条数、容量或期限即清理旧记录</small></label>
+          <label>审计总量上限（MiB）<input id="settingAuditTotalMiB" class="input" type="number" min="1" max="10240" step="any" aria-describedby="settingAuditTotalHint"><small id="settingAuditTotalHint">最大 10240 MiB（10 GiB）；先达到条数、容量或期限即清理旧记录</small></label>
         </div><p class="card-hint">启用后保留文字请求 JSON 明文，可能包含凭据、会话和个人信息；图片、音视频及文件载荷不留存，不采集 IP、鉴权头或响应正文。</p></fieldset>
         <fieldset class="settings-section"><legend>用量与时间</legend><div class="settings-grid">
           <label>统计落盘间隔（秒）<input id="settingFlushSeconds" class="input" type="number" min="1" max="3600" step="1"></label>

@@ -26,8 +26,14 @@ function fixture(handler=async()=>payload(),onSaved=async()=>{}){
 
 test("validate bounded groups and reject URL credentials, query or unsafe numbers",()=>{
  assert.deepEqual(Settings.validateSettings(config()),config());
- for(const change of [v=>v.audit.max_total_bytes=1024*MIB+1,v=>v.audit.max_body_bytes=11*MIB,v=>v.audit.max_records=1.1,v=>v.storage.flush_interval_seconds=3601,v=>v.pricing.sync_interval_hours=721,v=>v.pricing.http_timeout_seconds=301,v=>v.audit.enabled="true",v=>v.storage.timezone="invalid/zone",v=>v.pricing.sync_url="https://user:pass@host/path",v=>v.pricing.sync_url="https://host/path?token=secret",v=>v.pricing.sync_url="javascript:alert(1)"]){const current=config();change(current);assert.throws(()=>Settings.validateSettings(current));}
+ for(const change of [v=>v.audit.max_total_bytes=10240*MIB+1,v=>v.audit.max_body_bytes=11*MIB,v=>v.audit.max_records=1.1,v=>v.storage.flush_interval_seconds=3601,v=>v.pricing.sync_interval_hours=721,v=>v.pricing.http_timeout_seconds=301,v=>v.audit.enabled="true",v=>v.storage.timezone="invalid/zone",v=>v.pricing.sync_url="https://user:pass@host/path",v=>v.pricing.sync_url="https://host/path?token=secret",v=>v.pricing.sync_url="javascript:alert(1)"]){const current=config();change(current);assert.throws(()=>Settings.validateSettings(current));}
  assert.throws(()=>Settings.validatePayload(payload({rules_revision:null})));
+});
+
+test("ten GiB ceiling matches HTML, supports older values and rejects overflow",async()=>{
+ for(const size of [1024*MIB,10240*MIB]){const value=config();value.audit.max_total_bytes=size;assert.equal(Settings.validateSettings(value).audit.max_total_bytes,size);}
+ const html=fs.readFileSync(path.join(__dirname,"index.html"),"utf8");assert.match(html,/id="settingAuditTotalMiB"[^>]*max="10240"/);assert.match(html,/10240 MiB（10 GiB）/);assert.match(html,/aria-describedby="settingAuditTotalHint"/);
+ const f=fixture();await f.view.enter();f.change("settingAuditTotalMiB",10241);await f.view.save();assert.equal(f.calls.filter(c=>c.options.method==="PUT").length,0);
 });
 
 test("MiB inputs and active/configured startup values render only current fields",async()=>{
@@ -41,7 +47,7 @@ test("dirty draft survives refresh/tab exit and invalid values never issue a PUT
 });
 
 test("save sends exact byte conversion, body CAS and explicit revision header",async()=>{
- const f=fixture(async(url,options)=>options.method==="GET"?payload():payload({ok:true,settings:JSON.parse(options.body).settings,rules_revision:8}));await f.view.enter();f.change("settingAuditTotalMiB",1024);await f.view.save();const save=f.calls.at(-1);assert.equal(save.options.method,"PUT");assert.equal(save.options.headers["X-Key-Guard-Revision"],"7");const body=JSON.parse(save.options.body);assert.equal(body.expected_revision,7);assert.equal(body.settings.audit.max_total_bytes,1073741824);assert.equal(f.view.isDirty(),false);assert.equal(f.node("settingsSave").disabled,true);
+ const f=fixture(async(url,options)=>options.method==="GET"?payload():payload({ok:true,settings:JSON.parse(options.body).settings,rules_revision:8}));await f.view.enter();f.change("settingAuditTotalMiB",10240);await f.view.save();const save=f.calls.at(-1);assert.equal(save.options.method,"PUT");assert.equal(save.options.headers["X-Key-Guard-Revision"],"7");const body=JSON.parse(save.options.body);assert.equal(body.expected_revision,7);assert.equal(body.settings.audit.max_total_bytes,10737418240);assert.equal(f.view.isDirty(),false);assert.equal(f.node("settingsSave").disabled,true);
 });
 
 test("shrinking retention needs an explicit acknowledgement before PUT",async()=>{

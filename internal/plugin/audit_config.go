@@ -44,8 +44,8 @@ func (c AuditConfig) validate() error {
 	if c.MaxBodyBytes < 256 || c.MaxBodyBytes > audit.MaxRequestBodyBytes {
 		return fmt.Errorf("audit.max_body_bytes must be between 256 and 10485760 (10 MiB)")
 	}
-	if c.MaxTotalBytes < 1<<20 || c.MaxTotalBytes > 1<<30 {
-		return fmt.Errorf("audit.max_total_bytes must be between 1 MiB and 1 GiB")
+	if c.MaxTotalBytes < 1<<20 || c.MaxTotalBytes > audit.MaxTotalBytes {
+		return fmt.Errorf("audit.max_total_bytes must be between 1 MiB and 10 GiB")
 	}
 	return nil
 }

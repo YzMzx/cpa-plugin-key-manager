@@ -28,7 +28,7 @@ func settingsHTTP(t *testing.T, m *Manager, method, path string, body []byte, cr
 	}
 	return decodeEnvelope[pluginapi.ManagementResponse](t, raw)
 }
-func TestSettingsHTTPPersistsOneGiBAndEnforcesRevision(t *testing.T) {
+func TestSettingsHTTPPersistsTenGiBAndEnforcesRevision(t *testing.T) {
 	m := transactionManager(t)
 	get := settingsHTTP(t, m, "GET", "/v0/management/key-guard/settings", nil, true, "")
 	if get.StatusCode != 200 {
@@ -42,12 +42,12 @@ func TestSettingsHTTPPersistsOneGiBAndEnforcesRevision(t *testing.T) {
 	if json.Unmarshal(get.Body, &initial) != nil || len(initial.Bootstrap) == 0 {
 		t.Fatal("missing unified response")
 	}
-	request, _ := json.Marshal(map[string]any{"settings": map[string]any{"audit": map[string]any{"max_total_bytes": 1073741824}, "storage": map[string]any{"timezone": "UTC"}}, "expected_revision": initial.RulesRevision})
+	request, _ := json.Marshal(map[string]any{"settings": map[string]any{"audit": map[string]any{"max_total_bytes": 10737418240}, "storage": map[string]any{"timezone": "UTC"}}, "expected_revision": initial.RulesRevision})
 	saved := settingsHTTP(t, m, "PUT", "/v0/management/key-guard/settings", request, true, strconv.FormatUint(initial.RulesRevision, 10))
-	if saved.StatusCode != 200 || m.cfg.Audit.MaxTotalBytes != 1<<30 || m.ConfiguredTimezone() != "UTC" {
+	if saved.StatusCode != 200 || m.cfg.Audit.MaxTotalBytes != 10<<30 || m.ConfiguredTimezone() != "UTC" {
 		t.Fatalf("settings not effective: %d %s", saved.StatusCode, saved.Body)
 	}
-	if status := m.AuditStatus()["max_total_bytes"]; status != float64(1<<30) {
+	if status := m.AuditStatus()["max_total_bytes"]; status != float64(10<<30) {
 		t.Fatal("audit did not apply new capacity")
 	}
 	stale := settingsHTTP(t, m, "PUT", "/v0/management/key-guard/settings", request, true, "")

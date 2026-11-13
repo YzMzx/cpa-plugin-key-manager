@@ -47,8 +47,8 @@ func NewStore(db *sqlitestore.DB, cfg Config) *Store {
 	if cfg.MaxTotalBytes <= 0 {
 		cfg.MaxTotalBytes = DefaultMaxTotalBytes
 	}
-	if cfg.MaxTotalBytes > 1<<30 {
-		cfg.MaxTotalBytes = 1 << 30
+	if cfg.MaxTotalBytes > MaxTotalBytes {
+		cfg.MaxTotalBytes = MaxTotalBytes
 	}
 	return &Store{db: db, cfg: cfg}
 }

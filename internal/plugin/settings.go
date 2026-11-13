@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/YzMzx/cpa-plugin-key-manager/internal/audit"
 	"github.com/YzMzx/cpa-plugin-key-manager/internal/pricing"
 )
 
@@ -54,7 +55,7 @@ func (m *Manager) GetRuntimeSettings() map[string]any {
 }
 func settingsLimits() map[string]any {
 	return map[string]any{
-		"audit":   map[string]any{"retention_days": []int{1, 90}, "max_records": []int{1, 100000}, "max_body_bytes": []int{256, 10485760}, "max_total_bytes": []int64{1 << 20, 1 << 30}},
+		"audit":   map[string]any{"retention_days": []int{1, 90}, "max_records": []int{1, 100000}, "max_body_bytes": []int{256, 10485760}, "max_total_bytes": []int64{1 << 20, audit.MaxTotalBytes}},
 		"storage": map[string]any{"flush_interval_seconds": []int{1, 3600}, "ledger_retention_days": []int{1, 3650}, "timezone": "IANA timezone", "pricing_cache_file_max_length": 4096},
 		"pricing": map[string]any{"sync_interval_hours": []int{1, 720}, "http_timeout_seconds": []int{1, 300}, "sync_url_max_length": 2048, "schemes": []string{"http", "https"}},
 	}

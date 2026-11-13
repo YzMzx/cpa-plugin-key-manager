@@ -6,7 +6,7 @@
  const clone=v=>JSON.parse(JSON.stringify(v));
  const FIELDS=[
   ["audit.enabled","settingAuditEnabled","bool"],["audit.retention_days","settingAuditRetention","int",1,90],["audit.max_records","settingAuditRecords","int",1,100000],
-  ["audit.max_body_bytes","settingAuditBodyMiB","mib",256,10*MIB],["audit.max_total_bytes","settingAuditTotalMiB","mib",MIB,1024*MIB],
+  ["audit.max_body_bytes","settingAuditBodyMiB","mib",256,10*MIB],["audit.max_total_bytes","settingAuditTotalMiB","mib",MIB,10240*MIB],
   ["storage.flush_interval_seconds","settingFlushSeconds","int",1,3600],["storage.ledger_retention_days","settingLedgerRetention","int",1,3650],
   ["storage.timezone","settingTimezone","timezone"],["storage.pricing_cache_file","settingCacheFile","path"],
   ["pricing.sync_url","settingPricingURL","url"],["pricing.sync_interval_hours","settingPricingHours","int",1,720],["pricing.http_timeout_seconds","settingPricingTimeout","int",1,300],

@@ -11,6 +11,7 @@ const (
 	MaxRequestBodyBytes        = 10 * 1024 * 1024
 	DefaultMaxBodyBytes        = MaxRequestBodyBytes
 	DefaultMaxTotalBytes int64 = 64 * 1024 * 1024
+	MaxTotalBytes        int64 = 10 << 30 // 10 GiB; independent of the default and cleanup batch size.
 	MaxQueryLimit              = 100
 	MaxQueryOffset             = 100000
 )
