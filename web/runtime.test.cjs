@@ -11,6 +11,7 @@ const Events = require("./events.js");
 const Audit = require("./audit.js");
 const Settings = require("./settings.js");
 const Dialogs = require("./dialogs.js");
+const CleanupJobs = require("./cleanup-jobs.js");
 const response = (body, status = 200, type = "application/json") => new Response(typeof body === "string" ? body : JSON.stringify(body), { status, headers: { "Content-Type": type } });
 const overview = (extra = {}) => ({ summary: { total_tokens: 12, total_requests: 2, total_cost_nano_usd: 10 }, keys: [], usage: { keys: {}, accounts: {} }, default_policy: {}, available_models: [], auth_files: [], timezone: "UTC", rules_revision: 4, ...extra });
 const ledger = (extra = {}) => ({ series: [], models: [], requests: 2, total_tokens: 12, from: "2026-01-01T00:00:00Z", to: "2026-01-02T00:00:00Z", ...extra });
@@ -44,7 +45,7 @@ function environment(fetchImpl = async () => response(overview())) {
   const win = { location: { href: "http://localhost/ui", origin: "http://localhost", host: "localhost" }, history: { replaceState() {} }, addEventListener(type, handler) { if (!windowListeners.has(type)) windowListeners.set(type, []); windowListeners.get(type).push(handler); }, localStorage: storage };
   win.parent = win;
   const context = vm.createContext({ window: win, document: doc, location: win.location, navigator: { userAgent: "test", clipboard: { writeText: async () => {} } }, sessionStorage: storage,
-    KeyGuardClient: Client, KeyGuardState: State, KeyGuardFormat: Format, KeyGuardAuth: Auth, KeyGuardEvents: Events, KeyGuardAudit: Audit, KeyGuardSettings: Settings, KeyGuardDialogs: Dialogs,
+    KeyGuardClient: Client, KeyGuardState: State, KeyGuardFormat: Format, KeyGuardAuth: Auth, KeyGuardEvents: Events, KeyGuardAudit: Audit, KeyGuardCleanupJobs: CleanupJobs, KeyGuardSettings: Settings, KeyGuardDialogs: Dialogs,
     fetch: fetchImpl, Headers, Response, AbortController, URL, URLSearchParams, TextEncoder, TextDecoder, atob, console, confirm: () => true,
     setTimeout: (fn, ms) => { const timer = setTimeout(fn, ms); timer.unref(); return timer; }, clearTimeout });
   // Skip only automatic page boot. All production functions and delegated bindings execute unchanged.
@@ -629,13 +630,13 @@ test("production API client accepts audit cleanup preview then confirmed apply",
   return response(overview());
  });
  env.run('switchAdminTab("tab-audit")');await tick();await tick();
- env.element("auditCleanupScope").value="all";await env.run("auditView.previewCleanup()");
+ env.element("auditCleanupScope").value="all";await env.run("auditView.legacyPreviewCleanup()");
  assert.match(env.element("auditCleanupMessage").textContent,/2 条/);assert.equal(deleted,0);
- env.element("auditCleanupAcknowledge").checked=true;await env.run("auditView.confirmCleanup()");assert.equal(deleted,1);assert.match(env.element("auditCleanupMessage").textContent,/已清理 2 条/);
+ env.element("auditCleanupAcknowledge").checked=true;await env.run("auditView.legacyConfirmCleanup()");assert.equal(deleted,1);assert.match(env.element("auditCleanupMessage").textContent,/已清理 2 条/);
 });
 
 test("settings tab retains dirty unit draft on global refresh, saves with fresh CAS and clears on lock",async()=>{
- const setting={audit:{enabled:true,retention_days:7,max_records:10000,max_body_bytes:10485760,max_total_bytes:67108864},storage:{flush_interval_seconds:10,ledger_retention_days:90,timezone:"Asia/Shanghai",pricing_cache_file:"data/prices.json"},pricing:{sync_url:"https://models.dev/api.json",sync_interval_hours:24,http_timeout_seconds:30,auto_inject_include_usage:true}};
+ const setting={audit:{enabled:true,retention_days:7,max_records:10000,max_body_bytes:10485760,max_total_bytes:67108864,cleanup_batch_max_records:1000,cleanup_batch_max_bytes:33554432},storage:{flush_interval_seconds:10,ledger_retention_days:90,timezone:"Asia/Shanghai",pricing_cache_file:"data/prices.json"},pricing:{sync_url:"https://models.dev/api.json",sync_interval_hours:24,http_timeout_seconds:30,auto_inject_include_usage:true}};
  const calls=[];let version=7;const env=environment(async(url,options)=>{calls.push({url,options});if(url.endsWith("/settings")){if(options.method==="PUT"){const body=JSON.parse(options.body);assert.equal(body.expected_revision,7);assert.equal(options.headers.get("X-Key-Guard-Revision"),"7");version=8;return response({ok:true,settings:body.settings,rules_revision:version});}return response({settings:setting,rules_revision:version});}if(url.includes("/ledger"))return response(ledger());return response(overview({rules_revision:version}));});
  env.run('switchAdminTab("tab-settings")');await tick();await tick();assert.equal(env.element("settingAuditTotalMiB").value,"64");
  env.element("settingAuditTotalMiB").value="512";env.element("settingAuditTotalMiB").listeners.input();assert.equal(env.run("settingsView.isDirty()"),true);
@@ -657,6 +658,7 @@ test("default policy draft survives refresh and unrelated CRUD across all select
  env.element("dpMaxConcurrency").value="7";env.element("dpMaxConcurrency").listeners.input();
  env.run('toggleModelCheckItem("dp","model-b",true);toggleCredCheckItem("dp","cred-b",true)');
  env.context.changed=overview({rules_revision:5,default_policy:{allow_unlisted_keys:false,max_concurrency:2,allowed_models:["server-only"],upstream_binding:{strategy:"fill-first",credentials:[]}},available_models:[{id:"model-a"},{id:"model-b"}],auth_files:[{name:"cred-a"},{name:"cred-b"}]});
+
  env.run("applyOverviewData(changed)");assert.equal(env.element("dpMaxConcurrency").value,"7");assert.equal(env.element("dpAllowUnlisted").value,"true");assert.equal(env.run('selectorState.dp.selectedModels.has("model-b")'),true);assert.equal(env.run('selectorState.dp.selectedCreds.has("cred-b")'),true);assert.equal(env.run("defaultPolicyRevision"),4);assert.match(env.element("dpDraftStatus").textContent,/版本已变化/);
  env.run("discardDefaultPolicyDraft()");assert.equal(env.element("dpMaxConcurrency").value,2);assert.equal(env.element("dpAllowUnlisted").value,"false");assert.equal(env.run("defaultPolicyDirty"),false);assert.equal(env.run("defaultPolicyRevision"),5);
  for(const expression of ['onToggleAllModels("dp")','onToggleAllCreds("dp")','batchCheckModels("dp",true)','batchCheckCreds("dp",true)']){env.run(expression);assert.equal(env.run("defaultPolicyDirty"),true);env.run("discardDefaultPolicyDraft()");}
@@ -747,4 +749,50 @@ test("new draft credentials that disappear cannot be saved as existing restricti
     env.run('toggleCredCheckItem(prefix, "new", false)');
     assert.equal(env.run('validateCredentialDraft(prefix)'), true);
   }
+});
+
+const cleanupFixtureJob=(extra={})=>({id:"production-job",state:"running",total_records:2501,processed_records:1000,deleted_records:999,skipped_records:1,remaining_records:1501,deleted_logical_bytes:1000,deleted_body_bytes:500,batches:1,batch_max_records:1000,batch_max_bytes:33554432,created_at:"2026-11-13T12:00:00Z",updated_at:"2026-11-13T12:00:01Z",error_code:"",...extra});
+function cleanupEnvironment(extraHandler=()=>null){
+ const calls=[],auditStatus={enabled:true,retention_days:7,max_records:10000,max_body_bytes:10485760,max_total_bytes:67108864};let current=null;
+ const env=environment(async(url,options)=>{
+  calls.push({url,options});const intercepted=await extraHandler(url,options,current);if(intercepted)return intercepted;
+  const root="/v0/management/key-guard/audit/cleanup/jobs";
+  if(url===root&&options.method==="GET")return response({jobs:current?[current]:[]});
+  if(url===root+"/preview"){const choice=JSON.parse(options.body);return response({ok:true,preview:{token:"same-snapshot",expires_at:new Date(Date.now()+300000).toISOString(),records:2501,logical_bytes:67108864,request_body_bytes:33554432,batch_max_records:1000,batch_max_bytes:33554432,...choice,...(choice.scope==="expired"?{before:"2026-11-06T12:00:00Z"}:{})}});}
+  if(url===root&&options.method==="POST"){current=cleanupFixtureJob();return response({ok:true,job:current},202);}
+  if(url.includes(root+"/detail?"))return response({job:current});
+  if(url===root+"/cancel"){current=cleanupFixtureJob({state:"canceled"});return response({ok:true,job:current});}
+  if(url===root+"/resume"){current=cleanupFixtureJob();return response({ok:true,job:current});}
+  if(url.endsWith("/audit/status"))return response({status:auditStatus});
+  if(url.endsWith("/audit/storage"))return response({storage:{records:2501,logical_bytes:67108864,request_body_bytes:33554432,max_total_bytes:67108864,db_file_bytes:4096,wal_file_bytes:0}});
+  if(url.includes("/audit?"))return response({items:[],total:0,limit:50,offset:0,status:auditStatus});
+  if(url.includes("/ledger"))return response(ledger());return response(overview());
+ });return {env,calls,setJob:value=>current=value};
+}
+
+test("main audit UI uses full snapshot jobs API through real client, 202 and no legacy fallback",async()=>{
+ const {env,calls}=cleanupEnvironment();env.run('switchAdminTab("tab-audit")');await tick();await tick();
+ assert.ok(calls.some(c=>c.url.endsWith("/cleanup/jobs")&&c.options.method==="GET"));env.element("auditCleanupScope").value="expired";
+ await env.run("auditView.previewCleanup()");assert.match(env.element("auditCleanupMessage").textContent,/2501 条/);assert.match(env.element("auditCleanupMessage").textContent,/2026-11-06/);
+ env.element("auditCleanupAcknowledge").checked=true;await env.run("auditView.confirmCleanup()");assert.match(env.element("auditCleanupJobState").textContent,/1000.*2501/);
+ const start=calls.find(c=>c.url.endsWith("/cleanup/jobs")&&c.options.method==="POST");assert.deepEqual(JSON.parse(start.options.body),{token:"same-snapshot",confirm:true});assert.equal(start.options.headers.get("Authorization"),"Bearer test-admin");
+ assert.equal(calls.filter(c=>c.options.method==="POST").length,2);assert.ok(!calls.some(c=>c.url.endsWith("/audit/cleanup")||c.url.endsWith("/audit/cleanup/preview")));assert.ok([...env.store.keys()].every(k=>!k.includes("cleanup")));env.run('switchAdminTab("tab-overview")');
+});
+
+test("main audit UI restores list/detail, explicit resume/cancel preserve ID and 403 clears tasks",async()=>{
+ let forbidden=false;const {env,calls,setJob}=cleanupEnvironment(url=>forbidden&&url.includes("/cleanup/jobs")?response("denied",403,"text/plain"):null);setJob(cleanupFixtureJob({state:"failed",error_code:"sqlite_busy"}));
+ env.run('switchAdminTab("tab-audit")');await tick();await tick();assert.equal(env.element("auditCleanupJobSelect").value,"production-job");assert.match(env.element("auditCleanupJobError").textContent,/sqlite_busy/);
+ await env.run('auditView.cleanupJobs.refresh("production-job")');assert.ok(calls.some(c=>c.url.endsWith("/detail?id=production-job")));
+ await env.run("auditView.cleanupJobs.resume()");assert.deepEqual(JSON.parse(calls.find(c=>c.url.endsWith("/resume")).options.body),{id:"production-job"});
+ env.element("auditCleanupCancelAcknowledge").checked=true;await env.run("auditView.cleanupJobs.cancel()");assert.deepEqual(JSON.parse(calls.find(c=>c.url.endsWith("/cancel")).options.body),{id:"production-job"});assert.match(env.element("auditCleanupJobState").textContent,/已取消/);
+ forbidden=true;await env.run("auditView.cleanupJobs.refresh()");assert.equal(env.run("activeManagementKey"),"");assert.equal(env.element("auditCleanupJobSelect").children.length,0);assert.equal(env.element("auditCleanupJobStats").textContent,"");assert.equal(env.element("auditCleanupMessage").textContent,"");
+});
+
+test("production terminal refresh preserves a visible warning when audit storage fetch fails",async()=>{
+ let failStorage=false;const {env,setJob}=cleanupEnvironment(url=>failStorage&&url.endsWith("/audit/storage")?response({error:"storage unavailable"},503):null);setJob(cleanupFixtureJob());env.run('switchAdminTab("tab-audit")');await tick();await tick();failStorage=true;setJob(cleanupFixtureJob({state:"completed",processed_records:2501,deleted_records:2500,remaining_records:0}));await env.run("auditView.cleanupJobs.refresh()");assert.match(env.element("auditCleanupJobMessage").textContent,/刷新失败/);env.run('switchAdminTab("tab-overview")');
+});
+
+test("job conflict advises status verification, not a new preview that widens confirmation",async()=>{
+ const client=Client.createClient({getKey:()=>"fixture",fetchImpl:async()=>response({error:"already active"},409)});
+ await assert.rejects(client.request("/v0/management/key-guard/audit/cleanup/jobs",{method:"POST",body:"{}"}),error=>{assert.match(error.message,/核实/);assert.doesNotMatch(error.message,/重新预览/);return true;});
 });

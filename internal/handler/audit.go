@@ -30,6 +30,9 @@ func handleAuditRequest(ctx context.Context, provider any, req pluginapi.Managem
 	if !strings.HasPrefix(req.Path, "/v0/management/key-guard/") || !hasManagementCredential(req) {
 		return jsonError(http.StatusUnauthorized, "management authentication required")
 	}
+	if isAuditCleanupJobPath(req.Path) {
+		return HandleAuditCleanupJobsRequest(ctx, provider, req)
+	}
 	if req.Path == "/v0/management"+RouteManagementAuditStorage || req.Path == "/v0/management"+RouteManagementAuditCleanupPreview || req.Path == "/v0/management"+RouteManagementAuditCleanup {
 		return HandleAuditCleanupRequest(ctx, provider, req)
 	}

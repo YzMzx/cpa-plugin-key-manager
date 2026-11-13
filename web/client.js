@@ -89,7 +89,7 @@
           }
           if (!response.ok) {
             const detail = object(data) ? ((object(data.error) ? data.error.message : data.error) || data.message || "请求失败") : "请求失败";
-            throw new APIError(response.status === 409 ? (String(path).includes("/audit/cleanup") ? String(detail) + "；请重新预览清理范围" : "规则已被其它会话更新，请刷新后重试") : String(detail) + " (HTTP " + response.status + ")", response.status);
+            throw new APIError(response.status === 409 ? (String(path).includes("/audit/cleanup/jobs") ? String(detail) + "；请先查询任务核实状态，不会自动重试写请求" : String(path).includes("/audit/cleanup") ? String(detail) + "；请重新预览清理范围" : "规则已被其它会话更新，请刷新后重试") : String(detail) + " (HTTP " + response.status + ")", response.status);
           }
           const contentType = response.headers.get("Content-Type") || "";
           if (!contentType.toLowerCase().includes("application/json")) throw new APIError("服务器响应类型不是 JSON，未更新当前数据", response.status);

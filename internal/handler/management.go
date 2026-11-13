@@ -131,6 +131,12 @@ func RegisterManagementEndpoints() ([]pluginapi.ManagementRoute, []pluginapi.Res
 		pluginapi.ManagementRoute{Method: http.MethodGet, Path: RouteManagementAuditStorage, Description: "Calculate audit logical occupation and shared database file sizes."},
 		pluginapi.ManagementRoute{Method: http.MethodPost, Path: RouteManagementAuditCleanupPreview, Description: "Preview selected audit-only cleanup with an expiring confirmation token."},
 		pluginapi.ManagementRoute{Method: http.MethodPost, Path: RouteManagementAuditCleanup, Description: "Apply a confirmed audit-only cleanup snapshot."},
+		pluginapi.ManagementRoute{Method: http.MethodPost, Path: RouteManagementAuditJobPreview, Description: "Preview an asynchronous audit-only cleanup job."},
+		pluginapi.ManagementRoute{Method: http.MethodPost, Path: RouteManagementAuditCleanupJobs, Description: "Start a confirmed asynchronous audit-only cleanup job."},
+		pluginapi.ManagementRoute{Method: http.MethodGet, Path: RouteManagementAuditCleanupJobs, Description: "List audit cleanup jobs owned by the current administrator."},
+		pluginapi.ManagementRoute{Method: http.MethodGet, Path: RouteManagementAuditJobDetail, Description: "Read an owned audit cleanup job without changing its state."},
+		pluginapi.ManagementRoute{Method: http.MethodPost, Path: RouteManagementAuditJobCancel, Description: "Cancel an owned audit cleanup job."},
+		pluginapi.ManagementRoute{Method: http.MethodPost, Path: RouteManagementAuditJobResume, Description: "Resume an owned audit cleanup job."},
 	)
 	resources := []pluginapi.ResourceRoute{
 		{

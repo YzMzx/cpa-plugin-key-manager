@@ -585,10 +585,52 @@
         <button type="button" class="btn btn-sm" id="auditStorageRefresh">重新计算</button>
       </div>
       <details class="audit-cleanup-section" id="auditCleanupSection">
-        <summary>手动清理审计记录</summary>
-        <div class="audit-cleanup-controls"><label>清理范围<select id="auditCleanupScope"><option value="expired">仅过期记录</option><option value="1d">1 天前</option><option value="3d">3 天前</option><option value="7d">7 天前</option><option value="custom">自定义日期前</option><option value="all">全部审计记录</option></select></label><label id="auditCleanupBeforeLabel" class="hidden">指定日期前<input id="auditCleanupBefore" class="input mono" type="text" placeholder="2026-11-09T00:00:00+08:00" autocomplete="off"></label><button type="button" class="btn" id="auditCleanupPreview">预览清理</button></div>
-        <div id="auditCleanupMessage" class="card-hint" role="status">先预览影响范围，再确认执行；只清理审计，不影响密钥规则和用量账本。</div>
-        <div id="auditCleanupConfirmation" class="audit-cleanup-confirm hidden"><label><input id="auditCleanupAcknowledge" type="checkbox" aria-describedby="auditCleanupMessage">我确认永久删除预览中的审计记录</label><button type="button" class="btn btn-sm btn-danger" id="auditCleanupConfirm" aria-describedby="auditCleanupMessage" disabled>确认清理</button><button type="button" class="btn btn-sm" id="auditCleanupCancel">取消</button></div>
+        <summary>全量后台清理审计记录</summary>
+        <p class="audit-cleanup-intro">先预览范围并确认，再跟踪后台任务。离开页面不会中断清理。</p>
+        <div class="audit-cleanup-layout">
+          <form id="auditCleanupStartForm" class="audit-cleanup-card" method="post" action="/v0/management/key-guard/audit/cleanup/jobs" aria-label="预览并确认全量后台清理">
+            <fieldset class="audit-cleanup-step">
+              <legend><span class="audit-cleanup-step-number" aria-hidden="true">01</span> 选择清理范围</legend>
+              <div class="audit-cleanup-controls">
+                <label for="auditCleanupScope">清理范围<select id="auditCleanupScope" name="scope"><option value="expired">仅过期记录</option><option value="1d">1 天前</option><option value="3d">3 天前</option><option value="7d">7 天前</option><option value="custom">自定义日期前</option><option value="all">全部审计记录</option></select></label>
+                <label for="auditCleanupBefore" id="auditCleanupBeforeLabel" class="hidden">指定日期前<input id="auditCleanupBefore" name="before" aria-describedby="auditCleanupMessage" class="input mono" type="text" placeholder="2026-11-09T00:00:00+08:00" autocomplete="off"><small>使用含时区的日期时间，例如上方格式。</small></label>
+                <button type="button" class="btn" id="auditCleanupPreview">预览清理</button>
+              </div>
+            </fieldset>
+            <div class="audit-cleanup-preview-note"><strong>预览与状态</strong><div id="auditCleanupMessage" class="card-hint" role="status">先预览影响范围，再确认执行；只清理审计，不影响密钥规则和用量账本。</div></div>
+            <fieldset id="auditCleanupConfirmation" class="audit-cleanup-step audit-cleanup-confirm hidden">
+              <legend><span class="audit-cleanup-step-number" aria-hidden="true">02</span> 确认永久删除</legend>
+              <label for="auditCleanupAcknowledge"><input id="auditCleanupAcknowledge" name="confirm" type="checkbox" aria-describedby="auditCleanupMessage">我确认永久删除预览全部快照，后续新增记录不纳入</label>
+              <div class="audit-cleanup-actions"><button type="submit" class="btn btn-sm btn-danger" id="auditCleanupConfirm" aria-describedby="auditCleanupMessage" disabled>确认全部快照并后台清理</button><button type="button" class="btn btn-sm" id="auditCleanupCancel">放弃本地确认</button></div>
+            </fieldset>
+          </form>
+          <section class="audit-cleanup-card audit-cleanup-jobs" aria-labelledby="auditCleanupJobsTitle">
+            <div class="audit-cleanup-panel-heading"><h3 id="auditCleanupJobsTitle"><span class="audit-cleanup-step-number" aria-hidden="true">03</span> 后台清理任务</h3><button type="button" class="btn btn-sm" id="auditCleanupJobsRefresh">刷新任务</button></div>
+            <div class="audit-cleanup-controls"><label for="auditCleanupJobSelect">查看任务<select id="auditCleanupJobSelect" name="cleanup_job" aria-describedby="auditCleanupJobMessage"></select></label></div>
+            <p id="auditCleanupJobMessage" class="card-hint audit-cleanup-job-note" role="status">尚无任务时，请先预览范围并确认清理。</p>
+            <div id="auditCleanupJobDetails" class="hidden">
+              <div class="audit-cleanup-progress-heading"><span id="auditCleanupJobBadge" class="audit-cleanup-job-badge"></span><span id="auditCleanupPercent" class="mono"></span></div>
+              <p id="auditCleanupJobState" role="status" aria-live="polite"></p>
+              <progress id="auditCleanupProgress" aria-labelledby="auditCleanupJobsTitle auditCleanupJobState" aria-describedby="auditCleanupJobStats"></progress>
+              <dl class="audit-cleanup-metrics">
+                <div><dt>已处理</dt><dd id="auditCleanupMetricProcessed">—</dd></div>
+                <div><dt>已删除</dt><dd id="auditCleanupMetricDeleted">—</dd></div>
+                <div><dt>已跳过</dt><dd id="auditCleanupMetricSkipped">—</dd></div>
+                <div><dt>剩余记录</dt><dd id="auditCleanupMetricRemaining">—</dd></div>
+                <div><dt>已删除逻辑量</dt><dd id="auditCleanupMetricBytes">—</dd></div>
+                <div><dt>已完成批次</dt><dd id="auditCleanupMetricBatches">—</dd></div>
+              </dl>
+              <p id="auditCleanupJobStats" class="card-hint"></p>
+              <p id="auditCleanupJobMeta" class="audit-cleanup-job-meta mono"></p>
+              <p id="auditCleanupJobError" class="card-hint" role="status"></p>
+              <fieldset class="audit-cleanup-step audit-cleanup-confirm audit-cleanup-job-actions">
+                <legend>任务操作</legend>
+                <label for="auditCleanupCancelAcknowledge"><input id="auditCleanupCancelAcknowledge" name="ack_cancel" type="checkbox" aria-describedby="auditCleanupJobMessage">取消只停止剩余清理，已删除记录不可恢复</label>
+                <div class="audit-cleanup-actions"><button type="button" class="btn btn-sm btn-danger" id="auditCleanupJobCancel" disabled>取消后台任务</button><button type="button" class="btn btn-sm" id="auditCleanupJobResume" disabled>继续失败任务（同一快照）</button></div>
+              </fieldset>
+            </div>
+          </section>
+        </div>
       </details>
       <form id="auditFilterForm" class="audit-filters">
         <label>API Key<select id="auditKey" aria-label="按 API Key 筛选"><option value="">全部 API Key</option></select></label>
@@ -621,13 +663,21 @@
       <div class="card-header"><div><h2 class="card-title">统一配置</h2><div class="card-subtitle">集中管理运行设置；启动配置单独保存</div></div><button type="button" class="btn btn-sm" id="settingsReload">重新加载</button></div>
       <div id="settingsMessage" class="card-hint" role="status">进入此页后读取配置。</div>
       <form id="settingsForm" novalidate>
-        <fieldset class="settings-section"><legend>请求审计</legend><div class="settings-grid">
-          <label class="settings-check"><input id="settingAuditEnabled" type="checkbox">启用请求审计</label>
-          <label>保留天数<input id="settingAuditRetention" class="input" type="number" min="1" max="90" step="1"><small>默认 7 天</small></label>
-          <label>最大记录条数<input id="settingAuditRecords" class="input" type="number" min="1" max="100000" step="1"></label>
-          <label>单条正文上限（MiB）<input id="settingAuditBodyMiB" class="input" type="number" min="0.000244140625" max="10" step="any"><small>最大 10 MiB；1 MiB = 1,048,576 字节</small></label>
-          <label>审计总量上限（MiB）<input id="settingAuditTotalMiB" class="input" type="number" min="1" max="10240" step="any" aria-describedby="settingAuditTotalHint"><small id="settingAuditTotalHint">最大 10240 MiB（10 GiB）；先达到条数、容量或期限即清理旧记录</small></label>
-        </div><p class="card-hint">启用后保留文字请求 JSON 明文，可能包含凭据、会话和个人信息；图片、音视频及文件载荷不留存，不采集 IP、鉴权头或响应正文。</p></fieldset>
+        <fieldset class="settings-section settings-audit"><legend>请求审计</legend>
+          <fieldset class="settings-audit-group"><legend>采集</legend><div class="settings-grid">
+            <label class="settings-check" for="settingAuditEnabled"><input id="settingAuditEnabled" type="checkbox">启用请求审计</label>
+            <label for="settingAuditBodyMiB">单条正文上限（MiB）<input id="settingAuditBodyMiB" class="input" type="number" min="0.000244140625" max="10" step="any"><small>最大 10 MiB；1 MiB = 1,048,576 字节</small></label>
+          </div><p class="card-hint">启用后保留文字请求 JSON 明文，可能包含凭据、会话和个人信息；图片、音视频及文件载荷不留存，不采集 IP、鉴权头或响应正文。</p></fieldset>
+          <fieldset class="settings-audit-group"><legend>保留</legend><div class="settings-grid">
+            <label for="settingAuditRetention">保留天数<input id="settingAuditRetention" class="input" type="number" min="1" max="90" step="1"><small>默认 7 天</small></label>
+            <label for="settingAuditRecords">最大记录条数<input id="settingAuditRecords" class="input" type="number" min="1" max="100000" step="1"></label>
+            <label for="settingAuditTotalMiB">审计总量上限（MiB）<input id="settingAuditTotalMiB" class="input" type="number" min="1" max="10240" step="any" aria-describedby="settingAuditTotalHint"><small id="settingAuditTotalHint">最大 10240 MiB（10 GiB）；先达到条数、容量或期限即清理旧记录</small></label>
+          </div></fieldset>
+          <fieldset class="settings-audit-group settings-audit-batches"><legend>后台清理 · 每批预算</legend><div class="settings-grid">
+            <label for="settingCleanupBatchRecords">清理每批最大条数<input id="settingCleanupBatchRecords" name="cleanup_batch_max_records" class="input" type="number" min="1" max="5000" step="1" aria-describedby="settingsCleanupBatchStatus"><small>默认 1000，范围 1–5000</small></label>
+            <label for="settingCleanupBatchMiB">清理每批最大工作量（MiB）<input id="settingCleanupBatchMiB" name="cleanup_batch_max_bytes" class="input" type="number" min="16" max="128" step="any" aria-describedby="settingsCleanupBatchStatus"><small>默认 32 MiB，范围 16–128 MiB；精确转换为整数字节</small></label>
+          </div><p id="settingsCleanupBatchStatus" class="card-hint" role="status">尚未读取服务端清理批次设置。</p></fieldset>
+        </fieldset>
         <fieldset class="settings-section"><legend>用量与时间</legend><div class="settings-grid">
           <label>统计落盘间隔（秒）<input id="settingFlushSeconds" class="input" type="number" min="1" max="3600" step="1"></label>
           <label>小时账本保留天数<input id="settingLedgerRetention" class="input" type="number" min="1" max="3650" step="1"><small>默认 90 天；不等于审计正文保留期限</small></label>

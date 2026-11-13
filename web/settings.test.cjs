@@ -6,9 +6,9 @@ const Settings=require("./settings.js");
 const State=require("./state.js");
 const Client=require("./client.js");
 const MIB=1048576;
-const config=()=>({audit:{enabled:true,retention_days:7,max_records:10000,max_body_bytes:10*MIB,max_total_bytes:64*MIB},storage:{flush_interval_seconds:10,ledger_retention_days:90,timezone:"Asia/Shanghai",pricing_cache_file:"data/models.json"},pricing:{sync_url:"https://models.dev/api.json",sync_interval_hours:24,http_timeout_seconds:30,auto_inject_include_usage:true}});
+const config=()=>({audit:{enabled:true,retention_days:7,max_records:10000,max_body_bytes:10*MIB,max_total_bytes:64*MIB,cleanup_batch_max_records:1000,cleanup_batch_max_bytes:32*MIB},storage:{flush_interval_seconds:10,ledger_retention_days:90,timezone:"Asia/Shanghai",pricing_cache_file:"data/models.json"},pricing:{sync_url:"https://models.dev/api.json",sync_interval_hours:24,http_timeout_seconds:30,auto_inject_include_usage:true}});
 const bootstrap=(extra={})=>({effective:{enabled:true,priority:0,usage_db_file:"D:/CPA/data/key_usage.db"},configured:{enabled:true,priority:0,usage_db_file:"./data/key_usage.db",admin_token_configured:true},file_revision:"file-sha",available:true,db_path_locked_by_env:false,...extra});
-const payload=(extra={})=>({settings:config(),rules_revision:7,bootstrap:bootstrap(),...extra});
+const payload=(extra={})=>({settings:config(),rules_revision:7,limits:{audit:{cleanup_batch_max_records:[1,5000],cleanup_batch_max_bytes:[16*MIB,128*MIB]}},bootstrap:bootstrap(),...extra});
 const deferred=()=>{let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});return{promise,resolve,reject};};
 class Element{
  constructor(){this.value="";this.checked=false;this.disabled=false;this.textContent="";this.style={};this.children=[];this.listeners={};const set=new Set();this.classList={add:v=>set.add(v),remove:v=>set.delete(v),contains:v=>set.has(v)};}
@@ -119,4 +119,24 @@ test("bootstrap save disables the entire group and restores env/availability con
  for(const id of ["settingBootstrapEnabled","settingBootstrapPriority","settingBootstrapDB","settingsAcknowledgeRestart","settingsAcknowledgeDBChange"])assert.equal(f.node(id).disabled,true,id);
  pending.resolve({ok:true,requires_restart:true,bootstrap:bootstrap({db_path_locked_by_env:true,configured:{...bootstrap().configured,priority:1}})});await saving;
  assert.equal(f.node("settingBootstrapPriority").disabled,false);assert.equal(f.node("settingBootstrapDB").disabled,true);assert.equal(f.node("settingsBootstrapSave").disabled,true);
+});
+
+
+test("cleanup batches render defaults and exact MiB conversion without claiming drafts effective",async()=>{
+ const f=fixture(async(url,options)=>options.method==="GET"?payload():payload({ok:true,settings:JSON.parse(options.body).settings,rules_revision:8}));await f.view.enter();assert.equal(f.node("settingCleanupBatchRecords").value,"1000");assert.equal(f.node("settingCleanupBatchMiB").value,"32");assert.match(f.node("settingsCleanupBatchStatus").textContent,/服务端.*1000.*32/);f.change("settingCleanupBatchRecords",5000);f.change("settingCleanupBatchMiB","16.00000095367431640625");assert.match(f.node("settingsCleanupBatchStatus").textContent,/服务端.*1000.*32/);await f.view.save();const body=JSON.parse(f.calls.at(-1).options.body);assert.equal(body.settings.audit.cleanup_batch_max_records,5000);assert.equal(body.settings.audit.cleanup_batch_max_bytes,16*MIB+1);assert.match(f.node("settingsCleanupBatchStatus").textContent,/服务端.*5000/);
+});
+
+test("cleanup batch ranges reject fractional records and noninteger byte conversions",async()=>{
+ for(const change of [v=>v.audit.cleanup_batch_max_records=0,v=>v.audit.cleanup_batch_max_records=5001,v=>v.audit.cleanup_batch_max_records=1.1,v=>v.audit.cleanup_batch_max_bytes=16*MIB-1,v=>v.audit.cleanup_batch_max_bytes=128*MIB+1]){const value=config();change(value);assert.throws(()=>Settings.validateSettings(value));}
+ const f=fixture();await f.view.enter();for(const [id,value]of [["settingCleanupBatchRecords","1.1"],["settingCleanupBatchMiB","16.0000001"]]){f.change(id,value);await f.view.save();assert.equal(f.calls.filter(c=>c.options.method==="PUT").length,0);await f.view.discard();}
+});
+
+test("old backend missing cleanup fields disables unsupported controls and never sends defaults",async()=>{
+ const old=config();delete old.audit.cleanup_batch_max_records;delete old.audit.cleanup_batch_max_bytes;const f=fixture(async(url,options)=>options.method==="GET"?payload({settings:old}):payload({ok:true,settings:JSON.parse(options.body).settings,rules_revision:8}));await f.view.enter();for(const id of ["settingCleanupBatchRecords","settingCleanupBatchMiB"]){assert.equal(f.node(id).disabled,true);assert.equal(f.node(id).value,"");}assert.match(f.node("settingsCleanupBatchStatus").textContent,/不支持/);f.change("settingFlushSeconds",11);await f.view.save();const body=JSON.parse(f.calls.at(-1).options.body);assert.equal(Object.hasOwn(body.settings.audit,"cleanup_batch_max_records"),false);assert.equal(Object.hasOwn(body.settings.audit,"cleanup_batch_max_bytes"),false);
+});
+
+test("server limits constrain cleanup settings and missing limits remain backward compatible",async()=>{
+ const limits={audit:{cleanup_batch_max_records:[10,2000],cleanup_batch_max_bytes:[24*MIB,64*MIB]}};
+ const f=fixture(async()=>payload({limits}));await f.view.enter();assert.equal(f.node("settingCleanupBatchRecords").min,"10");assert.equal(f.node("settingCleanupBatchRecords").max,"2000");assert.equal(f.node("settingCleanupBatchMiB").min,"24");assert.equal(f.node("settingCleanupBatchMiB").max,"64");f.change("settingCleanupBatchRecords",2001);await f.view.save();assert.equal(f.calls.length,1);
+ const compatible=fixture(async()=>payload({limits:undefined}));await compatible.view.enter();assert.equal(compatible.node("settingCleanupBatchRecords").disabled,false);assert.equal(compatible.node("settingCleanupBatchRecords").max,"5000");
 });

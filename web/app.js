@@ -49,6 +49,7 @@
     document, request: (...args) => callManagementAPI(...args), gate: requestGate,
     isAuthenticated: () => !!activeManagementKey,
     getTimezone: () => currentTimezone(),
+    cleanupJobs: KeyGuardCleanupJobs,
     getKeyOptions: () => (overviewData && overviewData.audit_key_options) || []
   });
   const settingsView = KeyGuardSettings.create({

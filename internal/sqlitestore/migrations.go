@@ -181,6 +181,42 @@ var migrations = []migration{
 			`INSERT INTO quota_usage(api_key, total_cost_nano_usd) SELECT api_key, max(0, total_cost_nano_usd) FROM key_usage`,
 		},
 	},
+	{
+		version: 6,
+		name:    "durable audit cleanup snapshots and jobs",
+		stmts: []string{
+			// Only opaque IDs, owner/token hashes and byte counts are retained here.
+			`CREATE TABLE audit_cleanup_previews (
+			 token_hash TEXT PRIMARY KEY, principal_hash TEXT NOT NULL,
+			 created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
+			 scope TEXT NOT NULL, before_value TEXT NOT NULL,
+			 records INTEGER NOT NULL, logical_bytes INTEGER NOT NULL, body_bytes INTEGER NOT NULL,
+			 batch_max_records INTEGER NOT NULL, batch_max_bytes INTEGER NOT NULL
+			)`,
+			`CREATE TABLE audit_cleanup_jobs (
+			 id TEXT PRIMARY KEY, token_hash TEXT NOT NULL UNIQUE, principal_hash TEXT NOT NULL,
+			 state TEXT NOT NULL CHECK(state IN ('queued','running','completed','canceled','failed')),
+			 total_records INTEGER NOT NULL, processed_records INTEGER NOT NULL DEFAULT 0,
+			 deleted_records INTEGER NOT NULL DEFAULT 0, skipped_records INTEGER NOT NULL DEFAULT 0,
+			 remaining_records INTEGER NOT NULL, deleted_logical_bytes INTEGER NOT NULL DEFAULT 0,
+			 deleted_body_bytes INTEGER NOT NULL DEFAULT 0, batches INTEGER NOT NULL DEFAULT 0,
+			 batch_max_records INTEGER NOT NULL, batch_max_bytes INTEGER NOT NULL,
+			 created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+			 error_code TEXT NOT NULL DEFAULT ''
+			)`,
+			`CREATE UNIQUE INDEX audit_cleanup_one_active_idx ON audit_cleanup_jobs((1)) WHERE state IN ('queued','running')`,
+			`CREATE INDEX audit_cleanup_jobs_owner_idx ON audit_cleanup_jobs(principal_hash,created_at,id)`,
+			`CREATE TABLE audit_cleanup_items (
+			 snapshot_hash TEXT NOT NULL, record_id TEXT NOT NULL,
+			 started_at INTEGER NOT NULL, logical_bytes INTEGER NOT NULL, body_bytes INTEGER NOT NULL,
+			 PRIMARY KEY(snapshot_hash,record_id)
+			) WITHOUT ROWID`,
+			`CREATE INDEX audit_cleanup_items_order_idx ON audit_cleanup_items(snapshot_hash,started_at,record_id)`,
+			// Per-ID current byte checks must also be covered; the earlier index starts
+			// with started_at and would otherwise rescan the whole audit each batch.
+			`CREATE INDEX client_request_audit_cleanup_metadata_idx ON client_request_audit(id,logical_bytes,length(CAST(request_body AS BLOB)))`,
+		},
+	},
 }
 
 // Migrate applies every pending migration inside its own transaction.

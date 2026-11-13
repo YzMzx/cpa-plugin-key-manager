@@ -209,3 +209,24 @@ func TestReleaseResolverBindsTagSourceAndRejectsWrongDispatch(t *testing.T) {
 		})
 	}
 }
+func TestReleaseArchivesIncludeBackgroundCleanupGuide(t *testing.T) {
+	raw, err := os.ReadFile(".github/workflows/release.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow struct {
+		Jobs map[string]workflowJob `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(raw, &workflow); err != nil {
+		t.Fatal(err)
+	}
+	var build string
+	for _, step := range workflow.Jobs["build"].Steps {
+		if strings.Contains(step.Run, "go build -trimpath") {
+			build = step.Run
+		}
+	}
+	if strings.Count(build, "CLEANUP_JOBS.md") != 3 {
+		t.Fatal("cleanup task guide must be copied and included in zip/tar archives")
+	}
+}

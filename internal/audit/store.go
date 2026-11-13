@@ -50,6 +50,8 @@ func NewStore(db *sqlitestore.DB, cfg Config) *Store {
 	if cfg.MaxTotalBytes > MaxTotalBytes {
 		cfg.MaxTotalBytes = MaxTotalBytes
 	}
+	limits := (CleanupBatchLimits{MaxRecords: cfg.CleanupBatchMaxRecords, MaxBytes: cfg.CleanupBatchMaxBytes}).Normalized()
+	cfg.CleanupBatchMaxRecords, cfg.CleanupBatchMaxBytes = limits.MaxRecords, limits.MaxBytes
 	return &Store{db: db, cfg: cfg}
 }
 

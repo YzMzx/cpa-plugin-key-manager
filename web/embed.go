@@ -22,7 +22,7 @@ var themeJS string
 //go:embed app.js
 var appJS string
 
-//go:embed client.js state.js formatters.js auth.js events.js dialogs.js audit.js settings.js
+//go:embed client.js state.js formatters.js auth.js events.js dialogs.js cleanup-jobs.js audit.js settings.js
 var runtimeFiles embed.FS
 
 const (
@@ -35,7 +35,7 @@ var indexHTML = assemble()
 
 func runtimeJS() string {
 	var sources []string
-	for _, name := range []string{"client.js", "state.js", "formatters.js", "auth.js", "events.js", "dialogs.js", "audit.js", "settings.js"} {
+	for _, name := range []string{"client.js", "state.js", "formatters.js", "auth.js", "events.js", "dialogs.js", "cleanup-jobs.js", "audit.js", "settings.js"} {
 		raw, err := runtimeFiles.ReadFile(name)
 		if err != nil {
 			panic(err)

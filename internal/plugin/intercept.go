@@ -283,7 +283,7 @@ func (m *Manager) handleManagement(raw []byte) ([]byte, error) {
 	m.managementMu.Lock()
 	defer m.managementMu.Unlock()
 	method := strings.ToUpper(req.Method)
-	if method != http.MethodGet && method != http.MethodHead && req.Path != "/v0/management/key-guard/settings/bootstrap" {
+	if method != http.MethodGet && method != http.MethodHead && req.Path != "/v0/management/key-guard/settings/bootstrap" && !isAuditCleanupJobPath(req.Path) {
 		if value := req.Headers.Get("X-Key-Guard-Revision"); value != "" {
 			revision, err := strconv.ParseUint(value, 10, 64)
 			if err != nil || revision != m.RulesRevision() {
@@ -292,7 +292,7 @@ func (m *Manager) handleManagement(raw []byte) ([]byte, error) {
 		}
 	}
 	resp := handler.HandleManagementRequest(context.Background(), m, req.ManagementRequest, req.HostCallbackID)
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 && strings.HasPrefix(req.Path, "/v0/management/key-guard/") {
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 && strings.HasPrefix(req.Path, "/v0/management/key-guard/") && !isAuditCleanupJobPath(req.Path) {
 		credential := strings.TrimSpace(req.Headers.Get("Authorization"))
 		if strings.HasPrefix(strings.ToLower(credential), "bearer ") {
 			credential = strings.TrimSpace(credential[7:])

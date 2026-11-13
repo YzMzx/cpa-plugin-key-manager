@@ -1,5 +1,7 @@
 package plugin
 
+import "github.com/YzMzx/cpa-plugin-key-manager/internal/audit"
+
 type settingsError string
 
 func (e settingsError) Error() string { return string(e) }
@@ -31,11 +33,13 @@ type RuntimeSettings struct {
 	Pricing RuntimePricingSettings `json:"pricing"`
 }
 type RuntimeAuditSettings struct {
-	Enabled       bool  `json:"enabled"`
-	RetentionDays int   `json:"retention_days"`
-	MaxRecords    int   `json:"max_records"`
-	MaxBodyBytes  int   `json:"max_body_bytes"`
-	MaxTotalBytes int64 `json:"max_total_bytes"`
+	Enabled                bool  `json:"enabled"`
+	RetentionDays          int   `json:"retention_days"`
+	MaxRecords             int   `json:"max_records"`
+	MaxBodyBytes           int   `json:"max_body_bytes"`
+	MaxTotalBytes          int64 `json:"max_total_bytes"`
+	CleanupBatchMaxRecords int   `json:"cleanup_batch_max_records"`
+	CleanupBatchMaxBytes   int64 `json:"cleanup_batch_max_bytes"`
 }
 type RuntimeStorageSettings struct {
 	FlushIntervalSeconds int    `json:"flush_interval_seconds"`
@@ -50,9 +54,19 @@ type RuntimePricingSettings struct {
 	AutoInjectIncludeUsage bool   `json:"auto_inject_include_usage"`
 }
 
+// normalizeRuntimeSettings upgrades only newly optional legacy SQLite fields.
+// It must run before validation on startup, never after decoding an explicit PUT.
+func normalizeRuntimeSettings(settings *RuntimeSettings) {
+	if settings == nil {
+		return
+	}
+	limits := (audit.CleanupBatchLimits{MaxRecords: settings.Audit.CleanupBatchMaxRecords, MaxBytes: settings.Audit.CleanupBatchMaxBytes}).Normalized()
+	settings.Audit.CleanupBatchMaxRecords, settings.Audit.CleanupBatchMaxBytes = limits.MaxRecords, limits.MaxBytes
+}
+
 func runtimeSettingsFromConfig(cfg Config) RuntimeSettings {
 	return RuntimeSettings{
-		Audit:   RuntimeAuditSettings{Enabled: cfg.Audit.isEnabled(), RetentionDays: cfg.Audit.RetentionDays, MaxRecords: cfg.Audit.MaxRecords, MaxBodyBytes: cfg.Audit.MaxBodyBytes, MaxTotalBytes: cfg.Audit.MaxTotalBytes},
+		Audit:   RuntimeAuditSettings{Enabled: cfg.Audit.isEnabled(), RetentionDays: cfg.Audit.RetentionDays, MaxRecords: cfg.Audit.MaxRecords, MaxBodyBytes: cfg.Audit.MaxBodyBytes, MaxTotalBytes: cfg.Audit.MaxTotalBytes, CleanupBatchMaxRecords: cfg.Audit.CleanupBatchMaxRecords, CleanupBatchMaxBytes: cfg.Audit.CleanupBatchMaxBytes},
 		Storage: RuntimeStorageSettings{FlushIntervalSeconds: cfg.Storage.FlushIntervalSeconds, LedgerRetentionDays: cfg.Storage.LedgerRetentionDays, Timezone: cfg.Storage.Timezone, PricingCacheFile: cfg.Storage.PricingCacheFile},
 		Pricing: RuntimePricingSettings{SyncURL: cfg.Pricing.SyncURL, SyncIntervalHours: cfg.Pricing.SyncIntervalHours, HTTPTimeoutSeconds: cfg.Pricing.HTTPTimeoutSeconds, AutoInjectIncludeUsage: cfg.ShouldAutoInjectIncludeUsage()},
 	}
@@ -61,8 +75,12 @@ func applySettingsConfig(cfg *Config, settings *RuntimeSettings) {
 	if settings == nil {
 		return
 	}
+	// Merge legacy SQLite settings without mutating the caller or YAML seed.
+	normalized := *settings
+	normalizeRuntimeSettings(&normalized)
+	settings = &normalized
 	enabled, inject := settings.Audit.Enabled, settings.Pricing.AutoInjectIncludeUsage
-	cfg.Audit = AuditConfig{Enabled: &enabled, RetentionDays: settings.Audit.RetentionDays, MaxRecords: settings.Audit.MaxRecords, MaxBodyBytes: settings.Audit.MaxBodyBytes, MaxTotalBytes: settings.Audit.MaxTotalBytes}
+	cfg.Audit = AuditConfig{Enabled: &enabled, RetentionDays: settings.Audit.RetentionDays, MaxRecords: settings.Audit.MaxRecords, MaxBodyBytes: settings.Audit.MaxBodyBytes, MaxTotalBytes: settings.Audit.MaxTotalBytes, CleanupBatchMaxRecords: settings.Audit.CleanupBatchMaxRecords, CleanupBatchMaxBytes: settings.Audit.CleanupBatchMaxBytes}
 	cfg.Storage.FlushIntervalSeconds = settings.Storage.FlushIntervalSeconds
 	cfg.Storage.LedgerRetentionDays = settings.Storage.LedgerRetentionDays
 	cfg.Storage.Timezone = settings.Storage.Timezone

@@ -55,7 +55,7 @@ func (m *Manager) GetRuntimeSettings() map[string]any {
 }
 func settingsLimits() map[string]any {
 	return map[string]any{
-		"audit":   map[string]any{"retention_days": []int{1, 90}, "max_records": []int{1, 100000}, "max_body_bytes": []int{256, 10485760}, "max_total_bytes": []int64{1 << 20, audit.MaxTotalBytes}},
+		"audit":   map[string]any{"retention_days": []int{1, 90}, "max_records": []int{1, 100000}, "max_body_bytes": []int{256, 10485760}, "max_total_bytes": []int64{1 << 20, audit.MaxTotalBytes}, "cleanup_batch_max_records": []int{audit.MinCleanupBatchRecords, audit.MaxCleanupBatchRecords}, "cleanup_batch_max_bytes": []int64{audit.MinCleanupBatchBytes, audit.MaxCleanupBatchBytes}},
 		"storage": map[string]any{"flush_interval_seconds": []int{1, 3600}, "ledger_retention_days": []int{1, 3650}, "timezone": "IANA timezone", "pricing_cache_file_max_length": 4096},
 		"pricing": map[string]any{"sync_interval_hours": []int{1, 720}, "http_timeout_seconds": []int{1, 300}, "sync_url_max_length": 2048, "schemes": []string{"http", "https"}},
 	}
@@ -89,6 +89,8 @@ func (m *Manager) SaveRuntimeSettings(raw []byte) (map[string]any, error) {
 			return ErrSettingsRevision
 		}
 		current := runtimeSettingsFromConfig(m.cfg)
+		// Only the pre-patch legacy snapshot may receive missing-field defaults.
+		normalizeRuntimeSettings(&current)
 		next := current
 		patch := json.NewDecoder(bytes.NewReader(req.Settings))
 		patch.DisallowUnknownFields()
@@ -138,7 +140,7 @@ func (m *Manager) SaveRuntimeSettings(raw []byte) (map[string]any, error) {
 func validateRuntimeSettings(settings *RuntimeSettings) error {
 	a := settings.Audit
 	enabled := a.Enabled
-	if err := (AuditConfig{Enabled: &enabled, RetentionDays: a.RetentionDays, MaxRecords: a.MaxRecords, MaxBodyBytes: a.MaxBodyBytes, MaxTotalBytes: a.MaxTotalBytes}).validate(); err != nil {
+	if err := (AuditConfig{Enabled: &enabled, RetentionDays: a.RetentionDays, MaxRecords: a.MaxRecords, MaxBodyBytes: a.MaxBodyBytes, MaxTotalBytes: a.MaxTotalBytes, CleanupBatchMaxRecords: a.CleanupBatchMaxRecords, CleanupBatchMaxBytes: a.CleanupBatchMaxBytes}).validate(); err != nil {
 		return ErrSettingsInvalid
 	}
 	s := &settings.Storage

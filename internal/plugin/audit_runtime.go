@@ -16,18 +16,21 @@ type auditRuntime struct {
 	cfg         AuditConfig
 	cancel      context.CancelFunc
 	done        chan struct{}
+	jobsDone    chan struct{}
+	jobsWake    chan struct{}
 	dropped     atomic.Uint64
 	lastFailure atomic.Int64
 }
 
 func (m *Manager) configureAudit(cfg AuditConfig) {
 	m.stopAudit()
-	store := audit.NewStore(m.usageStore.DB(), audit.Config{Enabled: cfg.isEnabled(), RetentionDays: cfg.RetentionDays, MaxRecords: cfg.MaxRecords, MaxBodyBytes: cfg.MaxBodyBytes, MaxTotalBytes: cfg.MaxTotalBytes})
+	store := audit.NewStore(m.usageStore.DB(), audit.Config{Enabled: cfg.isEnabled(), RetentionDays: cfg.RetentionDays, MaxRecords: cfg.MaxRecords, MaxBodyBytes: cfg.MaxBodyBytes, MaxTotalBytes: cfg.MaxTotalBytes, CleanupBatchMaxRecords: cfg.CleanupBatchMaxRecords, CleanupBatchMaxBytes: cfg.CleanupBatchMaxBytes})
 	ctx, cancel := context.WithCancel(context.Background())
-	runtime := &auditRuntime{store: store, cfg: cfg, cancel: cancel, done: make(chan struct{})}
+	runtime := &auditRuntime{store: store, cfg: cfg, cancel: cancel, done: make(chan struct{}), jobsDone: make(chan struct{}), jobsWake: make(chan struct{}, 1)}
 	m.auditMu.Lock()
 	m.auditRuntime = runtime
 	m.auditMu.Unlock()
+	go func() { defer close(runtime.jobsDone); runAuditCleanupJobs(ctx, runtime) }()
 	go func() {
 		defer close(runtime.done)
 		cleanup := func() {
@@ -60,6 +63,7 @@ func (m *Manager) stopAudit() {
 	if runtime != nil {
 		runtime.cancel()
 		<-runtime.done
+		<-runtime.jobsDone
 	}
 }
 func (m *Manager) auditSnapshot() (*audit.Store, AuditConfig) {

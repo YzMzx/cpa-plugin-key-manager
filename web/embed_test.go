@@ -33,15 +33,17 @@ func TestDashboardHTMLIsSelfContained(t *testing.T) {
 func TestRuntimeModulesPrecedePageAndHaveNoExternalAssets(t *testing.T) {
 	html := DashboardHTML()
 	page := strings.Index(html, appJS)
-	for _, name := range []string{"client.js", "state.js", "formatters.js", "auth.js", "events.js", "dialogs.js", "audit.js", "settings.js"} {
+	previous := -1
+	for _, name := range []string{"client.js", "state.js", "formatters.js", "auth.js", "events.js", "dialogs.js", "cleanup-jobs.js", "audit.js", "settings.js"} {
 		raw, err := runtimeFiles.ReadFile(name)
 		if err != nil {
 			t.Fatal(err)
 		}
 		index := strings.Index(html, string(raw))
-		if index < 0 || index >= page {
+		if index <= previous || index >= page {
 			t.Fatalf("%s must be inlined before page initialization", name)
 		}
+		previous = index
 		if strings.Contains(html, "src=\""+name+"\"") {
 			t.Fatalf("unexpected external module URL: %s", name)
 		}

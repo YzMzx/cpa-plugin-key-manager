@@ -133,7 +133,7 @@
     if (value >= 1024) return (value / 1024).toFixed(1) + " KiB";
     return value + " B";
   }
-  function create({ document: doc, request, gate, isAuthenticated, getTimezone = () => "Asia/Shanghai", getKeyOptions = () => [] }) {
+  function create({ document: doc, request, gate, isAuthenticated, getTimezone = () => "Asia/Shanghai", getKeyOptions = () => [], cleanupJobs = null }) {
     let active = false;
     let selectedId = "";
     let status = null;
@@ -258,8 +258,8 @@
       const ticket = gate.begin("audit-storage"); element("auditStorageRefresh").disabled = true;
       try {
         const payload = await request(BASE + "/storage", { method: "GET", signal: ticket.signal });
-        if (ticket.current() && active && isAuthenticated()) renderStorage(payload.storage);
-      } catch (error) { if (ticket.current() && active && isAuthenticated() && error.name !== "AbortError") set("auditStorageSummary", "占用计算失败：" + error.message); }
+        if (ticket.current() && active && isAuthenticated()) { renderStorage(payload.storage); return true; }
+      } catch (error) { if (ticket.current() && active && isAuthenticated() && error.name !== "AbortError") set("auditStorageSummary", "占用计算失败：" + error.message); return false; }
       finally { if (ticket.current()) element("auditStorageRefresh").disabled = false; ticket.finish(); }
     }
     function resetCleanupPreview(message = "先预览影响范围，再确认执行；只清理审计，不影响密钥规则和用量账本。") {
@@ -339,13 +339,14 @@
         if (offset > maxOffset && correctBoundary) { offset = maxOffset; ticket.finish(); loading = false; return loadList(false); }
         if (offset > maxOffset) throw new Error("审计列表分页发生变化，请重试");
         items = payload.items; renderKeyOptions(); renderStatus(); renderList();
-        set("auditListMessage", "列表不包含请求正文；仅供管理员只读查看。");
+        set("auditListMessage", "列表不包含请求正文；仅供管理员只读查看。"); return true;
       } catch (error) {
         if (ticket.current() && active && isAuthenticated() && error.name !== "AbortError") {
           total = 0; offset = 0;
           set("auditListMessage", "审计列表读取失败：" + error.message);
           messageRow("未取得有效审计列表，请重试。");
         }
+        return false;
       } finally { if (ticket.current()) { loading = false; renderPagination(); } ticket.finish(); }
     }
     async function showDetail(id, trigger = null, preserveDrawer = false) {
@@ -374,20 +375,23 @@
     }
     function resetFilters() { for (const id of Object.values(FILTERS)) element(id).value = ""; filters = {}; offset = 0; return loadList(); }
     function page(delta) { if (loading) return Promise.resolve(); const next = Math.max(0, offset + delta * limit); if (next === offset || (delta > 0 && next >= total)) return Promise.resolve(); offset = next; return loadList(); }
-    async function refresh() { if (!active || !isAuthenticated()) return; await Promise.all([loadStatus(), loadList(), loadStorage()]); }
-    function enter() { active = true; renderKeyOptions(); return refresh(); }
-    function leave() { active = false; gate.cancel("audit-list"); gate.cancel("audit-status"); gate.cancel("audit-storage"); gate.cancel("audit-cleanup"); resetCleanupPreview(); loading = false; clearDetail(); renderPagination(); }
-    function lock() { leave(); status = null; items = []; total = 0; set("auditStorageSummary", "需要管理员授权"); set("auditStoragePhysical", ""); element("auditCleanupBefore").value = ""; limit = 50; offset = 0; filters = {}; for (const id of Object.values(FILTERS)) element(id).value = ""; element("auditPageSize").value = "50"; set("auditStatus", "需要管理密钥授权后读取审计状态。"); set("auditListMessage", ""); messageRow("需要管理员授权"); renderPagination(); }
+    const jobsView = cleanupJobs ? cleanupJobs.create({ document: doc, request, gate, isAuthenticated, getTimezone, selection: cleanupSelection, onChanged: async () => { const results = await Promise.all([loadList(), loadStorage()]); if (results.some(value => value === false)) throw new Error("审计数据刷新失败"); } }) : null;
+    async function refresh() { if (!active || !isAuthenticated()) return; await Promise.all([loadStatus(), loadList(), loadStorage(), jobsView ? jobsView.refresh() : Promise.resolve()]); }
+    function enter() { active = true; renderKeyOptions(); return Promise.all([loadStatus(), loadList(), loadStorage(), jobsView ? jobsView.enter() : Promise.resolve()]); }
+    function leave() { active = false; if (jobsView) jobsView.leave(); gate.cancel("audit-list"); gate.cancel("audit-status"); gate.cancel("audit-storage"); gate.cancel("audit-cleanup"); if (!jobsView) resetCleanupPreview(); loading = false; clearDetail(); renderPagination(); }
+    function lock() { leave(); if (jobsView) jobsView.lock(); status = null; items = []; total = 0; set("auditStorageSummary", "需要管理员授权"); set("auditStoragePhysical", ""); element("auditCleanupBefore").value = ""; limit = 50; offset = 0; filters = {}; for (const id of Object.values(FILTERS)) element(id).value = ""; element("auditPageSize").value = "50"; set("auditStatus", "需要管理密钥授权后读取审计状态。"); set("auditListMessage", ""); messageRow("需要管理员授权"); renderPagination(); }
     function bind() {
       element("auditBodyFormatted").addEventListener("click", () => { bodyMode = "formatted"; renderBody(); });
       element("auditBodyOriginal").addEventListener("click", () => { bodyMode = "original"; renderBody(); });
       element("auditStorageRefresh").addEventListener("click", loadStorage);
+      if (!jobsView) {
       element("auditCleanupPreview").addEventListener("click", previewCleanup);
       element("auditCleanupConfirm").addEventListener("click", confirmCleanup);
       element("auditCleanupCancel").addEventListener("click", () => resetCleanupPreview());
       element("auditCleanupScope").addEventListener("change", () => { resetCleanupPreview(); const custom = element("auditCleanupScope").value === "custom"; if (custom) element("auditCleanupBeforeLabel").classList.remove("hidden"); else element("auditCleanupBeforeLabel").classList.add("hidden"); });
       element("auditCleanupBefore").addEventListener("input", () => resetCleanupPreview());
       element("auditCleanupAcknowledge").addEventListener("change", () => { element("auditCleanupConfirm").disabled = cleanupBusy || !cleanupPreview || !element("auditCleanupAcknowledge").checked; });
+      }
       element("auditFilterForm").addEventListener("submit", event => { event.preventDefault(); applyFilters(); });
       element("auditFilterReset").addEventListener("click", resetFilters);
       element("auditPrevPage").addEventListener("click", () => page(-1)); element("auditNextPage").addEventListener("click", () => page(1));
@@ -398,7 +402,7 @@
       element("auditListBody").addEventListener("click", event => { const button = event.target.closest && event.target.closest("button[data-audit-id]"); if (button) showDetail(button.dataset.auditId, button); });
     }
     bind(); renderPagination();
-    return { enter, leave, lock, refresh, applyFilters, resetFilters, page, showDetail, closeDetail: () => detailDialog.close(), loadStorage, previewCleanup, confirmCleanup, isActive: () => active };
+    return { enter, leave, lock, refresh, applyFilters, resetFilters, page, showDetail, closeDetail: () => detailDialog.close(), loadStorage, previewCleanup: jobsView ? jobsView.preview : previewCleanup, confirmCleanup: jobsView ? jobsView.start : confirmCleanup, legacyPreviewCleanup: previewCleanup, legacyConfirmCleanup: confirmCleanup, cleanupJobs: jobsView, isActive: () => active };
   }
   return { create, queryString, timestamp, bodyView, bodyStatus, formatJSONText, validateStatus, validateList, validateDetail, statusPayload };
 });

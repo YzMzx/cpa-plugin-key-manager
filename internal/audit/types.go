@@ -28,11 +28,13 @@ var (
 // Config is normalized by the owner; NewStore also supplies safe positive defaults.
 // Enabled has no implicit true value: collection must be explicitly enabled.
 type Config struct {
-	Enabled       bool  `yaml:"enabled" json:"enabled"`
-	RetentionDays int   `yaml:"retention_days" json:"retention_days"`
-	MaxRecords    int   `yaml:"max_records" json:"max_records"`
-	MaxBodyBytes  int   `yaml:"max_body_bytes" json:"max_body_bytes"`
-	MaxTotalBytes int64 `yaml:"max_total_bytes" json:"max_total_bytes"`
+	Enabled                bool  `yaml:"enabled" json:"enabled"`
+	RetentionDays          int   `yaml:"retention_days" json:"retention_days"`
+	MaxRecords             int   `yaml:"max_records" json:"max_records"`
+	MaxBodyBytes           int   `yaml:"max_body_bytes" json:"max_body_bytes"`
+	MaxTotalBytes          int64 `yaml:"max_total_bytes" json:"max_total_bytes"`
+	CleanupBatchMaxRecords int   `yaml:"cleanup_batch_max_records" json:"cleanup_batch_max_records"`
+	CleanupBatchMaxBytes   int64 `yaml:"cleanup_batch_max_bytes" json:"cleanup_batch_max_bytes"`
 }
 
 // Record deliberately has no API key, headers or upstream error body fields.

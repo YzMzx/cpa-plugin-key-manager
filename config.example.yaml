@@ -35,3 +35,10 @@ plugins:
         # 时区：总览图表的分桶与“今日/昨日/近7日”边界按此时区计算。
         # 默认 Asia/Shanghai（UTC+8），与浏览器/服务器时区无关。
         timezone: "Asia/Shanghai"  # UTC+8；可改为其他 IANA 如 "UTC"、"Asia/Tokyo"
+
+      # 可选：新数据库的审计清理批次预算 seed；已有 SQLite 运行设置优先。
+      # 这只限制每批工作量，不改变删除范围，热修改无需 ack_prune。
+      audit:
+        cleanup_batch_max_records: 1000  # 整数，范围 1..5000 条
+        cleanup_batch_max_bytes: 33554432  # 字节整数，16 MiB..128 MiB，默认 32 MiB
+        # 预览固定预算；执行时只允许降低，不允许超过预览预算。

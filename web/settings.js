@@ -7,17 +7,19 @@
  const FIELDS=[
   ["audit.enabled","settingAuditEnabled","bool"],["audit.retention_days","settingAuditRetention","int",1,90],["audit.max_records","settingAuditRecords","int",1,100000],
   ["audit.max_body_bytes","settingAuditBodyMiB","mib",256,10*MIB],["audit.max_total_bytes","settingAuditTotalMiB","mib",MIB,10240*MIB],
+  ["audit.cleanup_batch_max_records","settingCleanupBatchRecords","int",1,5000],["audit.cleanup_batch_max_bytes","settingCleanupBatchMiB","mib",16*MIB,128*MIB],
   ["storage.flush_interval_seconds","settingFlushSeconds","int",1,3600],["storage.ledger_retention_days","settingLedgerRetention","int",1,3650],
   ["storage.timezone","settingTimezone","timezone"],["storage.pricing_cache_file","settingCacheFile","path"],
   ["pricing.sync_url","settingPricingURL","url"],["pricing.sync_interval_hours","settingPricingHours","int",1,720],["pricing.http_timeout_seconds","settingPricingTimeout","int",1,300],
   ["pricing.auto_inject_include_usage","settingIncludeUsage","bool"]
  ];
+ const cleanupPath=path=>path.startsWith("audit.cleanup_batch_");
  const get=(v,path)=>path.split(".").reduce((value,key)=>value&&value[key],v);
  function put(v,path,value){const [group,key]=path.split(".");v[group][key]=value;}
  function validateSettings(value){
   if(!object(value)||!["audit","storage","pricing"].every(g=>object(value[g])))throw new Error("配置响应格式无效");
   const result={audit:{},storage:{},pricing:{}};
-  for(const [path,,kind,min,max]of FIELDS){const current=get(value,path);
+  for(const [path,,kind,min,max]of FIELDS){const current=get(value,path);if(cleanupPath(path)&&current===undefined)continue;
    if(kind==="bool"){if(typeof current!=="boolean")throw new Error("配置布尔值无效："+path);}
    else if(kind==="int"||kind==="mib"){if(!Number.isSafeInteger(current)||current<min||current>max)throw new Error("配置整数或范围无效："+path);}
    else if(typeof current!=="string"||!current.trim()||current.length>4096||/[\u0000-\u001f\u007f]/.test(current))throw new Error("配置文本无效："+path);
@@ -27,7 +29,8 @@
   }
   return result;
  }
- function validatePayload(value){if(!object(value)||!Number.isSafeInteger(value.rules_revision)||value.rules_revision<0)throw new Error("配置版本响应无效");return {settings:validateSettings(value.settings),rules_revision:value.rules_revision,bootstrap:bootstrapShape(value.bootstrap),apply_status:object(value.apply_status)?{ok:value.apply_status.ok===true,error:typeof value.apply_status.error==="string"?value.apply_status.error:""}:null,warning:typeof value.warning==="string"?value.warning:""};}
+ function validateLimits(value){const limits={audit:{}};for(const[path,,,min,max]of FIELDS){if(!cleanupPath(path))continue;const provided=get(value,path);if(provided===undefined){put(limits,path,[min,max]);continue;}if(!Array.isArray(provided)||provided.length!==2||!provided.every(Number.isSafeInteger)||provided[0]<min||provided[1]>max||provided[0]>provided[1])throw new Error("清理批次限制响应无效");put(limits,path,provided.slice());}return limits;}
+ function validatePayload(value){if(!object(value)||!Number.isSafeInteger(value.rules_revision)||value.rules_revision<0)throw new Error("配置版本响应无效");return {settings:validateSettings(value.settings),rules_revision:value.rules_revision,limits:validateLimits(value.limits),bootstrap:bootstrapShape(value.bootstrap),apply_status:object(value.apply_status)?{ok:value.apply_status.ok===true,error:typeof value.apply_status.error==="string"?value.apply_status.error:""}:null,warning:typeof value.warning==="string"?value.warning:""};}
  function needsPrune(before,after){return ["audit.retention_days","audit.max_records","audit.max_total_bytes","storage.ledger_retention_days"].some(path=>get(after,path)<get(before,path));}
  function bootstrapShape(value){
   if(!object(value))return null;
@@ -37,22 +40,24 @@
   return {effective,configured,file_revision:typeof value.file_revision==="string"?value.file_revision:"",db_path_locked_by_env:value.db_path_locked_by_env===true,available:value.available===true};
  }
  function create({document:doc,request,gate,isAuthenticated,onSaved=async()=>{},navigate=()=>{}}){
-  let active=false,baseline=null,draft=null,revision=null,dirty=false,saving=false,bootstrap=null,bootstrapDirty=false,bootstrapSaving=false;
+  let active=false,baseline=null,draft=null,revision=null,dirty=false,saving=false,bootstrap=null,bootstrapDirty=false,bootstrapSaving=false,limits=validateLimits();
   const el=id=>doc.getElementById(id),set=(id,value)=>{const n=el(id);if(n)n.textContent=value;};
   const message=(text,error=false)=>{set("settingsMessage",text);el("settingsMessage").style.color=error?"var(--error-color)":"var(--text-secondary)";};
   const show=(id,yes)=>{if(yes)el(id).classList.remove("hidden");else el(id).classList.add("hidden");};
-  function paintForm(settings){for(const[path,id,kind]of FIELDS){const value=get(settings,path);if(kind==="bool")el(id).checked=value;else el(id).value=String(kind==="mib"?value/MIB:value);}}
+  function paintForm(settings){for(const[path,id,kind]of FIELDS){const value=get(settings,path);if(cleanupPath(path)){const bounds=get(limits,path);el(id).min=String(kind==="mib"?bounds[0]/MIB:bounds[0]);el(id).max=String(kind==="mib"?bounds[1]/MIB:bounds[1]);if(value===undefined){el(id).value="";continue;}}if(kind==="bool")el(id).checked=value;else el(id).value=String(kind==="mib"?value/MIB:value);}}
   function readForm(){
    const next={audit:{},storage:{},pricing:{}};
-   for(const[path,id,kind]of FIELDS){let value;if(kind==="bool")value=!!el(id).checked;else if(kind==="int"||kind==="mib"){const raw=el(id).value.trim();if(!raw)throw new Error("请填写所有数值设置");value=Number(raw);if(!Number.isFinite(value))throw new Error("数值必须是有限数字");if(kind==="mib")value*=MIB;}else value=el(id).value.trim();put(next,path,value);}
-   return validateSettings(next);
+   for(const[path,id,kind]of FIELDS){if(cleanupPath(path)&&get(baseline,path)===undefined)continue;let value;if(kind==="bool")value=!!el(id).checked;else if(kind==="int"||kind==="mib"){const raw=el(id).value.trim();if(!raw)throw new Error("请填写所有数值设置");value=Number(raw);if(!Number.isFinite(value))throw new Error("数值必须是有限数字");if(kind==="mib")value*=MIB;}else value=el(id).value.trim();put(next,path,value);}
+   const checked=validateSettings(next);for(const[path]of FIELDS){if(!cleanupPath(path)||get(checked,path)===undefined)continue;const bounds=get(limits,path),value=get(checked,path);if(value<bounds[0]||value>bounds[1])throw new Error("清理批次设置超出服务端 limits 范围");}return checked;
   }
   function updateControls(){
    el("settingsSave").disabled=saving||!baseline||!dirty;el("settingsDiscard").disabled=saving||!baseline||!dirty;
    set("settingsDirtyState",!baseline?"尚未读取":saving?"正在保存…":dirty?"有未保存修改":"所有修改已保存");
    let prune=false;try{if(baseline)prune=needsPrune(baseline,readForm());}catch(_){}
    show("settingsPruneWarning",prune);if(!prune)el("settingsAcknowledgePrune").checked=false;
-   for(const[,id]of FIELDS)el(id).disabled=saving||!baseline;
+   for(const[path,id]of FIELDS)el(id).disabled=saving||!baseline||(cleanupPath(path)&&get(baseline,path)===undefined);
+   const records=baseline&&get(baseline,"audit.cleanup_batch_max_records"),bytes=baseline&&get(baseline,"audit.cleanup_batch_max_bytes");
+   set("settingsCleanupBatchStatus",!baseline?"尚未读取服务端清理批次设置。":records===undefined||bytes===undefined?"当前后端不支持全部清理批次设置；缺失字段已禁用，不会用默认值代替服务端值。":"服务端已保存批次：最多 "+records+" 条 / "+(bytes/MIB)+" MiB。草稿不代表生效；新任务以预览返回的限制为准，现有快照不扩大。");
   }
   function changed(){if(!baseline)return;dirty=true;draft=null;try{draft=readForm();dirty=JSON.stringify(draft)!==JSON.stringify(baseline);}catch(_){}el("settingsAcknowledgePrune").checked=false;updateControls();}
   function renderBootstrap(value,force=false){
@@ -72,7 +77,7 @@
    if(!active||!isAuthenticated())return;if((dirty||bootstrapDirty)&&!force){message("保留未保存草稿；如需服务器最新值，请先放弃修改再重新加载。");return;}
    const ticket=gate.begin("settings-read");el("settingsReload").disabled=true;message("正在读取统一配置…");
    try{const payload=validatePayload(await request(BASE,{method:"GET",signal:ticket.signal}));if(!ticket.current()||!active||!isAuthenticated())return;
-    if((dirty||bootstrapDirty)&&!force){message("读取期间产生的未保存草稿已保留。");return;}baseline=clone(payload.settings);draft=clone(payload.settings);revision=payload.rules_revision;dirty=false;paintForm(draft);renderBootstrap(payload.bootstrap,force);el("settingsAcknowledgePrune").checked=false;message("配置已读取。常规配置保存后热应用，启动配置需重载或重启。");updateControls();
+    if((dirty||bootstrapDirty)&&!force){message("读取期间产生的未保存草稿已保留。");return;}limits=payload.limits;baseline=clone(payload.settings);draft=clone(payload.settings);revision=payload.rules_revision;dirty=false;paintForm(draft);renderBootstrap(payload.bootstrap,force);el("settingsAcknowledgePrune").checked=false;message("配置已读取。常规配置保存后热应用，启动配置需重载或重启。");updateControls();
    }catch(error){if(ticket.current()&&active&&isAuthenticated()&&error.name!=="AbortError")message("配置读取失败："+error.message,true);}finally{if(ticket.current())el("settingsReload").disabled=false;ticket.finish();}
   }
   async function save(){
@@ -80,7 +85,7 @@
    if(needsPrune(baseline,next)&&!el("settingsAcknowledgePrune").checked){message("降低保留或容量设置可能清理历史数据，请先勾选确认。",true);return;}
    saving=true;updateControls();const ticket=gate.begin("settings-save");message("正在保存热配置…");
    try{const payload=await request(BASE,{method:"PUT",headers:{"X-Key-Guard-Revision":String(revision)},body:JSON.stringify({settings:next,expected_revision:revision,ack_prune:!!el("settingsAcknowledgePrune").checked}),signal:ticket.signal});
-    if(!ticket.current()||!active||!isAuthenticated())return;if(payload.ok!==true)throw new Error("服务器未确认配置保存成功");const checked=validatePayload(payload);baseline=clone(checked.settings);draft=clone(checked.settings);revision=checked.rules_revision;dirty=false;paintForm(draft);el("settingsAcknowledgePrune").checked=false;renderBootstrap(checked.bootstrap);message("热配置已保存。"+(checked.apply_status&&checked.apply_status.ok===false?" 应用尚未完成，请刷新检查状态。":""));
+    if(!ticket.current()||!active||!isAuthenticated())return;if(payload.ok!==true)throw new Error("服务器未确认配置保存成功");const checked=validatePayload(payload);limits=checked.limits;baseline=clone(checked.settings);draft=clone(checked.settings);revision=checked.rules_revision;dirty=false;paintForm(draft);el("settingsAcknowledgePrune").checked=false;renderBootstrap(checked.bootstrap);message("热配置已保存。"+(checked.apply_status&&checked.apply_status.ok===false?" 应用尚未完成，请刷新检查状态。":""));
     try{await onSaved(checked);if(ticket.current()&&active&&isAuthenticated())message(checked.apply_status&&checked.apply_status.ok===false?"配置已保存，但热应用未完成，请刷新检查。":"热配置已保存，页面数据已同步。"+(checked.warning?" "+String(checked.warning):""),!!(checked.apply_status&&checked.apply_status.ok===false));}catch(_){if(ticket.current()&&active&&isAuthenticated())message("热配置已保存，但页面刷新失败；请稍后刷新，不要重复保存。",true);}
    }catch(error){if(ticket.current()&&active&&isAuthenticated()&&error.name!=="AbortError")message(error.status===409?"配置已被其它会话更新，草稿已保留。请先重新加载配置后再提交。":"配置未确认保存："+error.message,true);}finally{if(ticket.current()){saving=false;if(active&&isAuthenticated())updateControls();}ticket.finish();}
   }
@@ -99,7 +104,7 @@
   }
   function discard(){if(saving||bootstrapSaving)return;dirty=false;bootstrapDirty=false;if(baseline){draft=clone(baseline);paintForm(draft);}el("settingsAcknowledgePrune").checked=false;updateControls();return load(true);}
   function leave(){active=false;gate.cancel("settings-read");gate.cancel("settings-save");gate.cancel("settings-bootstrap-save");saving=false;bootstrapSaving=false;}
-  function lock(){leave();baseline=null;draft=null;revision=null;dirty=false;bootstrap=null;bootstrapDirty=false;for(const[,id,kind]of FIELDS){if(kind==="bool")el(id).checked=false;else el(id).value="";}for(const id of ["settingBootstrapPriority","settingBootstrapDB"])el(id).value="";for(const id of ["settingBootstrapEnabled","settingsAcknowledgeRestart","settingsAcknowledgeDBChange","settingsAcknowledgePrune"])el(id).checked=false;el("settingsBootstrap").replaceChildren();set("settingsBootstrapMessage","");message("需要管理员授权后读取配置。");updateControls();el("settingsBootstrapSave").disabled=true;}
+  function lock(){leave();baseline=null;draft=null;revision=null;limits=validateLimits();dirty=false;bootstrap=null;bootstrapDirty=false;for(const[,id,kind]of FIELDS){if(kind==="bool")el(id).checked=false;else el(id).value="";}for(const id of ["settingBootstrapPriority","settingBootstrapDB"])el(id).value="";for(const id of ["settingBootstrapEnabled","settingsAcknowledgeRestart","settingsAcknowledgeDBChange","settingsAcknowledgePrune"])el(id).checked=false;el("settingsBootstrap").replaceChildren();set("settingsBootstrapMessage","");message("需要管理员授权后读取配置。");updateControls();el("settingsBootstrapSave").disabled=true;}
   function enter(){active=true;updateControls();return load();}
   for(const[,id]of FIELDS){el(id).addEventListener("input",changed);el(id).addEventListener("change",changed);}
   el("settingsForm").addEventListener("submit",event=>{event.preventDefault();save();});el("settingsReload").addEventListener("click",()=>load());el("settingsDiscard").addEventListener("click",discard);
