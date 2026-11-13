@@ -230,3 +230,83 @@ func TestReleaseArchivesIncludeBackgroundCleanupGuide(t *testing.T) {
 		t.Fatal("cleanup task guide must be copied and included in zip/tar archives")
 	}
 }
+func TestReleaseRecoveryPinsProvenanceAndUsesIntelRunner(t *testing.T) {
+	raw, err := os.ReadFile(".github/workflows/release-recovery.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var w struct {
+		Permissions map[string]string `yaml:"permissions"`
+		Jobs        map[string]struct {
+			RunsOn string `yaml:"runs-on"`
+			workflowJob
+		} `yaml:"jobs"`
+	}
+	// Parse both ordinary workflow jobs and runner labels independently.
+	var tree map[string]any
+	if err := yaml.Unmarshal(raw, &tree); err != nil {
+		t.Fatal(err)
+	}
+	if err := yaml.Unmarshal(raw, &w); err != nil {
+		t.Fatal(err)
+	}
+	if w.Permissions["contents"] != "read" || w.Permissions["actions"] != "read" {
+		t.Fatal("recovery default permissions must be read-only")
+	}
+	jobs := tree["jobs"].(map[string]any)
+	if jobs["build_intel"].(map[string]any)["runs-on"] != "macos-15-intel" {
+		t.Fatal("recovery must use explicit Intel pool")
+	}
+	// workflowJob's fields are not YAML-inline through embedding; inspect maps.
+	validate := jobs["validate"].(map[string]any)
+	steps := validate["steps"].([]any)
+	source := string(raw)
+	for _, guard := range []string{"run.workflow_id !== workflow.id", "run.head_sha !== process.env.PLUGIN_SHA", "run.head_branch !== process.env.RELEASE_TAG", "run.status !== 'completed'", "intel[0].steps.length !== 0", "intel[0].runner_name", "Unit Tests", "artifacts.length !== names.length", "getReleaseByTag", "refs/tags/$TAG^{commit}", "v$VERSION", "681ce41b6e44c45b15b79378b003909d6ba29e68"} {
+		if !strings.Contains(source, guard) {
+			t.Fatalf("missing recovery guard: %s", guard)
+		}
+	}
+	if len(steps) < 2 {
+		t.Fatal("missing provenance validation")
+	}
+	if strings.Contains(source, "run: ${{") {
+		t.Fatal("inputs must not be interpolated into shell")
+	}
+	build := jobs["build_intel"].(map[string]any)
+	buildSteps := build["steps"].([]any)
+	pinnedPlugin, pinnedHost := false, false
+	for _, entry := range buildSteps {
+		step := entry.(map[string]any)
+		with, ok := step["with"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if with["path"] == "cpa-plugin-key-manager" {
+			pinnedPlugin = with["ref"] == "${{ needs.validate.outputs.plugin_sha }}"
+		}
+		if with["path"] == "CLIProxyAPI" {
+			pinnedHost = with["ref"] == "${{ needs.validate.outputs.host_sha }}"
+		}
+	}
+	if !pinnedPlugin || !pinnedHost {
+		t.Fatal("recovery build inputs must be immutable")
+	}
+	publish := jobs["publish"].(map[string]any)
+	permissions := publish["permissions"].(map[string]any)
+	if permissions["contents"] != "write" {
+		t.Fatal("only publish job may write releases")
+	}
+	for name, entry := range jobs {
+		if name == "publish" {
+			continue
+		}
+		if p, ok := entry.(map[string]any)["permissions"].(map[string]any); ok && p["contents"] == "write" {
+			t.Fatal("nonpublishing job writes contents")
+		}
+	}
+	for _, guard := range []string{"assert {p.name for p in root.iterdir()}==expected", "Packed binary differs", "Bundled source differs", "make_latest:", "run-id: ${{ needs.validate.outputs.source_run_id }}"} {
+		if !strings.Contains(source, guard) {
+			t.Fatalf("missing artifact recovery verification: %s", guard)
+		}
+	}
+}

@@ -146,7 +146,7 @@ jobs:
             cc: clang
             cgo_flags: "-arch arm64"
           - target: darwin-amd64
-            os: macos-latest
+            os: macos-15-intel
             goos: darwin
             goarch: amd64
             ext: dylib

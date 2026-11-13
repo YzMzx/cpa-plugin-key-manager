@@ -1,0 +1,184 @@
+name: Recover macOS Intel Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: Existing immutable release tag
+        required: true
+        type: string
+      source_run_id:
+        description: Stopped release.yml run with successful tests and four platform artifacts
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      plugin_sha: ${{ steps.resolve.outputs.plugin_sha }}
+      host_sha: ${{ steps.provenance.outputs.host_sha }}
+      source_run_id: ${{ steps.provenance.outputs.source_run_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Resolve immutable tag and source version
+        id: resolve
+        shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.tag_name }}
+        run: |
+          set -euo pipefail
+          TAG="$INPUT_TAG"
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]] || exit 1
+          git show-ref --verify --quiet "refs/tags/$TAG"
+          SHA="$(git rev-parse --verify "refs/tags/$TAG^{commit}")"
+          VERSION="$(git show "$SHA:internal/plugin/plugin.go" | sed -nE 's/^[[:space:]]*PluginVersion[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p')"
+          [ "$TAG" = "v$VERSION" ]
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "plugin_sha=$SHA" >> "$GITHUB_OUTPUT"
+      - name: Verify source run tests artifacts and pinned host
+        id: provenance
+        uses: actions/github-script@v7
+        env:
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          PLUGIN_SHA: ${{ steps.resolve.outputs.plugin_sha }}
+          RELEASE_TAG: ${{ steps.resolve.outputs.tag }}
+        with:
+          script: |
+            const {owner, repo} = context.repo;
+            const raw = process.env.SOURCE_RUN_ID;
+            if (!/^[1-9][0-9]*$/.test(raw) || !Number.isSafeInteger(Number(raw))) throw new Error('Invalid source run');
+            const run_id = Number(raw);
+            const {data: run} = await github.rest.actions.getWorkflowRun({owner, repo, run_id});
+            const {data: workflow} = await github.rest.actions.getWorkflow({owner, repo, workflow_id: 'release.yml'});
+            if (run.workflow_id !== workflow.id || run.event !== 'push' || run.head_sha !== process.env.PLUGIN_SHA || run.head_branch !== process.env.RELEASE_TAG || run.status !== 'completed' || !['cancelled','failure'].includes(run.conclusion)) throw new Error('Source run is not a stopped matching release');
+            const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {owner, repo, run_id, filter: 'latest', per_page: 100});
+            for (const name of ['Resolve immutable release inputs','Unit Tests','Build (linux-amd64)','Build (linux-arm64)','Build (windows-amd64)','Build (darwin-arm64)']) {
+              if (!jobs.some(j => j.name === name && j.status === 'completed' && j.conclusion === 'success')) throw new Error('Missing successful gate: ' + name);
+            }
+            const intel = jobs.filter(j => j.name === 'Build (darwin-amd64)');
+            if (intel.length !== 1 || !['cancelled','failure'].includes(intel[0].conclusion) || intel[0].steps.length !== 0 || intel[0].runner_name) throw new Error('Only a never-acquired Intel runner can be recovered');
+            const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {owner, repo, run_id, per_page: 100});
+            const names = ['release-linux-amd64','release-linux-arm64','release-windows-amd64','release-darwin-arm64'];
+            if (artifacts.length !== names.length || names.some(n => artifacts.filter(a => a.name === n && !a.expired).length !== 1)) throw new Error('Source artifact set differs');
+            const {data: file} = await github.rest.repos.getContent({owner, repo, path: '.github/workflows/release.yml', ref: process.env.PLUGIN_SHA});
+            const source = Buffer.from(file.content, 'base64').toString('utf8');
+            const host = '681ce41b6e44c45b15b79378b003909d6ba29e68';
+            if (!source.includes('echo "host_sha=' + host + '"')) throw new Error('Unexpected pinned host');
+            try { await github.rest.repos.getReleaseByTag({owner, repo, tag: process.env.RELEASE_TAG}); throw new Error('Release already exists'); } catch (error) { if (error.status !== 404) throw error; }
+            core.setOutput('host_sha', host);
+            core.setOutput('source_run_id', String(run_id));
+            core.info(JSON.stringify({plugin_sha: run.head_sha, source_run_id: run_id, artifacts: artifacts.map(a => ({id:a.id,name:a.name,digest:a.digest}))}));
+
+  build_intel:
+    name: Recover darwin-amd64 on Intel
+    needs: validate
+    runs-on: macos-15-intel
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: cpa-plugin-key-manager
+          ref: ${{ needs.validate.outputs.plugin_sha }}
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: router-for-me/CLIProxyAPI
+          path: CLIProxyAPI
+          ref: ${{ needs.validate.outputs.host_sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: CLIProxyAPI/go.mod
+          cache: true
+          cache-dependency-path: cpa-plugin-key-manager/go.sum
+      - name: Build exact tagged source and package
+        working-directory: cpa-plugin-key-manager
+        shell: bash
+        env:
+          CGO_ENABLED: "1"
+          GOOS: darwin
+          GOARCH: amd64
+          CC: clang
+          CGO_CFLAGS: "-arch x86_64"
+          CGO_LDFLAGS: "-arch x86_64"
+        run: |
+          set -euo pipefail
+          [ "$(uname -m)" = x86_64 ]
+          mkdir -p dist/stage dist/out
+          go build -trimpath -ldflags="-s -w" -buildmode=c-shared -o dist/out/cpa-plugin-key-manager-darwin-amd64.dylib .
+          rm -f dist/out/cpa-plugin-key-manager-darwin-amd64.h
+          cp dist/out/cpa-plugin-key-manager-darwin-amd64.dylib dist/stage/cpa-plugin-key-manager.dylib
+          cp config.example.yaml README.md AUDIT_FIXES.md CLEANUP_JOBS.md install.sh install.ps1 dist/stage/
+          cp -R integrations dist/stage/
+          tar -C dist/stage -czf dist/out/cpa-plugin-key-manager-darwin-amd64.tar.gz cpa-plugin-key-manager.dylib config.example.yaml README.md AUDIT_FIXES.md CLEANUP_JOBS.md install.sh install.ps1 integrations
+      - uses: actions/upload-artifact@v4
+        with:
+          name: recovered-darwin-amd64
+          path: cpa-plugin-key-manager/dist/out/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish verified recovered release
+    needs: [validate, build_intel]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.plugin_sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.validate.outputs.source_run_id }}
+          pattern: release-*
+          path: artifacts
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: recovered-darwin-amd64
+          path: artifacts
+      - name: Verify exact file set archives and generate hashes
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib,pathlib,tarfile,zipfile
+          root=pathlib.Path('artifacts'); platforms={'linux-amd64':'so','linux-arm64':'so','windows-amd64':'dll','darwin-arm64':'dylib','darwin-amd64':'dylib'}
+          expected=set()
+          for p,e in platforms.items(): expected.update([f'cpa-plugin-key-manager-{p}.{e}',f'cpa-plugin-key-manager-{p}.'+('zip' if e=='dll' else 'tar.gz')])
+          assert {p.name for p in root.iterdir()}==expected,'Unexpected release asset set'
+          for p,e in platforms.items():
+            lib=f'cpa-plugin-key-manager.{e}'; archive=root/(f'cpa-plugin-key-manager-{p}.'+('zip' if e=='dll' else 'tar.gz'))
+            required={lib,'config.example.yaml','README.md','AUDIT_FIXES.md','CLEANUP_JOBS.md','install.sh','install.ps1','integrations/README.md','integrations/cpa-management-auth-bridge.patch'}
+            if e=='dll':
+              with zipfile.ZipFile(archive) as z: names=set(z.namelist()); blobs={n:z.read(n) for n in required}
+            else:
+              with tarfile.open(archive) as z: names=set(z.getnames()); blobs={n:z.extractfile(n).read() for n in required}
+            assert all(not pathlib.PurePosixPath(n).is_absolute() and '..' not in pathlib.PurePosixPath(n).parts for n in names),'Unsafe archive paths'
+            assert blobs[lib]==(root/f'cpa-plugin-key-manager-{p}.{e}').read_bytes(),'Packed binary differs'
+            for n in required-{lib}: assert blobs[n].replace(b'\r\n',b'\n')==pathlib.Path(n).read_bytes().replace(b'\r\n',b'\n'),'Bundled source differs: '+n
+          (root/'SHA256SUMS.txt').write_text(''.join(hashlib.sha256((root/n).read_bytes()).hexdigest()+'  '+n+'\n' for n in sorted(expected)))
+          print('Verified all ten payloads, five archives and tagged source documents')
+          PY
+      - name: Publish only the validated immutable tag
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.validate.outputs.tag }}
+          name: Release ${{ needs.validate.outputs.tag }}
+          generate_release_notes: true
+          prerelease: ${{ contains(needs.validate.outputs.tag, '-') }}
+          make_latest: ${{ contains(needs.validate.outputs.tag, '-') && 'false' || 'true' }}
+          files: |
+            artifacts/cpa-plugin-key-manager-*
+            artifacts/SHA256SUMS.txt
