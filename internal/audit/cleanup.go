@@ -45,6 +45,13 @@ type CleanupResult struct {
 
 func safeExpireNow() time.Time { return time.Now().UTC() }
 
+// Pin metadata reads to the expression index: SQLite may otherwise choose a table
+// scan and load every retained body just to compute its byte length. The indexed
+// expression must match the migration exactly, including the BLOB cast for UTF-8.
+const auditStorageMetadata = "client_request_audit INDEXED BY client_request_audit_storage_idx"
+const auditStorageQuery = `SELECT COUNT(*),COALESCE(SUM(CASE WHEN started_at>=? THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN started_at<? THEN 1 ELSE 0 END),0),COALESCE(SUM(logical_bytes),0),COALESCE(SUM(length(CAST(request_body AS BLOB))),0) FROM ` + auditStorageMetadata
+const auditCleanupPreviewQuery = "SELECT id,logical_bytes,length(CAST(request_body AS BLOB)) FROM " + auditStorageMetadata + " WHERE "
+
 func (s *Store) Storage(ctx context.Context) (StorageUsage, error) {
 	usage := StorageUsage{CapacityMode: "logical_payload_not_physical_file", PhysicalSizeScope: "shared_sqlite_database_and_wal", Warning: "Audit logical deletion may not shrink the shared SQLite/WAL files and does not guarantee secure erasure."}
 	if err := s.ready(); err != nil {
@@ -55,7 +62,7 @@ func (s *Store) Storage(ctx context.Context) (StorageUsage, error) {
 	usage.MaxTotalBytes = s.cfg.MaxTotalBytes
 	usage.RetentionDays = s.cfg.RetentionDays
 	cutoff := s.cutoff(safeExpireNow())
-	err := s.db.Conn().QueryRowContext(ctx, `SELECT COUNT(*),COALESCE(SUM(CASE WHEN started_at>=? THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN started_at<? THEN 1 ELSE 0 END),0),COALESCE(SUM(logical_bytes),0),COALESCE(SUM(length(CAST(request_body AS BLOB))),0) FROM client_request_audit`, cutoff, cutoff).Scan(&usage.Records, &usage.ActiveRecords, &usage.ExpiredRecords, &usage.LogicalBytes, &usage.RequestBodyBytes)
+	err := s.db.Conn().QueryRowContext(ctx, auditStorageQuery, cutoff, cutoff).Scan(&usage.Records, &usage.ActiveRecords, &usage.ExpiredRecords, &usage.LogicalBytes, &usage.RequestBodyBytes)
 	if err != nil {
 		return StorageUsage{}, s.fail(ErrUnavailable)
 	}
@@ -111,7 +118,7 @@ func (s *Store) PreviewCleanup(ctx context.Context, scope string, before time.Ti
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	args = append(args, maxCleanupRecords+1)
-	rows, err := s.db.Conn().QueryContext(ctx, "SELECT id,logical_bytes,length(CAST(request_body AS BLOB)) FROM client_request_audit WHERE "+where+" ORDER BY started_at,id LIMIT ?", args...)
+	rows, err := s.db.Conn().QueryContext(ctx, auditCleanupPreviewQuery+where+" ORDER BY started_at,id LIMIT ?", args...)
 	if err != nil {
 		return CleanupPlan{}, s.fail(ErrUnavailable)
 	}

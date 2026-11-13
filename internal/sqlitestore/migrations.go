@@ -164,6 +164,15 @@ var migrations = []migration{
 			`DROP INDEX IF EXISTS client_request_audit_ip_idx`,
 		},
 	},
+	{
+		version: 4,
+		name:    "audit storage metadata index",
+		stmts: []string{
+			// Cache UTF-8 body lengths in an expression index. Storage statistics and
+			// cleanup previews must not read up to 1 GiB of retained request bodies.
+			`CREATE INDEX IF NOT EXISTS client_request_audit_storage_idx ON client_request_audit(started_at, id, logical_bytes, length(CAST(request_body AS BLOB)))`,
+		},
+	},
 }
 
 // Migrate applies every pending migration inside its own transaction.
