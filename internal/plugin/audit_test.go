@@ -409,6 +409,10 @@ func TestAuditNoLongerCapturesOrExposesNetworkMetadata(t *testing.T) {
 
 func TestAuditDenseConversationAndToolDefinitionsRemainFullyReadable(t *testing.T) {
 	m := transactionManager(t)
+	// This verifies full lexical/element retention, not CPU speed under race.
+	// The real elapsed-time omission is covered by the separate advancing-clock test.
+	fixed := time.Now()
+	m.auditBodies = audit.NewBodyCaptureBudgetWithClock(func() time.Time { return fixed })
 	messages := make([]map[string]any, 6000)
 	for i := range messages {
 		messages[i] = map[string]any{"role": "user", "content": "正常中文对话内容", "name": "speaker"}

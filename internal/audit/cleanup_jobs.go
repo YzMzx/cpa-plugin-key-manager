@@ -181,13 +181,8 @@ func (s *Store) previewCleanupJob(ctx context.Context, scope, before, principalH
 	if err := cleanupGC(ctx, tx, now.UnixMilli()); err != nil {
 		return preview, ErrUnavailable
 	}
-	var count, retained int
-	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*),COALESCE(SUM(CASE WHEN expires_at>? THEN 1 ELSE 0 END),0) FROM audit_cleanup_previews", now.UnixMilli()).Scan(&retained, &count); err != nil {
-		return preview, ErrUnavailable
-	}
-	// Active work may prevent idle collection: bound expired descriptors too.
-	if count >= 8 || retained >= 16 {
-		return preview, ErrCleanupBusy
+	if err := checkCleanupPreviewCapacity(ctx, tx, now.UnixMilli()); err != nil {
+		return preview, err
 	}
 	// Preflight only covering-index metadata before writing a potentially large
 	// snapshot. Exact-bound+1 rejection needs no 100,001-item insert/rollback.
@@ -594,4 +589,18 @@ func (s *Store) RunCleanupJobBatch(ctx context.Context, limits CleanupBatchLimit
 }
 func cleanupPlaceholders(count int) string {
 	return strings.TrimSuffix(strings.Repeat("?,", count), ",")
+}
+
+// Capacity validation is independent of collection throughput. An expired
+// descriptor may still have items awaiting bounded GC, but consumes only the
+// retained-descriptor cap, not one of the eight live confirmation slots.
+func checkCleanupPreviewCapacity(ctx context.Context, tx *sql.Tx, now int64) error {
+	var live, retained int
+	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*),COALESCE(SUM(CASE WHEN expires_at>? THEN 1 ELSE 0 END),0) FROM audit_cleanup_previews", now).Scan(&retained, &live); err != nil {
+		return ErrUnavailable
+	}
+	if live >= 8 || retained >= 16 {
+		return ErrCleanupBusy
+	}
+	return nil
 }

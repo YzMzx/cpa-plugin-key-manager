@@ -74,7 +74,9 @@ func TestCleanupJobExpiredPreviewBacklogDoesNotUseValidPreviewSlots(t *testing.T
 	db, _ := openAuditDB(t)
 	s := NewStore(db, Config{})
 	ctx := context.Background()
-	cleanupSeed(t, s, 6001, 1, "")
+	// Slot accounting is a logical contract, not a 5000-item GC throughput test.
+	// Bounded partial GC is covered independently above.
+	cleanupSeed(t, s, 31, 1, "")
 	p, err := s.PreviewCleanupJob(ctx, "all", "", cleanupOwner, CleanupBatchLimits{})
 	if err != nil {
 		t.Fatal(err)
@@ -82,12 +84,22 @@ func TestCleanupJobExpiredPreviewBacklogDoesNotUseValidPreviewSlots(t *testing.T
 	if _, err := db.Conn().Exec("UPDATE audit_cleanup_previews SET expires_at=0 WHERE token_hash=?", cleanupDigest(p.Token)); err != nil {
 		t.Fatal(err)
 	}
-	// Simulate eight expired descriptors sharing a partly collected backlog.
+	// Simulate eight expired descriptors before the collector processes them.
 	for i := 0; i < 7; i++ {
 		hash := strings.Repeat(string(rune('b'+i)), 64)
 		if _, err := db.Conn().Exec("INSERT INTO audit_cleanup_previews SELECT ?,principal_hash,created_at,expires_at,scope,before_value,records,logical_bytes,body_bytes,batch_max_records,batch_max_bytes FROM audit_cleanup_previews LIMIT 1", hash); err != nil {
 			t.Fatal(err)
 		}
+	}
+	conn, tx, err := s.cleanupTransaction(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capacityErr := checkCleanupPreviewCapacity(ctx, tx, safeExpireNow().UnixMilli())
+	_ = tx.Rollback()
+	_ = conn.Close()
+	if capacityErr != nil {
+		t.Fatal("expired descriptors consumed live confirmation slots", capacityErr)
 	}
 	if _, err := s.PreviewCleanupJob(ctx, "all", "", cleanupOwner, CleanupBatchLimits{}); err != nil {
 		t.Fatal("expired previews blocked fresh confirmation", err)
