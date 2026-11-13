@@ -59,34 +59,50 @@ func invalidateHostConfigCache() {
 }
 
 func readHostConfigAPIKeysUncached(resolvedPath string) []string {
-	raw, err := os.ReadFile(resolvedPath)
-	if err != nil || len(raw) == 0 {
-		return nil
+	keys, _ := readHostConfigAPIKeysChecked(resolvedPath)
+	return keys
+}
+
+// A present access.api-keys is authoritative, including an explicit empty list.
+// The v8 top-level api-keys mapping contains upstream secrets, never client keys.
+func readHostConfigAPIKeysChecked(path string) ([]string, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
 	}
-	var root struct {
-		APIKeys []string `yaml:"api-keys"`
-		Access  struct {
-			APIKeys []string `yaml:"api-keys"`
-		} `yaml:"access"`
+	var root map[string]yaml.Node
+	if err := yaml.Unmarshal(raw, &root); err != nil || root == nil {
+		return nil, fmt.Errorf("invalid host client-key configuration")
 	}
-	if err := yaml.Unmarshal(raw, &root); err != nil {
-		return nil
-	}
-	seen := make(map[string]struct{})
-	out := make([]string, 0, len(root.APIKeys)+len(root.Access.APIKeys))
-	for _, list := range [][]string{root.APIKeys, root.Access.APIKeys} {
-		for _, item := range list {
-			k := strings.TrimSpace(item)
-			if k == "" {
-				continue
-			}
-			if _, ok := seen[k]; !ok {
-				seen[k] = struct{}{}
-				out = append(out, k)
-			}
+	var selected *yaml.Node
+	if access, ok := root["access"]; ok {
+		var fields map[string]yaml.Node
+		if access.Kind != yaml.MappingNode || access.Decode(&fields) != nil {
+			return nil, fmt.Errorf("invalid host access configuration")
+		}
+		if node, exists := fields["api-keys"]; exists {
+			selected = &node
 		}
 	}
-	return out
+	if selected == nil {
+		if node, ok := root["api-keys"]; ok && node.Kind != yaml.MappingNode {
+			selected = &node
+		}
+	}
+	if selected == nil {
+		return []string{}, nil
+	}
+	if selected.Kind != yaml.SequenceNode {
+		return nil, fmt.Errorf("host client keys must be a list")
+	}
+	keys := make([]string, 0, len(selected.Content))
+	for _, node := range selected.Content {
+		if node.Kind != yaml.ScalarNode || node.Tag != "!!str" {
+			return nil, fmt.Errorf("host client keys must be strings")
+		}
+		keys = append(keys, node.Value)
+	}
+	return dedupeKeys(keys), nil
 }
 
 // WriteHostConfigAPIKeys updates the global `api-keys` list in CLIProxyAPI's config.yaml on disk

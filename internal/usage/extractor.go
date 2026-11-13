@@ -29,10 +29,22 @@ type NormalizedUsage struct {
 	HasUsage            bool   `json:"has_usage"`
 	// Invalid preserves arithmetic errors through stream/host merging; never bill a normalized zero after overflow.
 	Invalid bool `json:"invalid,omitempty"`
+	// Preserve original input semantics: cached tokens refine an inclusive total,
+	// not an additional independent input bucket. Presence survives sparse events.
+	inputTotal          int64
+	inputPresent        bool
+	inputInclusive      bool
+	cacheReadPresent    bool
+	cacheWritePresent   bool
+	cacheWriteInclusive bool
+	inputSource         string
 }
 
 // RecomputeTotal recalculates TotalTokens from the four orthogonal token buckets.
 func (u *NormalizedUsage) RecomputeTotal() {
+	if u.Invalid {
+		u.HasUsage = true
+	}
 	if u.UncachedInputTokens < 0 {
 		u.UncachedInputTokens = 0
 	}
@@ -94,11 +106,12 @@ func MergeUsage(existing, update NormalizedUsage) NormalizedUsage {
 	if update.HasUsage {
 		merged.HasUsage = true
 	}
+	mergeInputEvidence(&merged, existing, update)
 	merged.RecomputeTotal()
 	return merged
 }
 
-// MergeMaxUsage merges two NormalizedUsage records by taking the maximum of each orthogonal bucket.
+// MergeMaxUsage merges cumulative evidence, reclassifying inclusive input when cache details arrive.
 // Used when reconciling interceptor-extracted usage with host UsageRecord.Detail across protocol translations.
 func MergeMaxUsage(a, b NormalizedUsage) NormalizedUsage {
 	out := a
@@ -127,6 +140,7 @@ func MergeMaxUsage(a, b NormalizedUsage) NormalizedUsage {
 	if a.HasUsage || b.HasUsage {
 		out.HasUsage = true
 	}
+	mergeInputEvidence(&out, a, b)
 	out.RecomputeTotal()
 	return out
 }
@@ -317,15 +331,17 @@ func isAnthropicUsageObject(root, usageNode gjson.Result, sourceFormat string) b
 // parseAnthropicUsageNode parses Claude's usage object where `input_tokens` is ALREADY uncached
 // and independent from `cache_read_input_tokens` and `cache_creation_input_tokens`.
 func parseAnthropicUsageNode(node gjson.Result) NormalizedUsage {
-	input := node.Get("input_tokens").Int()
-	output := node.Get("output_tokens").Int()
-	cacheRead := node.Get("cache_read_input_tokens").Int()
-	cacheWrite := node.Get("cache_creation_input_tokens").Int()
+	invalid := false
+	token := func(n gjson.Result) int64 { return strictTokenInteger(n, &invalid) }
+	input := token(node.Get("input_tokens"))
+	output := token(node.Get("output_tokens"))
+	cacheRead := token(node.Get("cache_read_input_tokens"))
+	cacheWrite := token(node.Get("cache_creation_input_tokens"))
 
 	var reasoning int64
 	for _, rPath := range []string{"output_tokens_details.thinking_tokens", "output_tokens_details.reasoning_tokens", "thinking_tokens"} {
 		if rNode := node.Get(rPath); rNode.Exists() {
-			reasoning = rNode.Int()
+			reasoning = token(rNode)
 			break
 		}
 	}
@@ -343,6 +359,12 @@ func parseAnthropicUsageNode(node gjson.Result) NormalizedUsage {
 		CacheWriteTokens:    maxInt64(0, cacheWrite),
 		HasUsage:            hasAny,
 	}
+	u.Invalid = invalid
+	u.inputPresent = node.Get("input_tokens").Exists()
+	u.inputTotal = maxInt64(0, input)
+	u.inputSource = "anthropic"
+	u.cacheReadPresent = node.Get("cache_read_input_tokens").Exists()
+	u.cacheWritePresent = node.Get("cache_creation_input_tokens").Exists()
 	u.RecomputeTotal()
 	return u
 }
@@ -351,27 +373,30 @@ func parseAnthropicUsageNode(node gjson.Result) NormalizedUsage {
 // and OpenAI Responses API (`input_tokens`/`output_tokens`), where `prompt_tokens`/`input_tokens`
 // includes `cached_tokens`.
 func parseOpenAIOrResponsesUsageNode(node gjson.Result) NormalizedUsage {
+	invalid := false
+	token := func(n gjson.Result) int64 { return strictTokenInteger(n, &invalid) }
 	var rawInput int64
 	hasInput := false
 	if n := node.Get("prompt_tokens"); n.Exists() {
-		rawInput = n.Int()
+		rawInput = token(n)
 		hasInput = true
 	} else if n := node.Get("input_tokens"); n.Exists() {
-		rawInput = n.Int()
+		rawInput = token(n)
 		hasInput = true
 	}
 
 	var output int64
 	hasOutput := false
 	if n := node.Get("completion_tokens"); n.Exists() {
-		output = n.Int()
+		output = token(n)
 		hasOutput = true
 	} else if n := node.Get("output_tokens"); n.Exists() {
-		output = n.Int()
+		output = token(n)
 		hasOutput = true
 	}
 
 	var cacheRead int64
+	hasCacheRead := false
 	for _, cPath := range []string{
 		"prompt_tokens_details.cached_tokens",
 		"input_tokens_details.cached_tokens",
@@ -379,12 +404,14 @@ func parseOpenAIOrResponsesUsageNode(node gjson.Result) NormalizedUsage {
 		"cached_tokens",
 	} {
 		if n := node.Get(cPath); n.Exists() {
-			cacheRead = n.Int()
+			cacheRead = token(n)
+			hasCacheRead = true
 			break
 		}
 	}
 
 	var cacheWrite int64
+	hasCacheWrite := false
 	for _, wPath := range []string{
 		"prompt_tokens_details.cache_write_tokens",
 		"prompt_tokens_details.cache_creation_tokens",
@@ -393,7 +420,8 @@ func parseOpenAIOrResponsesUsageNode(node gjson.Result) NormalizedUsage {
 		"cache_creation_input_tokens",
 	} {
 		if n := node.Get(wPath); n.Exists() {
-			cacheWrite = n.Int()
+			cacheWrite = token(n)
+			hasCacheWrite = true
 			break
 		}
 	}
@@ -405,12 +433,12 @@ func parseOpenAIOrResponsesUsageNode(node gjson.Result) NormalizedUsage {
 		"reasoning_tokens",
 	} {
 		if n := node.Get(rPath); n.Exists() {
-			reasoning = n.Int()
+			reasoning = token(n)
 			break
 		}
 	}
 
-	total := node.Get("total_tokens").Int()
+	total := token(node.Get("total_tokens"))
 	hasTotal := node.Get("total_tokens").Exists()
 
 	// In OpenAI Chat Completions & Responses API, prompt_tokens / input_tokens includes cached_tokens.
@@ -431,6 +459,10 @@ func parseOpenAIOrResponsesUsageNode(node gjson.Result) NormalizedUsage {
 		TotalTokens:         maxInt64(0, total),
 		HasUsage:            hasInput || hasOutput || cacheRead > 0 || cacheWrite > 0 || hasTotal,
 	}
+	u.Invalid = invalid
+	u.inputPresent, u.inputInclusive, u.inputTotal, u.inputSource = hasInput, true, maxInt64(0, rawInput), "openai"
+	u.cacheReadPresent, u.cacheWritePresent = hasCacheRead, hasCacheWrite
+	u.cacheWriteInclusive = node.Get("prompt_tokens_details.cache_write_tokens").Exists() || node.Get("input_tokens_details.cache_write_tokens").Exists()
 	u.RecomputeTotal()
 	return u
 }
@@ -439,17 +471,19 @@ func parseOpenAIOrResponsesUsageNode(node gjson.Result) NormalizedUsage {
 // In Gemini, `promptTokenCount` includes `cachedContentTokenCount`, and `thoughtsTokenCount`
 // is billed as output alongside `candidatesTokenCount`.
 func parseGeminiUsageNode(node gjson.Result) NormalizedUsage {
-	promptTokens := node.Get("promptTokenCount").Int()
-	toolPromptTokens := node.Get("toolUsePromptTokenCount").Int()
+	invalid := false
+	token := func(n gjson.Result) int64 { return strictTokenInteger(n, &invalid) }
+	promptTokens := token(node.Get("promptTokenCount"))
+	toolPromptTokens := token(node.Get("toolUsePromptTokenCount"))
 	rawInput, inputValid := checkedTokenSum(maxInt64(0, promptTokens), maxInt64(0, toolPromptTokens))
 	if !inputValid {
 		return NormalizedUsage{HasUsage: true, Invalid: true}
 	}
 
-	candidatesTokens := node.Get("candidatesTokenCount").Int()
-	thoughtsTokens := node.Get("thoughtsTokenCount").Int()
-	cachedTokens := node.Get("cachedContentTokenCount").Int()
-	totalTokens := node.Get("totalTokenCount").Int()
+	candidatesTokens := token(node.Get("candidatesTokenCount"))
+	thoughtsTokens := token(node.Get("thoughtsTokenCount"))
+	cachedTokens := token(node.Get("cachedContentTokenCount"))
+	totalTokens := token(node.Get("totalTokenCount"))
 
 	uncachedInput := rawInput
 	if cachedTokens > 0 && rawInput >= cachedTokens {
@@ -475,6 +509,9 @@ func parseGeminiUsageNode(node gjson.Result) NormalizedUsage {
 		TotalTokens:         maxInt64(0, totalTokens),
 		HasUsage:            hasAny,
 	}
+	u.Invalid = invalid
+	u.inputPresent, u.inputInclusive, u.inputTotal, u.inputSource = node.Get("promptTokenCount").Exists() || node.Get("toolUsePromptTokenCount").Exists(), true, rawInput, "gemini"
+	u.cacheReadPresent = node.Get("cachedContentTokenCount").Exists()
 	u.RecomputeTotal()
 	return u
 }
@@ -505,6 +542,9 @@ func NormalizeFromHostDetail(provider string, d pluginapi.UsageDetail) Normalize
 		CacheWriteTokens:    maxInt64(0, cacheWrite),
 		TotalTokens:         maxInt64(0, d.TotalTokens),
 	}
+	u.inputPresent, u.inputTotal, u.inputSource = d.InputTokens > 0, maxInt64(0, d.InputTokens), "host:"+provLower
+	u.inputInclusive = provLower != "claude" && provLower != "anthropic"
+	u.cacheReadPresent, u.cacheWritePresent = cacheRead > 0, cacheWrite > 0
 	u.RecomputeTotal()
 	return u
 }

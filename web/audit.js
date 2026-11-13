@@ -14,6 +14,7 @@
   const SAVED_BODY_STATES = new Set(["stored_raw", "stored_raw_media_filtered", "stored_raw_system_filtered", "stored_raw_system_media_filtered", "stored", "redacted", "captured", "stored_partial"]);
   const BODY_STATES = {
     empty: "无正文",
+    omitted_processing_limit: "未保存（处理超限）",
     omitted_input_limit: "未保存（超出限制）", omitted_output_limit: "未保存（超出限制）", omitted_size: "未保存（超出限制）", too_large: "未保存（超出限制）",
     omitted_depth_limit: "未保存（超出限制）", omitted_element_limit: "未保存（超出限制）", omitted_string_limit: "未保存（超出限制）", omitted_number_limit: "未保存（超出限制）", omitted_secret_limit: "未保存（超出限制）",
     omitted_encoding: "未保存（格式不支持）", omitted_non_json: "未保存（格式不支持）", omitted_non_container: "未保存（格式不支持）", omitted_unknown_schema: "未保存（格式不支持）", non_json: "未保存（格式不支持）",
@@ -94,7 +95,7 @@
     const partial = record.body_state === "stored_partial";
     const plaintext = ["stored_raw", "stored_raw_media_filtered", "stored_raw_system_filtered", "stored_raw_system_media_filtered"].includes(record.body_state) && !record.body_truncated;
     const accepted = SAVED_BODY_STATES.has(record.body_state) && (partial || !record.body_truncated);
-    const empty = { state: bodyStatus(record), info: "", json: record.body_state === "omitted_element_limit" ? "历史正文未保存，无法恢复。" : "没有可显示的请求正文。", retainedBytes: 0, completeness: "未保存" };
+    const empty = { state: bodyStatus(record), info: "", json: record.body_state === "omitted_processing_limit" ? "处理工作量或时间超限，请求正文已整段略过。" : record.body_state === "omitted_element_limit" ? "历史正文未保存，无法恢复。" : "没有可显示的请求正文。", retainedBytes: 0, completeness: "未保存" };
     if (!accepted) return empty;
     const raw = record.request_body;
     if (raw === undefined || raw === null || raw === "") return { ...empty, state: "未保存正文" };
@@ -294,7 +295,7 @@
         set("auditCleanupMessage", "将永久删除 " + value.records + " 条审计记录 · 逻辑占用 " + bytes(value.logical_bytes) + " · 正文 " + bytes(value.request_body_bytes) + (value.before ? " · 截止 " + timestamp(value.before, getTimezone()) : "") + "。预览后新增记录不在此次清理范围。" + (value.limited ? " 本次仅选择最早的一批（最多 1000 条 / 32 MiB），范围内另有 " + value.remaining_records + " 条未纳入；完成后须重新预览并确认，不会自动继续。" : ""));
         if (value.records > 0) element("auditCleanupConfirmation").classList.remove("hidden");
       } catch (error) { if (ticket.current() && active && isAuthenticated() && error.name !== "AbortError") resetCleanupPreview("清理预览失败：" + error.message); }
-      finally { if (!cleanupBusy) element("auditCleanupPreview").disabled = false; ticket.finish(); }
+      finally { if (ticket.current() && !cleanupBusy) element("auditCleanupPreview").disabled = false; ticket.finish(); }
     }
     async function confirmCleanup() {
       if (!active || !isAuthenticated() || cleanupBusy || !cleanupPreview || !element("auditCleanupAcknowledge").checked) return;
@@ -310,7 +311,7 @@
         resetCleanupPreview(message); clearDetail(); if (payload.storage) renderStorage(payload.storage);
         await loadList();
       } catch (error) { if (ticket.current() && active && isAuthenticated() && error.name !== "AbortError") resetCleanupPreview("清理结果未确认：" + error.message + "。请重新计算占用并预览，不要直接重复提交。"); }
-      finally { cleanupBusy = false; element("auditCleanupPreview").disabled = false; ticket.finish(); }
+      finally { if (ticket.current()) { cleanupBusy = false; element("auditCleanupPreview").disabled = false; } ticket.finish(); }
     }
     async function loadStatus() {
       if (!active || !isAuthenticated()) return;

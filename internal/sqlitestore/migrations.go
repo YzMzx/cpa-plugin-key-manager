@@ -173,6 +173,14 @@ var migrations = []migration{
 			`CREATE INDEX IF NOT EXISTS client_request_audit_storage_idx ON client_request_audit(started_at, id, logical_bytes, length(CAST(request_body AS BLOB)))`,
 		},
 	},
+	{
+		version: 5,
+		name:    "durable quota totals independent of display resets",
+		stmts: []string{
+			`CREATE TABLE quota_usage (api_key TEXT PRIMARY KEY, total_cost_nano_usd INTEGER NOT NULL DEFAULT 0 CHECK(total_cost_nano_usd >= 0))`,
+			`INSERT INTO quota_usage(api_key, total_cost_nano_usd) SELECT api_key, max(0, total_cost_nano_usd) FROM key_usage`,
+		},
+	},
 }
 
 // Migrate applies every pending migration inside its own transaction.

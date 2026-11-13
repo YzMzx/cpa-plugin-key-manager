@@ -201,30 +201,41 @@ func (e *Engine) lookupModelsDevLocked(variants []string) (ModelPrice, bool) {
 // used only when no candidate has a price. A served-model override therefore
 // cannot supersede a known price for the client-requested product.
 func (e *Engine) Lookup(modelCandidates ...string) (ModelPrice, bool) {
+	price, found, _ := e.LookupMatch(modelCandidates...)
+	return price, found
+}
+
+// LookupMatch also reports match strength for late identity upgrades. A caller
+// must freeze an established snapshot when identities have not changed.
+func (e *Engine) LookupMatch(modelCandidates ...string) (ModelPrice, bool, int) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	for _, candidate := range modelCandidates {
+	for index, candidate := range modelCandidates {
+		base := 1000 - index*10
 		variants := normalizeModelVariants([]string{candidate})
 		for _, v := range variants {
 			if p, ok := e.customExact[v]; ok {
-				return p, true
+				return p, true, base + 6
 			}
 		}
 		for _, rule := range e.customRules {
 			for _, v := range variants {
 				if authz.MatchWildcard(rule.pattern, v) {
-					return rule.price, true
+					return rule.price, true, base + 5
 				}
 			}
 		}
 		if p, ok := e.lookupModelsDevLocked(variants); ok {
-			return p, true
+			if strings.Contains(p.Source, "(prefix:") {
+				return p, true, base + 3
+			}
+			return p, true, base + 4
 		}
 	}
 	if e.defaultPrice != nil {
-		return *e.defaultPrice, true
+		return *e.defaultPrice, true, 1
 	}
-	return ModelPrice{Source: "unmatched"}, false
+	return ModelPrice{Source: "unmatched"}, false, 0
 }
 
 // LookupReference resolves the models.dev reference price for the given model, ignoring custom overrides and default fallback.

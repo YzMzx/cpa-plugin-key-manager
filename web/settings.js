@@ -82,7 +82,7 @@
    try{const payload=await request(BASE,{method:"PUT",headers:{"X-Key-Guard-Revision":String(revision)},body:JSON.stringify({settings:next,expected_revision:revision,ack_prune:!!el("settingsAcknowledgePrune").checked}),signal:ticket.signal});
     if(!ticket.current()||!active||!isAuthenticated())return;if(payload.ok!==true)throw new Error("服务器未确认配置保存成功");const checked=validatePayload(payload);baseline=clone(checked.settings);draft=clone(checked.settings);revision=checked.rules_revision;dirty=false;paintForm(draft);el("settingsAcknowledgePrune").checked=false;renderBootstrap(checked.bootstrap);message("热配置已保存。"+(checked.apply_status&&checked.apply_status.ok===false?" 应用尚未完成，请刷新检查状态。":""));
     try{await onSaved(checked);if(ticket.current()&&active&&isAuthenticated())message(checked.apply_status&&checked.apply_status.ok===false?"配置已保存，但热应用未完成，请刷新检查。":"热配置已保存，页面数据已同步。"+(checked.warning?" "+String(checked.warning):""),!!(checked.apply_status&&checked.apply_status.ok===false));}catch(_){if(ticket.current()&&active&&isAuthenticated())message("热配置已保存，但页面刷新失败；请稍后刷新，不要重复保存。",true);}
-   }catch(error){if(ticket.current()&&active&&isAuthenticated()&&error.name!=="AbortError")message(error.status===409?"配置已被其它会话更新，草稿已保留。请先重新加载配置后再提交。":"配置未确认保存："+error.message,true);}finally{saving=false;if(active&&isAuthenticated())updateControls();ticket.finish();}
+   }catch(error){if(ticket.current()&&active&&isAuthenticated()&&error.name!=="AbortError")message(error.status===409?"配置已被其它会话更新，草稿已保留。请先重新加载配置后再提交。":"配置未确认保存："+error.message,true);}finally{if(ticket.current()){saving=false;if(active&&isAuthenticated())updateControls();}ticket.finish();}
   }
   async function saveBootstrap(){
    if(!active||!isAuthenticated()||bootstrapSaving||!bootstrap||!bootstrap.available)return;
@@ -95,7 +95,7 @@
    bootstrapSaving=true;bootstrapControls();const ticket=gate.begin("settings-bootstrap-save");set("settingsBootstrapMessage","正在保存启动配置，宿主可能随后自动重载…");
    try{const result=await request(BASE+"/bootstrap",{method:"PUT",body:JSON.stringify({expected_file_revision:bootstrap.file_revision,bootstrap:values,ack_restart:true,ack_storage_path_change:changedPath}),signal:ticket.signal});
     if(!ticket.current()||!active||!isAuthenticated())return;if(result.ok!==true||result.requires_restart!==true)throw new Error("服务器未确认启动配置保存");renderBootstrap(result.bootstrap,true);set("settingsBootstrapMessage","启动配置已保存；宿主可能热重载，禁用可能使页面失效。数据库路径需重启且数据未自动迁移。");
-   }catch(error){if(ticket.current()&&active&&isAuthenticated()&&error.name!=="AbortError")set("settingsBootstrapMessage",error.status===409?"宿主配置文件已变化，请重新加载后重试。":"启动配置未确认保存，请重新加载检查结果。");}finally{bootstrapSaving=false;if(active&&isAuthenticated())bootstrapControls();ticket.finish();}
+   }catch(error){if(ticket.current()&&active&&isAuthenticated()&&error.name!=="AbortError")set("settingsBootstrapMessage",error.status===409?"宿主配置文件已变化，请重新加载后重试。":"启动配置未确认保存，请重新加载检查结果。");}finally{if(ticket.current()){bootstrapSaving=false;if(active&&isAuthenticated())bootstrapControls();}ticket.finish();}
   }
   function discard(){if(saving||bootstrapSaving)return;dirty=false;bootstrapDirty=false;if(baseline){draft=clone(baseline);paintForm(draft);}el("settingsAcknowledgePrune").checked=false;updateControls();return load(true);}
   function leave(){active=false;gate.cancel("settings-read");gate.cancel("settings-save");gate.cancel("settings-bootstrap-save");saving=false;bootstrapSaving=false;}

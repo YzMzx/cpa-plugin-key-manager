@@ -147,12 +147,17 @@ type TrackedRequest struct {
 	StartedAt      time.Time
 	CompletedAt    time.Time
 
-	ExtractedUsage   NormalizedUsage
-	BilledUsage      NormalizedUsage
-	billedStats      ModelStats
-	billedAccountKey string
-	billedPrice      pricing.ModelPrice
-	billedPriceFound bool
+	ExtractedUsage       NormalizedUsage
+	BilledUsage          NormalizedUsage
+	billedStats          ModelStats
+	billedAccountKey     string
+	billedPrice          pricing.ModelPrice
+	billedPriceFound     bool
+	billedPriceRank      int
+	billedPriceRequested string
+	billedPriceServed    string
+	billedQuotaCost      int64
+	displayReset         bool
 	// BilledKey is the tuple bucket already billed for this request, if any.
 	BilledKey         string
 	CountedRequest    bool
@@ -186,6 +191,8 @@ type Store struct {
 	mu                     sync.Mutex
 	pricing                *pricing.Engine
 	keys                   map[string]*KeyStats
+	quotaCosts             map[string]int64
+	dirtyQuota             map[string]struct{}
 	accounts               map[string]*AccountStats
 
 	// Active & recently completed request trackers (for coordinating request.complete and usage.handle)
@@ -234,6 +241,8 @@ func NewStore(pricingEngine *pricing.Engine) *Store {
 	return &Store{
 		pricing:         pricingEngine,
 		keys:            make(map[string]*KeyStats),
+		quotaCosts:      make(map[string]int64),
+		dirtyQuota:      make(map[string]struct{}),
 		accounts:        make(map[string]*AccountStats),
 		ledger:          make(map[string]*LedgerEntry),
 		ledgerByHour:    make(map[int64]map[string]*LedgerEntry),
@@ -379,6 +388,10 @@ func (s *Store) BeginRequest(requestID, apiKey, keyName, model, requestedModel, 
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.closing {
+		s.lastAccountingError = "usage store is shutting down; late accounting was rejected"
+		return
+	}
 
 	if existing, ok := s.byRequestID[reqID]; ok {
 		if apiKey != "__anonymous__" {
@@ -441,6 +454,10 @@ func (s *Store) ObserveResponse(requestID, model, requestedModel string, body []
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.closing {
+		s.lastAccountingError = "usage store is shutting down; late accounting was rejected"
+		return extracted
+	}
 	tr := s.ensureTrackerLocked(reqID, "", model, requestedModel, sourceFormat, false)
 	tr.ExtractedUsage = MergeUsage(tr.ExtractedUsage, extracted)
 	if tr.CountedRequest {
@@ -468,6 +485,10 @@ func (s *Store) ObserveStreamChunk(requestID, model, requestedModel string, chun
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.closing {
+		s.lastAccountingError = "usage store is shutting down; late accounting was rejected"
+		return current
+	}
 	tr := s.ensureTrackerLocked(reqID, "", model, requestedModel, sourceFormat, true)
 	tr.ExtractedUsage = MergeUsage(tr.ExtractedUsage, updated)
 	if tr.CountedRequest {
@@ -486,6 +507,10 @@ func (s *Store) CompleteRequest(completion pluginapi.RequestCompletion, fallback
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.closing {
+		s.lastAccountingError = "usage store is shutting down; late accounting was rejected"
+		return
+	}
 
 	var tr *TrackedRequest
 	if reqID != "" {
@@ -521,7 +546,9 @@ func (s *Store) CompleteRequest(completion pluginapi.RequestCompletion, fallback
 				}
 			}
 			if candidate != nil {
-				s.mergeTrackedRequestLocked(tr, candidate)
+				if !s.mergeTrackedRequestLocked(tr, candidate) {
+					return
+				}
 				tr.HostRequestID = candidate.HostRequestID
 				tr.HostUsageRecorded = true
 			}
@@ -556,6 +583,10 @@ func (s *Store) ObserveHostUsageRecord(rec pluginapi.UsageRecord, keyName string
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.closing {
+		s.lastAccountingError = "usage store is shutting down; late accounting was rejected"
+		return
+	}
 
 	if hostReqID != "" {
 		if _, seen := s.seenHostReqID[hostReqID]; seen {
@@ -1002,52 +1033,6 @@ func (s *Store) getOrCreateKeyStatsLocked(apiKey, keyName string) *KeyStats {
 	return ks
 }
 
-// Reset clears statistics either for a specific API Key or globally (when apiKey is empty).
-func (s *Store) Reset(apiKey string) error {
-	s.flushMu.Lock()
-	defer s.flushMu.Unlock()
-	target := strings.TrimSpace(apiKey)
-	s.mu.Lock()
-	if target == "" {
-		s.keys = make(map[string]*KeyStats)
-		s.accounts = make(map[string]*AccountStats)
-		s.ledgerResetLocked()
-		s.byRequestID = make(map[string]*TrackedRequest)
-		s.byTraceID = make(map[string]*TrackedRequest)
-		s.seenHostReqID = make(map[string]time.Time)
-		s.resetAll = true
-		s.dirtyKeys = make(map[string]struct{})
-		s.dirtyAccounts = make(map[string]struct{})
-		s.dirtyLedger = make(map[string]struct{})
-		s.deletedLedger = make(map[ledgerRef]struct{})
-	} else {
-		for id, tr := range s.byRequestID {
-			if tr.APIKey == target {
-				delete(s.byRequestID, id)
-				if tr.TraceID != "" {
-					delete(s.byTraceID, tr.TraceID)
-				}
-			}
-		}
-		delete(s.keys, target)
-		s.deletedKeys[target] = struct{}{}
-		delete(s.dirtyKeys, target)
-		for key, entry := range s.ledger {
-			if entry != nil && entry.APIKey == target {
-				s.deletedLedger[ledgerRef{
-					hour: entry.Hour, apiKey: entry.APIKey, account: entry.Account,
-					model: entry.Model, source: entry.Source,
-				}] = struct{}{}
-				s.ledgerDeleteLocked(key)
-				delete(s.dirtyLedger, key)
-			}
-		}
-	}
-	s.dirty = true
-	s.mu.Unlock()
-	return s.flushToDBSerialized()
-}
-
 // FlushIfDirty writes the snapshot to disk only if new usage has been recorded since the last flush.
 func (s *Store) FlushIfDirty() error {
 	s.mu.Lock()
@@ -1128,11 +1113,7 @@ func SortedKeyIDs(m map[string]*KeyStats) []string {
 func (s *Store) GetKeyCostUSD(apiKey string) float64 {
 	k := normalizeAPIKey(apiKey)
 	s.mu.Lock()
-	ks, ok := s.keys[k]
-	var nano int64
-	if ok && ks != nil {
-		nano = ks.TotalCostNanoUSD
-	}
+	nano := s.quotaCosts[k]
 	s.mu.Unlock()
 	if nano <= 0 {
 		return 0

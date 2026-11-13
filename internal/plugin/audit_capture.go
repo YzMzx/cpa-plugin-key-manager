@@ -36,9 +36,9 @@ func (m *Manager) beginAudit(req pluginapi.RequestInterceptRequest, apiKey, keyL
 	if !strings.HasPrefix(path, "/") || strings.HasPrefix(path, "//") {
 		path = ""
 	}
-	// Plaintext collection was explicitly requested. Do not invoke the legacy
-	// sanitizer, count elements or skip bodies because another request is large.
-	body := audit.CaptureRawJSON(req.Body, contentType, req.Headers.Get("Content-Encoding"), cfg.MaxBodyBytes)
+	// Body preparation has nonblocking per-manager capacity across generations.
+	// Busy/processing-limit results retain metadata, never a partial raw payload.
+	body := m.auditBodies.Capture(req.Body, contentType, req.Headers.Get("Content-Encoding"), cfg.MaxBodyBytes)
 	method := ""
 	if value, ok := req.Metadata["request_method"].(string); ok {
 		switch strings.ToUpper(value) {

@@ -92,21 +92,27 @@ func (m *Manager) BuildAdminOverview(hostCallbackID string) map[string]any {
 	var totalTokens, inTokens, outTokens, reasonTokens, readTokens, writeTokens int64
 	var totalReq, okReq, errReq int64
 	var totalCostNano int64
+	accountingError := ""
+	add := func(dst *int64, value int64) {
+		if !usage.SaturatingAdd(dst, value) {
+			accountingError = "overview aggregate exceeds supported range; affected counters are saturated"
+		}
+	}
 
 	for _, ks := range snap.Keys {
 		if ks == nil {
 			continue
 		}
-		totalTokens += ks.TotalTokens
-		inTokens += ks.InputTokens
-		outTokens += ks.OutputTokens
-		reasonTokens += ks.ReasoningTokens
-		readTokens += ks.CacheReadTokens
-		writeTokens += ks.CacheWriteTokens
-		totalReq += ks.TotalRequests
-		okReq += ks.SuccessRequests
-		errReq += ks.FailedRequests
-		totalCostNano += ks.TotalCostNanoUSD
+		add(&totalTokens, ks.TotalTokens)
+		add(&inTokens, ks.InputTokens)
+		add(&outTokens, ks.OutputTokens)
+		add(&reasonTokens, ks.ReasoningTokens)
+		add(&readTokens, ks.CacheReadTokens)
+		add(&writeTokens, ks.CacheWriteTokens)
+		add(&totalReq, ks.TotalRequests)
+		add(&okReq, ks.SuccessRequests)
+		add(&errReq, ks.FailedRequests)
+		add(&totalCostNano, ks.TotalCostNanoUSD)
 	}
 
 	summary := map[string]any{
@@ -124,6 +130,9 @@ func (m *Manager) BuildAdminOverview(hostCallbackID string) map[string]any {
 		"total_cost_formatted": pricing.FormatUSD(totalCostNano),
 	}
 
+	if accountingError != "" {
+		summary["accounting_error"] = accountingError
+	}
 	return map[string]any{
 		"timezone":          cfg.Storage.Timezone,
 		"rules_revision":    m.RulesRevision(),

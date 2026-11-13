@@ -516,9 +516,6 @@ func MergeDynamicState(seed Config, state *DynamicRulesState, hostAPIKeys ...str
 		if v == "" || v == "__anonymous__" || strings.EqualFold(v, "anonymous") {
 			return true
 		}
-		if v == "sk-tenant-alpha-prod" || v == "sk-tenant-beta-dev" {
-			return true
-		}
 		return false
 	}
 
@@ -643,36 +640,16 @@ func cloneKeyRule(kr KeyRuleConfig) KeyRuleConfig {
 	return cp
 }
 
-// ResolveAPIKeyFromContext extracts the client API key from HTTP headers, URL query, or CPA `caller_scope` metadata.
+// ResolveAPIKeyFromContext resolves the host-authenticated identity before looking
+// at raw credential candidates. Unresolved/ambiguous identities never pick a key.
 func (c *Config) ResolveAPIKeyFromContext(headers http.Header, query url.Values, metadata map[string]any) string {
-	// 1. Check HTTP Headers (Authorization: Bearer, X-Api-Key, X-Goog-Api-Key)
-	if key := ExtractAPIKeyFromHeadersAndQuery(headers, query); key != "" {
-		return key
-	}
-
-	// 2. Check metadata["api_key"] or metadata["user_api_key"] if present
-	if metadata != nil {
-		for _, mk := range []string{"api_key", "user_api_key", "userApiKey"} {
-			if v, ok := metadata[mk].(string); ok && strings.TrimSpace(v) != "" {
-				return strings.TrimSpace(v)
-			}
-		}
-		// 3. Check CPA's `caller_scope` SHA256 fingerprint against configured keys
-		if scope, ok := metadata["caller_scope"].(string); ok {
-			scope = strings.TrimSpace(scope)
-			if scope != "" && c.byCallerScope != nil {
-				if apiKey, found := c.byCallerScope[scope]; found {
-					return apiKey
-				}
-			}
-		}
-	}
-
-	return ""
+	key, _ := c.resolveAuthenticatedKey(headers, query, metadata, "")
+	return key
 }
 
-// ExtractAPIKeyFromHeadersAndQuery extracts the client API key using the exact same priority order
-// as CLIProxyAPI's `internal/access/config_access/provider.go`:
+// ExtractAPIKeyFromHeadersAndQuery retains the legacy single-value extraction order
+// for compatibility callers. It does not authenticate a key and must not be used
+// to override host-authenticated identity (the host chooses a valid candidate):
 //  1. Authorization: Bearer <token>
 //  2. X-Goog-Api-Key
 //  3. X-Api-Key

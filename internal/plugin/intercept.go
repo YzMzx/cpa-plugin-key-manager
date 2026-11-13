@@ -22,7 +22,14 @@ func (m *Manager) handleFrontendAuth(raw []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	apiKey := ExtractAPIKeyFromHeadersAndQuery(req.Headers, req.Query)
+	candidates := credentialCandidates(req.Headers, req.Query)
+	if len(candidates) > 1 {
+		return okEnvelope(pluginapi.FrontendAuthResponse{DenyStatusCode: http.StatusUnauthorized, DenyMessage: "conflicting client credentials"})
+	}
+	apiKey := ""
+	if len(candidates) == 1 {
+		apiKey = candidates[0]
+	}
 	if apiKey == "" {
 		return okEnvelope(pluginapi.FrontendAuthResponse{Authenticated: false})
 	}
@@ -57,7 +64,11 @@ func (m *Manager) handleRequestInterceptBefore(raw []byte) ([]byte, error) {
 	cfg := m.cfg
 	m.mu.RUnlock()
 
-	apiKey := cfg.ResolveAPIKeyFromContext(req.Headers, nil, req.Metadata)
+	apiKey, identityOK := cfg.resolveAuthenticatedKey(req.Headers, nil, req.Metadata, req.CallerScope)
+	if !identityOK {
+		m.beginRejectedAudit(req, "", "", http.StatusForbidden)
+		return okEnvelope(authz.NewForbiddenKeyResponse("client identity could not be verified"))
+	}
 	rule, _ := cfg.ResolveKeyRule(apiKey)
 
 	// 1. Check whether API Key is enabled/allowed
@@ -151,7 +162,10 @@ func (m *Manager) handleSchedulerPick(raw []byte) ([]byte, error) {
 	cfg := m.cfg
 	m.mu.RUnlock()
 
-	apiKey := cfg.ResolveAPIKeyFromContext(http.Header(req.Options.Headers), nil, req.Options.Metadata)
+	apiKey, identityOK := cfg.resolveAuthenticatedKey(http.Header(req.Options.Headers), nil, req.Options.Metadata, "")
+	if !identityOK {
+		return okEnvelope(pluginapi.SchedulerPickResponse{Handled: true, Reject: true, RejectCode: "auth_unavailable", RejectReason: "client identity could not be verified"})
+	}
 	rule, _ := cfg.ResolveKeyRule(apiKey)
 
 	resp := m.scheduler.Pick(apiKey, rule.UpstreamBinding, req)
@@ -177,8 +191,11 @@ func (m *Manager) handleResponseInterceptAfter(raw []byte) ([]byte, error) {
 		cfg := m.cfg
 		m.mu.RUnlock()
 
-		apiKey := cfg.ResolveAPIKeyFromContext(req.RequestHeaders, nil, req.Metadata)
+		apiKey, identityOK := cfg.resolveAuthenticatedKey(req.RequestHeaders, nil, req.Metadata, "")
 		rule, _ := cfg.ResolveKeyRule(apiKey)
+		if !identityOK {
+			rule.AllowedModels = nil
+		}
 
 		// Only filter if the key is restricted (i.e. not completely unrestricted `["*"]`)
 		isUnrestricted := len(rule.AllowedModels) == 1 && strings.TrimSpace(rule.AllowedModels[0]) == "*"

@@ -80,16 +80,28 @@ if (-not $InitOnly) {
             Invoke-WebRequest -Uri $ChecksumsUrl -OutFile $TmpSums -UseBasicParsing
 
             $Expected = ""
-            foreach ($line in (Get-Content $TmpSums)) {
-                if ($line -match "^([0-9a-fA-F]{64})\s+\*?$([regex]::Escape($Asset))$") {
-                    $Expected = $Matches[1].ToLower()
-                    break
+            $EntryCount = 0
+            $InvalidEntry = $false
+            foreach ($line in (Get-Content -LiteralPath $TmpSums)) {
+                $Fields = @($line.Trim() -split '\s+')
+                if ($Fields.Count -ge 2 -and ($Fields[1] -ceq $Asset -or $Fields[1] -ceq "*$Asset")) {
+                    $EntryCount++
+                    if ($Fields.Count -ne 2 -or $Fields[0] -notmatch '^[0-9a-fA-F]{64}$') {
+                        $InvalidEntry = $true
+                    } else {
+                        $Expected = $Fields[0].ToLowerInvariant()
+                    }
                 }
             }
-            if ($Expected -eq "") {
-                throw "SHA256SUMS.txt does not contain an entry for $Asset"
+            if ($EntryCount -ne 1 -or $InvalidEntry) {
+                throw "SHA256SUMS.txt must contain exactly one valid 64-hex entry for $Asset"
             }
-            $Actual = (Get-FileHash -Path $TmpDll -Algorithm SHA256).Hash.ToLower()
+            # Do not compare arrays: duplicate hash results must fail, even if all match.
+            $HashResults = @(Get-FileHash -LiteralPath $TmpDll -Algorithm SHA256 -ErrorAction Stop)
+            if ($HashResults.Count -ne 1 -or $HashResults[0].Hash -notmatch '^[0-9a-fA-F]{64}$') {
+                throw "Hash tool must return exactly one valid SHA256 digest"
+            }
+            $Actual = $HashResults[0].Hash.ToLowerInvariant()
             if ($Actual -ne $Expected) {
                 throw "SHA256 checksum mismatch for $Asset (expected $Expected, got $Actual)"
             }
@@ -110,7 +122,7 @@ New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 # Runtime records live only in SQLite; the plugin creates its database on first start.
 $PluginYamlBlock = @"
 
-# --- Added by cpa-plugin-key-manager installer ---
+# Suggested cpa-plugin-key-manager configuration; merge into existing mappings.
 # NOTE: all data lives in <CLIProxyAPI>/data/key_usage.db (SQLite).
 # For Docker deployments mount that directory, e.g.
 #   volumes:
@@ -126,27 +138,29 @@ plugins:
         usage_db_file: ""
 "@
 
-if (-not (Test-Path $ConfigFile)) {
-    [System.IO.File]::WriteAllText($ConfigFile, $PluginYamlBlock.TrimStart(), (New-Object System.Text.UTF8Encoding($false)))
+# Never parse or rewrite existing YAML, regardless of quoting, encoding or contents.
+if (-not (Test-Path -LiteralPath $ConfigFile)) {
+    # CreateNew also refuses a configuration created after the existence check.
+    $ConfigStream = [System.IO.File]::Open($ConfigFile, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write)
+    try {
+        $ConfigBytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes($PluginYamlBlock.TrimStart())
+        $ConfigStream.Write($ConfigBytes, 0, $ConfigBytes.Length)
+    } finally {
+        $ConfigStream.Dispose()
+    }
     Write-Info "Created initial config.yaml with cpa-plugin-key-manager enabled: $ConfigFile"
 } else {
-    $RawCfg = Get-Content -Path $ConfigFile -Raw
-    if ($RawCfg -match "cpa-plugin-key-manager") {
-        Write-Info "Detected existing cpa-plugin-key-manager configuration in $ConfigFile"
-    } elseif ($RawCfg -notmatch "(?m)^plugins:") {
-        Copy-Item -Path $ConfigFile -Destination "$ConfigFile.bak" -Force
-        Add-Content -Path $ConfigFile -Value $PluginYamlBlock -Encoding UTF8
-        Write-Info "Appended plugins.configs.cpa-plugin-key-manager to $ConfigFile (backup saved to $ConfigFile.bak)"
-    } else {
-        Write-Warn "$ConfigFile already contains a 'plugins:' section. Please ensure 'cpa-plugin-key-manager' is configured under plugins.configs."
-    }
+    Write-Warn "Existing configuration left unchanged: $ConfigFile. Configuration was NOT completed automatically."
+    Write-Warn "Manually merge the following fragment into the existing YAML mappings; do not append a duplicate plugins key."
+    Write-Warn "Preserve existing settings and storage paths. If already configured correctly, no changes are needed. Verify before restarting CPA."
+    Write-Host $PluginYamlBlock.TrimStart()
 }
 
 Write-Host ""
 Write-Host "==============================================================================" -ForegroundColor Green
-Write-Host "  cpa-plugin-key-manager installation & data initialization completed!" -ForegroundColor Green
+Write-Host "  cpa-plugin-key-manager installer finished; review configuration instructions above." -ForegroundColor Green
 Write-Host "  - Plugin directory : $PluginDir"
 Write-Host "  - Data directory   : $DataDir"
 Write-Host "  - Admin Web UI     : http://127.0.0.1:8317/v0/resource/plugins/cpa-plugin-key-manager/ui"
-Write-Host "  Restart CLIProxyAPI to load the plugin."
+Write-Host "  Verify/merge configuration before restarting CLIProxyAPI to load the plugin."
 Write-Host "==============================================================================" -ForegroundColor Green

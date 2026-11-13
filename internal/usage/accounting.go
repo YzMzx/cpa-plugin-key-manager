@@ -10,35 +10,39 @@ import (
 
 // reconcileTrackerDeltaLocked replaces only this request's contribution. A late
 // served model, credential or terminal outcome must never move a shared bucket.
-func (s *Store) reconcileTrackerDeltaLocked(tr *TrackedRequest) {
+func (s *Store) reconcileTrackerDeltaLocked(tr *TrackedRequest) bool {
 	if s.closing {
 		s.lastAccountingError = "usage store is shutting down; late accounting was rejected"
-		return
+		return false
 	}
 	if tr.ExtractedUsage.Invalid || tr.BilledUsage.Invalid {
 		s.lastAccountingError = "usage token normalization exceeds supported range"
-		return
+		return false
 	}
 	apiKey := normalizeAPIKey(tr.APIKey)
 	requested := requestedModelOf(tr)
 	if isInvalidKeyID(apiKey) || requested == "" {
-		return
+		return false
 	}
 	served := servedModelOf(tr, requested)
 	target := MergeMaxUsage(tr.BilledUsage, tr.ExtractedUsage)
 	total, ok := checkedTokenSum(target.UncachedInputTokens, target.OutputTokens, target.CacheReadTokens, target.CacheWriteTokens)
 	if !ok {
 		s.lastAccountingError = "usage token total exceeds supported range"
-		return
+		return false
 	}
 	price, found := tr.billedPrice, tr.billedPriceFound
-	if !found {
-		price, found = s.pricing.Lookup(requested, served)
+	rank := tr.billedPriceRank
+	if !found || requested != tr.billedPriceRequested || served != tr.billedPriceServed {
+		candidate, candidateFound, candidateRank := s.pricing.LookupMatch(requested, served)
+		if !found || candidateFound && candidateRank > rank {
+			price, found, rank = candidate, candidateFound, candidateRank
+		}
 	}
 	cost, err := pricing.CalculateCostNanoUSD(target.UncachedInputTokens, target.OutputTokens, target.CacheReadTokens, target.CacheWriteTokens, price)
 	if err != nil {
 		s.lastAccountingError = "usage cost calculation failed: " + err.Error()
-		return
+		return false
 	}
 	next := ModelStats{RequestedModel: requested, ServedModel: served, Requests: 1, InputTokens: target.UncachedInputTokens, OutputTokens: target.OutputTokens, ReasoningTokens: target.ReasoningTokens, CacheReadTokens: target.CacheReadTokens, CacheWriteTokens: target.CacheWriteTokens, TotalTokens: total, CostNanoUSD: cost, UnitPricePer1M: price, LastUsedAt: time.Now().UTC().Format(time.RFC3339)}
 	if tr.Failed {
@@ -46,10 +50,22 @@ func (s *Store) reconcileTrackerDeltaLocked(tr *TrackedRequest) {
 	} else {
 		next.SuccessRequests = 1
 	}
+	if !canReplaceValue(s.quotaCosts[apiKey], tr.billedQuotaCost, cost) {
+		s.lastAccountingError = "quota usage aggregate exceeds supported range"
+		return false
+	}
+	if tr.displayReset {
+		s.replaceQuotaContributionLocked(tr, cost)
+		tr.BilledUsage = target
+		tr.CountedRequest = true
+		tr.billedPrice, tr.billedPriceFound = price, found
+		tr.billedPriceRank, tr.billedPriceRequested, tr.billedPriceServed = rank, requested, served
+		return true
+	}
 	ks := s.getOrCreateKeyStatsLocked(apiKey, tr.KeyName)
 	if !canReplaceKeyContribution(ks, tr.billedStats, next) {
 		s.lastAccountingError = "usage aggregate exceeds supported range"
-		return
+		return false
 	}
 	acct := s.getOrCreateAccountStatsLocked(tr)
 	accountKey := accountBucketKey(tr.Provider, tr.AuthID, tr.AuthIndex)
@@ -60,7 +76,7 @@ func (s *Store) reconcileTrackerDeltaLocked(tr *TrackedRequest) {
 		return ModelStats{}
 	}(), next) {
 		s.lastAccountingError = "account usage aggregate exceeds supported range"
-		return
+		return false
 	}
 	key := tupleKey(requested, served)
 	old := tr.billedStats
@@ -70,7 +86,7 @@ func (s *Store) reconcileTrackerDeltaLocked(tr *TrackedRequest) {
 	}
 	if !canReplaceModelContribution(ks.Models[key], oldTuple, next) {
 		s.lastAccountingError = "model usage aggregate exceeds supported range"
-		return
+		return false
 	}
 	if acct != nil {
 		prior := ModelStats{}
@@ -79,12 +95,12 @@ func (s *Store) reconcileTrackerDeltaLocked(tr *TrackedRequest) {
 		}
 		if !canReplaceModelContribution(acct.Models[key], prior, next) {
 			s.lastAccountingError = "account model aggregate exceeds supported range"
-			return
+			return false
 		}
 	}
 	if !s.canReplaceLedgerContributionLocked(tr, apiKey, requested, acct, next) {
 		s.lastAccountingError = "ledger usage aggregate exceeds supported range"
-		return
+		return false
 	}
 	if old.Requests > 0 {
 		replaceTupleContribution(ks.Models, tr.BilledKey, old, ModelStats{})
@@ -123,16 +139,30 @@ func (s *Store) reconcileTrackerDeltaLocked(tr *TrackedRequest) {
 		}
 		tr.ledgerStamps = []ledgerStamp{s.applyLedgerLocked(at, apiKey, tr.KeyName, identity, provider, requested, served, tr.SourceFormat, 1, next.InputTokens, next.OutputTokens, next.CacheReadTokens, next.CacheWriteTokens, next.TotalTokens, next.CostNanoUSD)}
 	}
+	s.replaceQuotaContributionLocked(tr, cost)
 	tr.BilledKey, tr.BilledUsage, tr.CountedRequest = key, target, true
 	tr.billedStats, tr.billedAccountKey = next, accountKey
 	tr.billedPrice, tr.billedPriceFound = price, found
+	tr.billedPriceRank, tr.billedPriceRequested, tr.billedPriceServed = rank, requested, served
 	s.markKeyDirtyLocked(apiKey)
 	s.dirty = true
+	return true
 }
 
-// mergeTrackedRequestLocked removes the duplicate tracker contribution before
-// transferring its observed data to a tracker sharing an explicit TraceID.
-func (s *Store) mergeTrackedRequestLocked(dst, src *TrackedRequest) {
+// mergeTrackedRequestUnchecked mutates only an isolated candidate store. The
+// transactional wrapper validates reconciliation before publishing live state.
+func (s *Store) mergeTrackedRequestUnchecked(dst, src *TrackedRequest) {
+	dst.displayReset = dst.displayReset || src.displayReset
+	if isInvalidModelID(dst.Model) {
+		dst.Model = src.Model
+	}
+	if isInvalidModelID(dst.RequestedModel) {
+		dst.RequestedModel = src.RequestedModel
+	}
+	if src.billedPriceFound && (!dst.billedPriceFound || src.billedPriceRank > dst.billedPriceRank) {
+		dst.billedPrice, dst.billedPriceFound = src.billedPrice, true
+		dst.billedPriceRank, dst.billedPriceRequested, dst.billedPriceServed = src.billedPriceRank, src.billedPriceRequested, src.billedPriceServed
+	}
 	if src.HostUsageRecorded {
 		dst.HostRequestID = src.HostRequestID
 		dst.HostUsageRecorded = true
@@ -157,8 +187,9 @@ func (s *Store) mergeTrackedRequestLocked(dst, src *TrackedRequest) {
 	if dst.AuthType == "" {
 		dst.AuthType = src.AuthType
 	}
+	s.replaceQuotaContributionLocked(src, 0)
 	old := src.billedStats
-	if old.Requests > 0 {
+	if old.Requests > 0 && !src.displayReset {
 		if ks := s.keys[src.APIKey]; ks != nil {
 			replaceTupleContribution(ks.Models, src.BilledKey, old, ModelStats{})
 			applyKeyContribution(ks, old, -1)

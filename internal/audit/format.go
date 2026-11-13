@@ -13,6 +13,10 @@ func FormatJSON(source []byte, maxBytes int) []byte {
 	if len(source) == 0 || maxBytes < len(source) || !json.Valid(source) {
 		return source
 	}
+	return formatJSON(source, maxBytes, nil)
+}
+
+func formatJSON(source []byte, maxBytes int, budget *bodyWorkBudget) []byte {
 	var out bytes.Buffer
 	out.Grow(min(len(source)+len(source)/4, maxBytes))
 	depth := 0
@@ -21,6 +25,7 @@ func FormatJSON(source []byte, maxBytes int) []byte {
 		if len(value) > maxBytes-out.Len() {
 			return false
 		}
+		budget.spend(len(value))
 		out.Write(value)
 		return true
 	}
@@ -28,6 +33,7 @@ func FormatJSON(source []byte, maxBytes int) []byte {
 		if 1+depth*2 > maxBytes-out.Len() {
 			return false
 		}
+		budget.spend(1 + depth*2)
 		out.WriteByte('\n')
 		for i := 0; i < depth; i++ {
 			out.WriteString("  ")
@@ -35,6 +41,7 @@ func FormatJSON(source []byte, maxBytes int) []byte {
 		return true
 	}
 	for i := 0; i < len(source); {
+		budget.spend(1)
 		c := source[i]
 		if space(c) {
 			i++
@@ -44,6 +51,7 @@ func FormatJSON(source []byte, maxBytes int) []byte {
 			start := i
 			i++
 			for i < len(source) {
+				budget.spend(1)
 				if source[i] == '\\' {
 					i += 2
 					continue
@@ -68,6 +76,7 @@ func FormatJSON(source []byte, maxBytes int) []byte {
 			i++
 			next := i
 			for next < len(source) && space(source[next]) {
+				budget.spend(1)
 				next++
 			}
 			if next < len(source) && source[next] != '}' && source[next] != ']' {
@@ -79,6 +88,7 @@ func FormatJSON(source []byte, maxBytes int) []byte {
 			depth--
 			previous := i - 1
 			for previous >= 0 && space(source[previous]) {
+				budget.spend(1)
 				previous--
 			}
 			if previous >= 0 && source[previous] != '{' && source[previous] != '[' {
@@ -103,6 +113,7 @@ func FormatJSON(source []byte, maxBytes int) []byte {
 		default:
 			start := i
 			for i < len(source) && !space(source[i]) && source[i] != ',' && source[i] != '}' && source[i] != ']' {
+				budget.spend(1)
 				i++
 			}
 			if !appendBytes(source[start:i]) {

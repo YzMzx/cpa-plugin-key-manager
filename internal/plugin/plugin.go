@@ -5,14 +5,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/YzMzx/cpa-plugin-key-manager/internal/audit"
 	"github.com/YzMzx/cpa-plugin-key-manager/internal/authz"
 	"github.com/YzMzx/cpa-plugin-key-manager/internal/handler"
 	"github.com/YzMzx/cpa-plugin-key-manager/internal/limiter"
 	"github.com/YzMzx/cpa-plugin-key-manager/internal/pricing"
+	"github.com/YzMzx/cpa-plugin-key-manager/internal/sqlitestore"
 	"github.com/YzMzx/cpa-plugin-key-manager/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
@@ -20,7 +23,7 @@ import (
 
 const (
 	PluginID      = "cpa-plugin-key-manager"
-	PluginVersion = "0.11.3-pre.4"
+	PluginVersion = "0.11.3-pre.5"
 	PluginAuthor  = "YzMzx"
 	PluginRepo    = "https://github.com/YzMzx/cpa-plugin-key-manager"
 	PluginLogoSVG = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%238b8680'/><path d='M24 22a10 10 0 1 0 9.5 13H42v5h6v-5h4v-6H33.5A10 10 0 0 0 24 22zm0 6a4 4 0 1 1 0 8 4 4 0 0 1 0-8z' fill='%23fff'/></svg>"
@@ -67,6 +70,7 @@ type Manager struct {
 	hostSyncCode       string
 	hostKeySync        func(context.Context, string, []string) error
 	rejectedAuditSlots chan struct{}
+	auditBodies        audit.BodyCaptureBudget
 	auditMu            sync.RWMutex
 	auditRuntime       *auditRuntime
 	auditCleanup       *auditCleanupRuntime
@@ -210,8 +214,21 @@ func (m *Manager) Configure(raw []byte) error {
 	m.mu.RLock()
 	currentDB := m.usageStore.SQLitePath()
 	m.mu.RUnlock()
-	if currentDB != "" && currentDB != seedCfg.Storage.UsageDBFile {
-		return fmt.Errorf("changing storage.usage_db_file requires a restart")
+	if currentDB != "" {
+		wantedDB, err := sqlitestore.CanonicalPath(seedCfg.Storage.UsageDBFile)
+		if err != nil || currentDB != wantedDB {
+			return fmt.Errorf("changing storage.usage_db_file requires a restart")
+		}
+	}
+
+	hostKeys, hostKeysErr := readHostConfigAPIKeysChecked(FindHostConfigFile(""))
+	if hostKeysErr != nil {
+		// Standalone tests/embedders may have no host YAML. Malformed/read-denied
+		// configuration is not an empty key list and must not revive cached keys.
+		if !os.IsNotExist(hostKeysErr) {
+			return fmt.Errorf("host client-key configuration is unavailable or invalid")
+		}
+		hostKeys = nil
 	}
 
 	// SQLite is the only persistence backend on this branch: open it before loading
@@ -241,13 +258,6 @@ func (m *Manager) Configure(raw []byte) error {
 			return err
 		}
 	}
-
-	hostKeys := ReadHostConfigAPIKeys("")
-	m.mu.RLock()
-	if len(hostKeys) == 0 && len(m.hostAPIKeys) > 0 {
-		hostKeys = append([]string(nil), m.hostAPIKeys...)
-	}
-	m.mu.RUnlock()
 
 	if dynState.Settings != nil {
 		validated := *dynState.Settings

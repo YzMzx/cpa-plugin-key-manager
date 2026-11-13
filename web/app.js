@@ -19,6 +19,18 @@
   let expandedDashAccounts = {};
   let revealedKeys = {};
   let overviewIndex = KeyGuardState.indexOverview({});
+  let sessionEpoch = 0;
+  let keyModalEpoch = 0;
+  let keyModalRevision = null, keyModalBaseline = null;
+  let priceModalRevision = null, priceModalBaseline = null;
+  let defaultPolicyBaseline = null;
+  const cloneRule = value => JSON.parse(JSON.stringify(value || {}));
+  const sessionCurrent = epoch => epoch === sessionEpoch && !!activeManagementKey;
+  // An editor owns both its baseline and revision until explicitly reopened/discarded.
+  function revisionHeaders(revision) {
+    if (revision === null || revision === undefined) throw new Error("缺少编辑版本，请重新打开编辑器后保存");
+    return { "X-Key-Guard-Revision": String(revision) };
+  }
   let priceModalEpoch = 0;
   const pendingMutations = new Set();
   let usageGroupsCache = new WeakMap();
@@ -27,9 +39,11 @@
   let defaultPolicyDirty = false;
   let defaultPolicyRevision = null;
   let defaultPolicySaveInFlight = false;
-  const keyDialog = KeyGuardDialogs.create(document.getElementById("keyModal"));
+  const keyDialog = KeyGuardDialogs.create(document.getElementById("keyModal"), {
+    onClose: () => { keyModalEpoch++; keyModalBaseline = null; keyModalRevision = null; }
+  });
   const priceDialog = KeyGuardDialogs.create(document.getElementById("priceModal"), {
-    onClose: () => { priceModalEpoch++; requestGate.cancel("modalPrice"); }
+    onClose: () => { priceModalEpoch++; priceModalRevision = null; priceModalBaseline = null; requestGate.cancel("modalPrice"); }
   });
   const auditView = KeyGuardAudit.create({
     document, request: (...args) => callManagementAPI(...args), gate: requestGate,
@@ -52,6 +66,7 @@
   function overviewHealthMessage(data) {
     const messages = [];
     if (data && data.auth_files_error) messages.push(String(data.auth_files_error));
+    if (data && data.summary && data.summary.accounting_error) messages.push("汇总统计异常（数值不可用）：" + data.summary.accounting_error);
     const sync = data && data.host_sync;
     if (sync && sync.pending) messages.push("规则已保存，宿主同步待重试" + (sync.error ? "：" + sync.error : ""));
     const persistence = data && data.diagnostics && data.diagnostics.persistence;
@@ -173,11 +188,18 @@
   }
 
   function lockAdminWorkspace(errMsg) {
+    sessionEpoch++; activeManagementKey = "";
+    keyModalEpoch++; keyModalBaseline = null; keyModalRevision = null;
+    priceModalBaseline = null; priceModalRevision = null; defaultPolicyBaseline = null;
+    defaultPolicySaveInFlight = false; pendingMutations.clear();
+    globalRefreshInFlight = false;
+    overviewState.expandedKeys = {}; overviewState.activeModel = "";
+    dragSrcKey = null; dragOverKey = null; usageGroupsCache = new WeakMap();
     auditView.lock();
     settingsView.lock();
     requestGate.cancelAll(); apiClient.cancelAll();
     overviewState.loading = false;
-    clearTimeout(modelsDevSearchTimer);
+    clearTimeout(modelsDevSearchTimer); modelsDevSearchTimer = null;
     priceModalEpoch++;
     keyDialog.close({ immediate: true }); priceDialog.close({ immediate: true }); closeModelPopover();
     document.querySelectorAll("dialog.modal input, dialog.modal select").forEach(input => { input.value = ""; });
@@ -185,7 +207,19 @@
       const element = document.getElementById(id); if (element) { if ("value" in element) element.value = ""; else element.textContent = ""; }
     });
     for (const id of ["keyModalMessage", "priceModalMessage"]) document.getElementById(id).textContent = "";
-    for (const state of Object.values(selectorState)) { state.selectedModels.clear(); state.selectedCreds.clear(); state.loadedCreds.clear(); }
+    for (const state of Object.values(selectorState)) {
+      state.selectedModels.clear(); state.selectedCreds.clear(); state.loadedCreds.clear();
+      state.allModels = true; state.allCreds = true; state.providerFilter = "all";
+    }
+    for (const id of ["crudKeySearch", "quotaSearch", "dashKeySearch", "dashAccountSearch", "pricingTableSearch", "modelsDevSearchInput", "kmModelSearch", "kmCredSearch", "dpModelSearch", "dpCredSearch", "dpAllowUnlisted", "dpMaxConcurrency", "dpBindStrategy", "kmName", "kmQuotaLimit", "kmMaxConcurrency", "kmBindStrategy", "pmInputPrice", "pmOutputPrice", "pmCacheReadPrice", "pmCacheWritePrice"]) {
+      const element = document.getElementById(id); if (element) element.value = "";
+    }
+    for (const id of ["ovTrendChart", "ovDonutChart", "ovModelList", "ovKeyTableBody", "ovKeyTableMeta", "ovTrendMeta", "ovMetricKeys", "ovMetricRequests", "ovMetricTokens", "ovMetricTokensSub", "ovMetricCost", "ovMetricCostSub", "ovMetricModels", "ovLegendInput", "ovLegendOutput", "ovLegendCache", "ovLegendHit", "kpiTotalTokens", "kpiTokenSub", "kpiCacheTokens", "kpiCacheSub", "kpiTotalRequests", "kpiReqSub", "kpiTotalCost", "kpiCostSub", "pricingSyncedCount", "pricingSyncSource", "pricingLastSyncAt", "pricingLastSyncErr", "pricingCustomCount", "pricingDefaultSub", "ovTrendTip", "priceModalTitle", "kmProviderPills", "dpProviderPills", "kmModelCountBadge", "dpModelCountBadge", "kmCredCountBadge", "dpCredCountBadge", "toastBox"]) {
+      const element = document.getElementById(id); if (element) element.replaceChildren();
+    }
+    document.querySelectorAll("#adminWorkspace input, dialog.modal input, dialog.modal select").forEach(input => { input.value = ""; input.checked = false; });
+    document.getElementById("btnSyncPricing").textContent = "立即从 models.dev 同步";
+    document.querySelectorAll(".modal-footer button, #dpSaveBtn, #tabsRefreshBtn, #btnSyncPricing").forEach(button => { button.disabled = false; button.classList.remove("is-loading"); });
     revealedKeys = {}; expandedDashKeys = {}; expandedDashAccounts = {};
     overviewState.data = null;
     overviewTrendGeom = null;
@@ -214,21 +248,35 @@
   // Authenticated Management API request: all endpoints live under /v0/management/key-guard/*
   // which CLIProxyAPI protects with its Management Key middleware.
   async function callManagementAPI(path, options = {}, overrideKey = "") {
+    const epoch = sessionEpoch;
     const method = String(options.method || "GET").toUpperCase();
-    if (method === "GET" || method === "HEAD") return apiClient.request(path, options, overrideKey);
+    if (method === "GET" || method === "HEAD") {
+      const result = await apiClient.request(path, options, overrideKey);
+      if (epoch !== sessionEpoch) throw KeyGuardClient.aborted();
+      return result;
+    }
     if (pendingMutations.size) throw new Error("已有变更正在保存，请稍候再试");
     requestGate.cancel("overview");
     requestGate.cancel("ledger");
-    pendingMutations.add(path);
+    const mutation = {}; pendingMutations.add(mutation);
+    const keyOwner = keyModalEpoch, priceOwner = priceModalEpoch;
     const controls = Array.from(document.querySelectorAll(".modal-footer button, #dpSaveBtn"));
     const previous = controls.map(control => control.disabled);
     controls.forEach(control => { control.disabled = true; });
     try {
       const result = await apiClient.request(path, options, overrideKey);
+      if (!sessionCurrent(epoch)) throw KeyGuardClient.aborted();
       requestGate.cancel("overview");
       return result;
     }
-    finally { pendingMutations.delete(path); controls.forEach((control, i) => { control.disabled = previous[i]; }); }
+    finally {
+      pendingMutations.delete(mutation);
+      if (sessionCurrent(epoch)) controls.forEach((control, i) => {
+        if (control.closest?.("#keyModal") && keyOwner !== keyModalEpoch) return;
+        if (control.closest?.("#priceModal") && priceOwner !== priceModalEpoch) return;
+        control.disabled = previous[i];
+      });
+    }
   }
 
   async function submitAuthGateKey() {
@@ -296,6 +344,7 @@
   let globalRefreshInFlight = false;
   async function refreshAllData() {
     if (globalRefreshInFlight) return;
+    const epoch = sessionEpoch;
     globalRefreshInFlight = true;
     const btn = document.getElementById("tabsRefreshBtn");
     if (btn) {
@@ -306,8 +355,10 @@
     if (!overviewState.data) showOverviewSkeleton();
     try {
       await loadAdminOverview();
+      if (!sessionCurrent(epoch)) return;
       if (currentAdminTab === "tab-audit" && activeManagementKey) await auditView.refresh();
       if (currentAdminTab === "tab-settings" && activeManagementKey) await settingsView.refresh();
+      if (!sessionCurrent(epoch)) return;
       // Belt and braces: make sure the key/quota/leaderboard tables are painted even
       // if a late ledger refresh replaced them with placeholders.
       if (overviewData) {
@@ -318,6 +369,7 @@
     } catch (_) {
       // loadAdminOverview already surfaced the error via toast / lock screen.
     } finally {
+      if (epoch !== sessionEpoch) return;
       globalRefreshInFlight = false;
       if (btn) {
         btn.classList.remove("is-loading");
@@ -343,6 +395,7 @@
       applyOverviewData(data);
       if (!wasAuthenticated && currentAdminTab === "tab-audit") await auditView.enter();
       if (!wasAuthenticated && currentAdminTab === "tab-settings") await settingsView.enter();
+      if (!ticket.current()) return;
       const sync = data.host_sync;
       const healthMessage = overviewHealthMessage(data);
       setRefreshStatus(healthMessage, !!healthMessage);
@@ -362,6 +415,7 @@
   // (top-level or under `overview`) instead of issuing another full reload. The
   // ledger blocks are re-queried only when the change can affect usage/cost.
   async function refreshAfterMutation(res, opts = {}) {
+    if (!activeManagementKey) return;
     const payload = res && (res.overview || (res.summary && res.keys ? res : null));
     const sync = res && (res.host_sync || (payload && payload.host_sync));
     if (res && res.warning) showToast(String(res.warning), true);
@@ -398,6 +452,11 @@
 
   function renderDashboardKPIs(data) {
     const s = data.summary || {};
+    if (s.accounting_error) {
+      for (const id of ["kpiTotalTokens", "kpiCacheTokens", "kpiTotalRequests", "kpiTotalCost"]) document.getElementById(id).textContent = "统计异常";
+      for (const id of ["kpiTokenSub", "kpiCacheSub", "kpiReqSub", "kpiCostSub"]) document.getElementById(id).textContent = "汇总计数不可用：" + String(s.accounting_error);
+      return;
+    }
     document.getElementById("kpiTotalTokens").textContent = fmtTokenValue(s.total_tokens || 0);
     document.getElementById("kpiTokenSub").textContent =
       `输入: ${fmtTokenValue(s.input_tokens)} · 输出: ${fmtTokenValue(s.output_tokens)} · 推理: ${fmtTokenValue(s.reasoning_tokens)}`;
@@ -434,7 +493,7 @@
     const validSelectedModels = normModels.filter(m => m !== "*");
     const isAllModels = hasWildcardAll;
     st.allModels = isAllModels;
-    st.selectedModels = new Set(isAllModels ? [] : validSelectedModels);
+    st.selectedModels = new Set(validSelectedModels);
     st.providerFilter = "all";
 
     const normCreds = (boundCreds || []).map(s => s.trim()).filter(Boolean);
@@ -444,7 +503,7 @@
     st.loadedCreds = new Set(normCreds);
 
     document.getElementById(prefix + "AllModelsCheck").checked = st.allModels;
-    document.getElementById(prefix + "ModelPickerPanel").classList.toggle("hidden", st.allModels);
+    document.getElementById(prefix + "ModelPickerPanel").classList.toggle("hidden", st.allModels && !st.selectedModels.size);
     document.getElementById(prefix + "AllCredsCheck").checked = st.allCreds;
     document.getElementById(prefix + "CredPickerPanel").classList.toggle("hidden", st.allCreds);
 
@@ -457,8 +516,13 @@
   function onToggleAllModels(prefix) {
     if (prefix === "dp") { if (defaultPolicySaveInFlight) return; markDefaultPolicyDirty(); }
     const st = selectorState[prefix];
-    st.allModels = document.getElementById(prefix + "AllModelsCheck").checked;
-    document.getElementById(prefix + "ModelPickerPanel").classList.toggle("hidden", st.allModels);
+    const checked = document.getElementById(prefix + "AllModelsCheck").checked;
+    if (checked && st.selectedModels.size && !confirm("确定清除当前模型规则（包括排除规则），允许访问全部模型？")) {
+      document.getElementById(prefix + "AllModelsCheck").checked = st.allModels; return;
+    }
+    st.allModels = checked;
+    if (checked) st.selectedModels.clear();
+    document.getElementById(prefix + "ModelPickerPanel").classList.toggle("hidden", st.allModels && !st.selectedModels.size);
     if (!st.allModels) {
       renderProviderPills(prefix);
       renderModelCheckList(prefix);
@@ -469,7 +533,11 @@
   function onToggleAllCreds(prefix) {
     if (prefix === "dp") { if (defaultPolicySaveInFlight) return; markDefaultPolicyDirty(); }
     const st = selectorState[prefix];
-    st.allCreds = document.getElementById(prefix + "AllCredsCheck").checked;
+    const checked = document.getElementById(prefix + "AllCredsCheck").checked;
+    if (checked && st.selectedCreds.size && !confirm("确定取消指定凭证限制？其它提供商、属性和严格绑定限制仍会保留。")) {
+      document.getElementById(prefix + "AllCredsCheck").checked = st.allCreds; return;
+    }
+    st.allCreds = checked;
     document.getElementById(prefix + "CredPickerPanel").classList.toggle("hidden", st.allCreds);
     if (!st.allCreds) {
       renderCredCheckList(prefix);
@@ -481,7 +549,7 @@
     const st = selectorState[prefix];
     const mBadge = document.getElementById(prefix + "ModelCountBadge");
     if (st.allModels) {
-      mBadge.textContent = "全部已有模型";
+      mBadge.textContent = st.selectedModels.size ? "全部模型，保留规则：" + Array.from(st.selectedModels).join("、") : "全部已有模型";
       mBadge.className = "tag ok";
     } else {
       mBadge.textContent = `已勾选 ${st.selectedModels.size} 项已有模型`;
@@ -490,11 +558,15 @@
 
     const cBadge = document.getElementById(prefix + "CredCountBadge");
     if (st.allCreds) {
-      cBadge.textContent = "全部可用凭证";
+      cBadge.textContent = "未限定具体凭证";
       cBadge.className = "tag ok";
     } else {
       cBadge.textContent = `已勾选 ${st.selectedCreds.size} 个凭证`;
       cBadge.className = st.selectedCreds.size > 0 ? "tag plain" : "tag warn";
+    }
+    const binding = ((prefix === "km" ? keyModalBaseline : defaultPolicyBaseline) || {}).upstream_binding;
+    if (binding && (binding.providers?.length || Object.keys(binding.attributes || {}).length || binding.strict !== undefined)) {
+      cBadge.textContent += " · 已有提供商 / 属性 / strict 设置保持不变";
     }
   }
 
@@ -535,7 +607,7 @@
     const knownIDs = new Set(baseModels.map(m => m.id));
     // Include any custom or explicitly selected models that are not yet in CPA's model catalog
     st.selectedModels.forEach(m => {
-      if (!knownIDs.has(m) && m !== "*" && !m.includes("*") && !m.includes("?")) {
+      if (!knownIDs.has(m) && m !== "*") {
         baseModels.unshift({ id: m, provider: "custom", sources: [] });
       }
     });
@@ -713,9 +785,20 @@
     return false;
   }
 
+  function editedBinding(prefix, baseline, credentials) {
+    const binding = cloneRule(baseline && baseline.upstream_binding);
+    const loaded = selectorState[prefix].loadedCreds;
+    const unchanged = credentials.length === loaded.size && credentials.every(id => loaded.has(id));
+    // Preserve legacy auth_ids exactly unless the user edits credential selection.
+    if (!unchanged) { delete binding.auth_ids; binding.credentials = credentials; }
+    const strategy = document.getElementById(prefix + "BindStrategy").value;
+    if (strategy !== (binding.strategy || "round-robin")) binding.strategy = strategy;
+    return binding;
+  }
+
   function exportSelectorValues(prefix) {
     const st = selectorState[prefix];
-    const allowedModels = st.allModels ? ["*"] : Array.from(st.selectedModels);
+    const allowedModels = st.allModels ? ["*", ...st.selectedModels] : Array.from(st.selectedModels);
     const credentials = st.allCreds ? [] : Array.from(st.selectedCreds);
     return { allowedModels, credentials };
   }
@@ -1144,8 +1227,9 @@
   }
 
   async function copyText(txt) {
-    try { await navigator.clipboard.writeText(txt); showToast("已复制到剪贴板"); }
-    catch (_) { showToast("无法访问剪贴板，请允许浏览器剪贴板权限或手动复制", true); }
+    const epoch = sessionEpoch;
+    try { await navigator.clipboard.writeText(txt); if (sessionCurrent(epoch)) showToast("已复制到剪贴板"); }
+    catch (_) { if (sessionCurrent(epoch)) showToast("无法访问剪贴板，请允许浏览器剪贴板权限或手动复制", true); }
   }
 
   // ==================== API KEY DRAG & DROP ORDERING ====================
@@ -1183,6 +1267,7 @@
   }
 
   async function onKeyRowDrop(ev, targetKey) {
+    const epoch = sessionEpoch;
     ev.preventDefault();
     const srcKey = dragSrcKey;
     onKeyRowDragEnd(ev);
@@ -1203,9 +1288,11 @@
         method: "POST",
         body: JSON.stringify({ keys: next })
       });
+      if (!sessionCurrent(epoch)) return;
       showToast("API Key 顺序已保存");
       await refreshAfterMutation(res);
     } catch (err) {
+      if (!sessionCurrent(epoch) || isCancelled(err)) return;
       showToast(err.message, true);
       await loadAdminOverview();
     }
@@ -1233,6 +1320,10 @@
   }
 
   function openKeyModal(rule) {
+    keyModalEpoch++;
+    keyModalRevision = overviewData && overviewData.rules_revision;
+    keyModalBaseline = cloneRule(rule);
+    rule = rule ? keyModalBaseline : null;
     document.getElementById("keyModalTitle").textContent = rule ? "编辑 API Key 管控规则" : "新建 API Key";
     document.getElementById("kmOriginalApiKey").value = rule ? rule.api_key : "";
     document.getElementById("kmApiKey").value = rule ? rule.api_key : "";
@@ -1248,6 +1339,7 @@
 
     loadSelectorFromRule("km", allowedModels, boundCreds);
     document.getElementById("keyModalMessage").textContent = "";
+    document.querySelectorAll("#keyModal .modal-footer button").forEach(button => { button.disabled = false; });
     keyDialog.show();
   }
 
@@ -1256,6 +1348,7 @@
   }
 
   async function submitKeyModal() {
+    const epoch = sessionEpoch, modalOwner = keyModalEpoch;
     const origKey = document.getElementById("kmOriginalApiKey").value.trim();
     const apiKey = document.getElementById("kmApiKey").value.trim();
     if (!apiKey) {
@@ -1270,36 +1363,37 @@
       return;
     }
     if (!selectorState.km.allCreds && credentials.length === 0) {
-      showToast("请至少勾选一个绑定的账号凭证，或勾选「允许使用全部可用账号凭证」", true);
+      showToast("请至少勾选一个绑定的账号凭证，或勾选「不限定具体凭证」", true);
       return;
     }
 
     const payload = {
+      ...cloneRule(keyModalBaseline),
       api_key: apiKey,
       name: document.getElementById("kmName").value.trim(),
       enabled: document.getElementById("kmEnabled").value === "true",
       max_concurrency: parseInt(document.getElementById("kmMaxConcurrency").value || "0", 10) || 0,
       quota_limit_usd: Math.max(0, Number(document.getElementById("kmQuotaLimit").value || "0") || 0),
       allowed_models: allowedModels,
-      upstream_binding: {
-        strategy: document.getElementById("kmBindStrategy").value,
-        credentials: credentials
-      }
+      upstream_binding: editedBinding("km", keyModalBaseline, credentials)
     };
 
     try {
       const res = await callManagementAPI(API_KEYS_CRUD, {
-        method: "POST", body: JSON.stringify(Object.assign({ orig_key: origKey }, payload))
+        method: "POST", headers: revisionHeaders(keyModalRevision), body: JSON.stringify(Object.assign({ orig_key: origKey }, payload))
       });
+      if (!sessionCurrent(epoch) || modalOwner !== keyModalEpoch) return;
       closeKeyModal();
       showToast("API Key 与管控规则已保存");
       await refreshAfterMutation(res, { ledger: true });
     } catch (err) {
+      if (!sessionCurrent(epoch) || isCancelled(err) || modalOwner !== keyModalEpoch) return;
       showToast(err.message, true);
     }
   }
 
   async function quickToggleKeyEnabled(apiKey) {
+    const epoch = sessionEpoch;
     const kr = overviewIndex.rules.get(apiKey);
     if (!kr) return;
     const next = kr.enabled === false ? true : false;
@@ -1309,27 +1403,33 @@
         method: "POST",
         body: JSON.stringify(payload)
       });
+      if (!sessionCurrent(epoch)) return;
       showToast(`已${next ? "启用" : "禁用"} Key: ${kr.name || maskKeyStr(kr.api_key)}`);
       await refreshAfterMutation(res, { ledger: true });
     } catch (err) {
+      if (!sessionCurrent(epoch) || isCancelled(err)) return;
       showToast(err.message, true);
     }
   }
 
   async function deleteKeyRule(apiKey) {
+    const epoch = sessionEpoch;
     if (!confirm(`确定要删除 API Key [${maskKeyStr(apiKey)}] 吗？`)) return;
     try {
       const res = await callManagementAPI(API_KEYS_CRUD, {
         method: "DELETE", body: JSON.stringify({ api_key: apiKey })
       });
+      if (!sessionCurrent(epoch)) return;
       showToast("API Key 删除规则已保存");
       await refreshAfterMutation(res, { ledger: true });
     } catch (err) {
+      if (!sessionCurrent(epoch) || isCancelled(err)) return;
       showToast(err.message, true);
     }
   }
 
   async function resetUsageStats(apiKey) {
+    const epoch = sessionEpoch;
     const desc = apiKey ? `Key [${maskKeyStr(apiKey)}]` : "所有 API Key";
     if (!confirm(`确定要清零 ${desc} 的累计 Token 用量统计吗？`)) return;
     try {
@@ -1337,9 +1437,11 @@
         method: "POST",
         body: JSON.stringify({ api_key: apiKey })
       });
+      if (!sessionCurrent(epoch)) return;
       showToast(`已清零 ${desc} 的 Token 用量统计`);
       await refreshAfterMutation(res, { ledger: true });
     } catch (err) {
+      if (!sessionCurrent(epoch) || isCancelled(err)) return;
       showToast(err.message, true);
     }
   }
@@ -1422,6 +1524,7 @@
   }
 
   async function resetKeyQuota(apiKey) {
+    const epoch = sessionEpoch;
     if (!apiKey) return;
     if (!confirm(`确定重置 Key [${maskKeyStr(apiKey)}] 的已用额度吗？\n（仅重置额度计量，不清空历史用量与费用统计）`)) return;
     try {
@@ -1429,9 +1532,11 @@
         method: "POST",
         body: JSON.stringify({ api_key: apiKey })
       });
+      if (!sessionCurrent(epoch)) return;
       showToast(`已重置 ${maskKeyStr(apiKey)} 的已用额度`);
       await refreshAfterMutation(res);
     } catch (err) {
+      if (!sessionCurrent(epoch) || isCancelled(err)) return;
       showToast(err.message, true);
     }
   }
@@ -1773,7 +1878,8 @@
       renderDefaultPolicyDraftStatus(); return;
     }
     defaultPolicyRevision = overviewData.rules_revision;
-    const dp = overviewData.default_policy;
+    defaultPolicyBaseline = cloneRule(overviewData.default_policy);
+    const dp = defaultPolicyBaseline;
     document.getElementById("dpAllowUnlisted").value = dp.allow_unlisted_keys === false ? "false" : "true";
     document.getElementById("dpMaxConcurrency").value = dp.max_concurrency || 0;
     const ub = dp.upstream_binding || {};
@@ -1785,6 +1891,7 @@
   }
 
   async function saveDefaultPolicy() {
+    const epoch = sessionEpoch;
     if (defaultPolicySaveInFlight) return;
     if (!validateCredentialDraft("dp")) return;
     const { allowedModels, credentials } = exportSelectorValues("dp");
@@ -1793,33 +1900,33 @@
       return;
     }
     if (!selectorState.dp.allCreds && credentials.length === 0) {
-      showToast("请至少勾选一个默认绑定的凭证，或勾选「使用全部可用账号凭证」", true);
+      showToast("请至少勾选一个默认绑定的凭证，或勾选「不限定具体凭证」", true);
       return;
     }
 
     const payload = {
+      ...cloneRule(defaultPolicyBaseline),
       allow_unlisted_keys: document.getElementById("dpAllowUnlisted").value === "true",
       max_concurrency: parseInt(document.getElementById("dpMaxConcurrency").value || "0", 10) || 0,
       allowed_models: allowedModels,
-      upstream_binding: {
-        strategy: document.getElementById("dpBindStrategy").value,
-        credentials: credentials
-      }
+      upstream_binding: editedBinding("dp", defaultPolicyBaseline, credentials)
     };
     defaultPolicySaveInFlight = true; renderDefaultPolicyDraftStatus();
     try {
       const res = await callManagementAPI(API_DEFAULT_POLICY, {
         method: "POST",
-        headers: defaultPolicyRevision === null ? {} : { "X-Key-Guard-Revision": String(defaultPolicyRevision) },
+        headers: revisionHeaders(defaultPolicyRevision),
         body: JSON.stringify(payload)
       });
+      if (!sessionCurrent(epoch)) return;
       defaultPolicyDirty = false; defaultPolicySaveInFlight = false;
       showToast("全局默认策略已保存并立即生效");
       await refreshAfterMutation(res);
     } catch (err) {
+      if (!sessionCurrent(epoch) || isCancelled(err)) return;
       const message = err.status === 409 ? "策略已被其它会话更新，未保存草稿已保留；请放弃修改并重新加载后再保存。" : err.message;
       renderDefaultPolicyDraftStatus(message); showToast(message, true);
-    } finally { defaultPolicySaveInFlight = false; renderDefaultPolicyDraftStatus(); }
+    } finally { if (sessionCurrent(epoch)) { defaultPolicySaveInFlight = false; renderDefaultPolicyDraftStatus(); } }
   }
 
   function renderHostAuthTable() {
@@ -1945,8 +2052,20 @@
       const params = overviewQueryParams();
       const data = await callManagementAPI(API_LEDGER + "?" + params.toString(), { method: "GET", signal: ticket.signal }, keyOverride || undefined);
       if (!ticket.current()) return;
+      if (data.accounting_error) {
+        // Saturated aggregates are not valid metrics, charts or dimensional filters.
+        overviewState.data = null; overviewTrendGeom = null; hideTrendTip();
+        const message = "账本统计异常（数值不可用）：" + String(data.accounting_error);
+        for (const id of ["ovTrendChart", "ovDonutChart", "ovModelList"]) document.getElementById(id).textContent = message;
+        for (const id of ["ovKeyTableBody", "ovKeyTableMeta", "ovTrendMeta", "ovTrendTip", "ovMetricTokensSub", "ovMetricCostSub", "ovLegendInput", "ovLegendOutput", "ovLegendCache", "ovLegendHit"]) document.getElementById(id)?.replaceChildren();
+        for (const id of ["ovMetricKeys", "ovMetricRequests", "ovMetricTokens", "ovMetricCost", "ovMetricModels"]) document.getElementById(id).textContent = "统计异常";
+        setRefreshStatus([overviewHealthMessage(overviewData), message].filter(Boolean).join("；"), true);
+        return;
+      }
       overviewState.data = data;
       renderOverviewAll();
+      const healthMessage = overviewHealthMessage(overviewData);
+      setRefreshStatus(healthMessage, !!healthMessage);
     } catch (err) {
       if (isCancelled(err) || !ticket.current()) return;
       if (overviewState.data) { renderOverviewAll(); showToast("账本更新失败，保留上次数据：" + err.message, true); }
@@ -2546,6 +2665,7 @@
   }
 
   async function triggerModelsDevSync() {
+    const epoch = sessionEpoch;
     const btn = document.getElementById("btnSyncPricing");
     if (btn) {
       btn.disabled = true;
@@ -2553,12 +2673,14 @@
     }
     try {
       const res = await callManagementAPI(API_PRICING_SYNC, { method: "POST" });
+      if (!sessionCurrent(epoch)) return;
       showToast(`同步成功：已从 models.dev 更新 ${fmtInt(res.synced_models || 0)} 条模型价格`);
       await refreshAfterMutation(res, { ledger: true });
     } catch (err) {
+      if (!sessionCurrent(epoch) || isCancelled(err)) return;
       showToast("同步失败: " + err.message, true);
     } finally {
-      if (btn) {
+      if (sessionCurrent(epoch) && btn) {
         btn.disabled = false;
         btn.textContent = "立即从 models.dev 同步";
       }
@@ -2612,6 +2734,7 @@
 
   function openPriceModal(modelName) {
     priceModalEpoch++; requestGate.cancel("modalPrice");
+    priceModalRevision = overviewData && overviewData.rules_revision;
     const norm = String(modelName || "").trim();
     const titleEl = document.getElementById("priceModalTitle");
     const modelInput = document.getElementById("pmModelInput");
@@ -2640,16 +2763,20 @@
       titleEl.textContent = "新增自定义模型价格";
     }
 
+    priceModalBaseline = cloneRule(p);
     document.getElementById("pmInputPrice").value = Number(p.input || 0);
     document.getElementById("pmOutputPrice").value = Number(p.output || 0);
     document.getElementById("pmCacheReadPrice").value = Number(p.cache_read || 0);
     document.getElementById("pmCacheWritePrice").value = Number(p.cache_write || 0);
     document.getElementById("priceModalMessage").textContent = "";
+    document.querySelectorAll("#priceModal .modal-footer button").forEach(button => { button.disabled = false; });
     priceDialog.show();
   }
 
   function openPriceModalWithValues(modelName, input, output, cacheRead, cacheWrite) {
     priceModalEpoch++; requestGate.cancel("modalPrice");
+    priceModalRevision = overviewData && overviewData.rules_revision;
+    priceModalBaseline = { input, output, cache_read: cacheRead, cache_write: cacheWrite };
     document.getElementById("priceModalTitle").textContent = "修改模型价格: " + modelName;
     document.getElementById("pmModelInput").value = modelName;
     document.getElementById("pmInputPrice").value = Number(input || 0);
@@ -2658,6 +2785,7 @@
     document.getElementById("pmCacheWritePrice").value = Number(cacheWrite || 0);
     document.getElementById("pmRefHint").textContent = "已载入 models.dev 基准价格，修改后保存即可作为自定义覆盖规则生效。";
     document.getElementById("priceModalMessage").textContent = "";
+    document.querySelectorAll("#priceModal .modal-footer button").forEach(button => { button.disabled = false; });
     priceDialog.show();
   }
 
@@ -2695,41 +2823,49 @@
   }
 
   async function submitPriceModal() {
+    const epoch = sessionEpoch, modalOwner = priceModalEpoch;
     const model = (document.getElementById("pmModelInput").value || "").trim();
     if (!model) {
       showToast("模型名称或匹配规则不能为空", true);
       return;
     }
     const price = {
+      ...cloneRule(priceModalBaseline),
       input: Math.max(0, Number(document.getElementById("pmInputPrice").value || 0)),
       output: Math.max(0, Number(document.getElementById("pmOutputPrice").value || 0)),
       cache_read: Math.max(0, Number(document.getElementById("pmCacheReadPrice").value || 0)),
       cache_write: Math.max(0, Number(document.getElementById("pmCacheWritePrice").value || 0))
     };
-    if (Object.values(price).some(value => !Number.isFinite(value) || value < 0)) { showToast("价格必须是有效的非负数", true); return; }
+    if ([price.input, price.output, price.cache_read, price.cache_write].some(value => !Number.isFinite(value) || value < 0)) { showToast("价格必须是有效的非负数", true); return; }
     try {
       const res = await callManagementAPI(API_PRICING_CUSTOM, {
         method: "POST",
+        headers: revisionHeaders(priceModalRevision),
         body: JSON.stringify({ model, price })
       });
+      if (!sessionCurrent(epoch) || modalOwner !== priceModalEpoch) return;
       closePriceModal();
       showToast(`已保存模型 "${model}" 的价格配置`);
       await refreshAfterMutation(res, { ledger: true });
     } catch (err) {
+      if (!sessionCurrent(epoch) || isCancelled(err) || modalOwner !== priceModalEpoch) return;
       showToast("保存价格失败: " + err.message, true);
     }
   }
 
   async function deleteCustomModelPrice(model) {
+    const epoch = sessionEpoch;
     const norm = String(model || "").trim();
     if (!norm) return;
     try {
       const res = await callManagementAPI(API_PRICING_CUSTOM + "?model=" + encodeURIComponent(norm), {
         method: "DELETE"
       });
+      if (!sessionCurrent(epoch)) return;
       showToast(norm === "__default__" ? "已清除全局兜底默认价格" : `已恢复模型 "${norm}" 为 models.dev 默认价格`);
       await refreshAfterMutation(res, { ledger: true });
     } catch (err) {
+      if (!sessionCurrent(epoch) || isCancelled(err)) return;
       showToast("恢复默认价格失败: " + err.message, true);
     }
   }

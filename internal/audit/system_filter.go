@@ -13,7 +13,11 @@ func FilterSystemMessages(source []byte) ([]byte, bool) {
 	if !json.Valid(source) {
 		return source, false
 	}
-	scan := systemMessageScanner{mediaScanner: mediaScanner{source: source, ends: make(map[int]int)}}
+	return filterSystemMessages(source, nil)
+}
+
+func filterSystemMessages(source []byte, budget *bodyWorkBudget) ([]byte, bool) {
+	scan := systemMessageScanner{mediaScanner: mediaScanner{source: source, ends: make(map[int]int), budget: budget}}
 	start := scan.whitespace(0)
 	scan.walk(start, start < len(source) && source[start] == '[', false)
 	if len(scan.removals) == 0 {
@@ -24,9 +28,11 @@ func FilterSystemMessages(source []byte) ([]byte, bool) {
 	out.Grow(len(source))
 	previous := 0
 	for _, patch := range scan.removals {
+		budget.spend(patch.start - previous)
 		out.Write(source[previous:patch.start])
 		previous = patch.end
 	}
+	budget.spend(len(source) - previous)
 	out.Write(source[previous:])
 	return out.Bytes(), true
 }

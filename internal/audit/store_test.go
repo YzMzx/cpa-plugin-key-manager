@@ -52,14 +52,15 @@ func oneRecord(t *testing.T, s *Store, id string) Record {
 func TestAuditMigrationUpgradePreservesExistingSchema(t *testing.T) {
 	db, _ := openAuditDB(t)
 	ctx := context.Background()
-	// Simulate an already-applied v1 installation, then apply appended migration2.
+	// Reapply the audit migrations while retaining unrelated migration history.
+	// Dropping only the audit table must not replay later quota migrations.
 	if _, err := db.Conn().Exec("INSERT INTO rules_state(id,payload,updated_at) VALUES(1,'preserved','now')"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Conn().Exec("DROP TABLE client_request_audit"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Conn().Exec("DELETE FROM schema_migrations WHERE version>=2"); err != nil {
+	if _, err := db.Conn().Exec("DELETE FROM schema_migrations WHERE version BETWEEN 2 AND 4"); err != nil {
 		t.Fatal(err)
 	}
 	if err := sqlitestore.Migrate(ctx, db.Conn()); err != nil {

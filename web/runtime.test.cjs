@@ -55,6 +55,132 @@ function environment(fetchImpl = async () => response(overview())) {
   return { run, context, element, listeners, windowListeners, doc, store };
 }
 
+test("accounting saturation errors hide unreliable summary and ledger numbers", async () => {
+  const badLedger=ledger({accounting_error:"aggregate overflow",total_tokens:9223372036854775807,cost_nano_usd:9223372036854775807});
+  let failed=true;const env=environment(async()=>response(failed?badLedger:ledger()));
+  env.context.initial=overview({summary:{total_tokens:9223372036854775807,total_requests:2,total_cost_nano_usd:10,accounting_error:"summary overflow"}});
+  env.run('applyOverviewData(initial)');assert.match(env.run('overviewHealthMessage(initial)'),/summary overflow/);
+  for(const id of ["kpiTotalTokens","kpiTotalRequests","kpiTotalCost","kpiCacheTokens"])assert.equal(env.element(id).textContent,"统计异常",id);
+  env.element("ovLegendInput").textContent="old count";env.element("ovMetricTokensSub").textContent="old count";
+  await env.run('loadOverviewLedger(false)');assert.match(env.element("refreshStatus").textContent,/aggregate overflow/);assert.equal(env.run('overviewState.data'),null);
+  assert.match(env.element("ovTrendChart").textContent,/aggregate overflow/);assert.equal(env.element("ovLegendInput").textContent,"");assert.equal(env.element("ovMetricTokensSub").textContent,"");
+  env.run('setOverviewModelDim("tokens")');assert.doesNotMatch(env.element("ovTrendChart").textContent,/922337/);
+  failed=false;await env.run('loadOverviewLedger(false)');assert.equal(env.run('overviewState.data.total_tokens'),12);assert.match(env.element("refreshStatus").textContent,/summary overflow/);assert.doesNotMatch(env.element("refreshStatus").textContent,/aggregate overflow/);
+});
+
+test("audit regression: client rechecks cancellation after its response has settled", async () => {
+  let client;
+  client=Client.createClient({getKey:()=>"fixture-admin",fetchImpl:async()=>({status:200,ok:true,text:async()=>JSON.stringify({ok:true}),headers:{get:()=>{queueMicrotask(()=>client.cancelAll());return "application/json";}}})});
+  await assert.rejects(client.request("/keys",{method:"POST"}),error=>error.name==="AbortError");
+});
+
+test("audit regression: editors preserve wildcard exclusions and hidden baseline restrictions", async () => {
+  for (const editor of ["key", "default"]) {
+    const calls = [];
+    const binding = {providers:["openai"], attributes:{region:"private"}, strict:false, auth_ids:["legacy"], strategy:"round-robin"};
+    const rule = {api_key:"fixture-key", name:"before", allowed_models:["*","!private-*","!*blocked*"], upstream_binding:binding, quota_limit_usd:17, extra_policy:{keep:true}};
+    const env = environment(async (url, opts) => { calls.push({url,opts}); return response({ok:true,overview:overview()}); });
+    env.context.initial = overview({keys:[rule],default_policy:rule});
+    env.run('applyOverviewData(initial)');
+    if (editor === "key") { env.run('openKeyModalByKey("fixture-key")'); env.element("kmName").value="after"; }
+    else { env.element("dpMaxConcurrency").value="3"; env.run('markDefaultPolicyDirty()'); }
+    await env.run(editor === "key" ? 'submitKeyModal()' : 'saveDefaultPolicy()');
+    const payload = JSON.parse(calls.find(c => c.opts.method === "POST").opts.body);
+    assert.deepEqual(payload.allowed_models, rule.allowed_models);
+    assert.deepEqual(payload.upstream_binding, binding);
+    assert.equal(payload.quota_limit_usd,17);
+    assert.deepEqual(payload.extra_policy,{keep:true});
+  }
+});
+
+test("audit regression: key and price edits pin opening revision despite refresh", async () => {
+  for (const editor of ["key", "price", "reference"]) {
+    const calls=[];const env=environment(async(url,opts)=>{calls.push({url,opts}); return response({error:"conflict"},409);});
+    env.context.initial=overview({keys:[{api_key:"fixture-key",name:"old",allowed_models:["!*"],upstream_binding:{providers:["old"]}}]});
+    env.run('applyOverviewData(initial)');
+    env.run(editor === "key" ? 'openKeyModalByKey("fixture-key")' : editor === "price" ? 'openPriceModal("model")' : 'openPriceModalWithValues("model",1,2,3,4)');
+    env.context.changed=overview({rules_revision:9,keys:[{api_key:"fixture-key",upstream_binding:{providers:["new"]}}]});
+    env.run('applyOverviewData(changed)');
+    await env.run(editor === "key" ? 'submitKeyModal()' : 'submitPriceModal()');
+    assert.equal(calls[0].opts.headers.get("X-Key-Guard-Revision"),"4");
+    if(editor === "key") { assert.deepEqual(JSON.parse(calls[0].opts.body).allowed_models,["!*"]); assert.deepEqual(JSON.parse(calls[0].opts.body).upstream_binding.providers,["old"]); }
+  }
+});
+
+test("audit regression: price baseline metadata survives refresh without invalid numeric validation", async () => {
+  const calls=[];const env=environment(async(url,opts)=>{calls.push({url,opts});return response({error:"conflict"},409);});
+  env.context.initial=overview({pricing_status:{custom_prices:{model:{input:1,output:2,source:"fixture",future_field:{preserved:true}}}}});
+  env.run('applyOverviewData(initial);openPriceModal("model")');env.context.changed=overview({rules_revision:8});env.run('applyOverviewData(changed)');env.element("pmInputPrice").value="3";await env.run('submitPriceModal()');
+  assert.equal(calls[0].opts.headers.get("X-Key-Guard-Revision"),"4");assert.deepEqual(JSON.parse(calls[0].opts.body).price,{input:3,output:2,cache_read:0,cache_write:0,source:"fixture",future_field:{preserved:true}});
+});
+
+test("audit regression: settled mutation cannot refill a locked session", async () => {
+  const env=environment(async()=>response({ok:true,overview:overview({keys:[{api_key:"returned-secret"}]})}));
+  env.context.initial=overview({keys:[{api_key:"fixture-key"}]});env.run('applyOverviewData(initial)');
+  // Real transport/client has settled; revoke at the orchestration/consumer microtask boundary.
+  env.run('const originalCall = callManagementAPI; callManagementAPI = (...args) => originalCall(...args).then(result => { lockAdminWorkspace("revoked"); return result; })');
+  await env.run('quickToggleKeyEnabled("fixture-key")');
+  assert.equal(env.run('overviewData'),null);
+  assert.equal(env.run('activeManagementKey'),"");
+});
+
+test("audit regression: every mutation consumer ignores settled replies after logout or reauthentication", async () => {
+  const operations=['onKeyRowDrop({preventDefault(){}},"second-key")','submitKeyModal()','quickToggleKeyEnabled("fixture-key")','deleteKeyRule("fixture-key")','resetUsageStats("fixture-key")','resetKeyQuota("fixture-key")','saveDefaultPolicy()','triggerModelsDevSync()','submitPriceModal()','deleteCustomModelPrice("model")'];
+  for(const operation of operations)for(const relogin of [false,true]) {
+    const env=environment(async()=>response({ok:true,overview:overview({keys:[{api_key:"returned-secret"}]})}));
+    env.context.initial=overview({keys:[{api_key:"fixture-key"},{api_key:"second-key"}]});env.context.relogin=relogin;
+    env.run('applyOverviewData(initial);openKeyModalByKey("fixture-key");openPriceModal("model");dragSrcKey="fixture-key";const originalCall=callManagementAPI;callManagementAPI=(...args)=>originalCall(...args).then(result=>{lockAdminWorkspace("revoked");if(relogin)unlockAdminWorkspace("new-admin");return result;});');
+    await env.run(operation);
+    assert.equal(env.run('overviewData'),null,operation);assert.equal(env.element("keyModalMessage").textContent,"");assert.equal(env.element("priceModalMessage").textContent,"");
+  }
+});
+
+test("audit regression: removing wildcard exclusions requires explicit confirmation", () => {
+  for(const prefix of ["km","dp"]) {
+    const env=environment();env.context.prefix=prefix;
+    env.run('loadSelectorFromRule(prefix,["*","!private-*","!*"],[])');
+    assert.equal(env.run('JSON.stringify(exportSelectorValues(prefix).allowedModels)'), '["*","!private-*","!*"]');
+    assert.match(env.element(prefix+"ModelCheckList").innerHTML,/!private-/);
+    env.element(prefix+"AllModelsCheck").checked=false;env.run('onToggleAllModels(prefix)');
+    env.context.confirm=()=>false;env.element(prefix+"AllModelsCheck").checked=true;env.run('onToggleAllModels(prefix)');
+    assert.equal(env.element(prefix+"AllModelsCheck").checked,false);
+    assert.equal(env.run('JSON.stringify(exportSelectorValues(prefix).allowedModels)'), '["!private-*","!*"]');
+    env.context.confirm=()=>true;env.element(prefix+"AllModelsCheck").checked=true;env.run('onToggleAllModels(prefix)');
+    assert.equal(env.run('JSON.stringify(exportSelectorValues(prefix).allowedModels)'), '["*"]');
+  }
+});
+
+test("audit regression: changed credential aliases never retain removed bindings or drop hidden fields", async () => {
+  const calls=[];const env=environment(async(url,opts)=>{calls.push({url,opts});return response({ok:true,overview:overview()});});
+  env.context.initial=overview({keys:[{api_key:"fixture-key",upstream_binding:{auth_ids:["legacy"],credentials:["legacy"],providers:["private-provider"],attributes:{zone:"private"},strict:false}}]});
+  env.run('applyOverviewData(initial);openKeyModalByKey("fixture-key");');
+  env.element("kmAllCredsCheck").checked=true;env.context.confirm=()=>false;env.run('onToggleAllCreds("km")');assert.equal(env.element("kmAllCredsCheck").checked,false);
+  env.context.confirm=()=>true;env.element("kmAllCredsCheck").checked=true;env.run('onToggleAllCreds("km")');await env.run('submitKeyModal()');
+  const binding=JSON.parse(calls[0].opts.body).upstream_binding;assert.equal(binding.auth_ids,undefined);assert.deepEqual(binding.credentials,[]);assert.deepEqual(binding.providers,["private-provider"]);assert.deepEqual(binding.attributes,{zone:"private"});assert.equal(binding.strict,false);
+});
+
+test("audit regression: lock clears sensitive charts searches and retained identities", () => {
+  const env=environment();env.context.initial=overview({keys:[{api_key:"fixture-key"}]});env.run('applyOverviewData(initial); overviewState.expandedKeys={"fixture-key":true}; overviewState.activeModel="private-model"; dragSrcKey="fixture-key"');
+  for(const id of ["crudKeySearch","quotaSearch","dashKeySearch","dashAccountSearch","modelsDevSearchInput","kmModelSearch","dpCredSearch"])env.element(id).value="private-search";
+  for(const id of ["ovTrendChart","ovDonutChart","ovModelList","toastBox"])env.element(id).textContent="sensitive";
+  env.run('lockAdminWorkspace()');
+  assert.equal(env.run('Object.keys(overviewState.expandedKeys).length'),0);assert.equal(env.run('dragSrcKey'),null);assert.equal(env.run('overviewState.activeModel'),"");
+  for(const id of ["crudKeySearch","quotaSearch","dashKeySearch","dashAccountSearch","modelsDevSearchInput","kmModelSearch","dpCredSearch"])assert.equal(env.element(id).value,"",id);
+  for(const id of ["ovTrendChart","ovDonutChart","ovModelList","toastBox"])assert.equal(env.element(id).textContent,"",id);
+});
+
+test("audit regression: old modal saves never close or annotate a reopened editor", async () => {
+  for(const editor of ["key","price"]) for(const status of [200,409]) {
+    const pending=deferred();const env=environment(()=>pending.promise);env.context.initial=overview({keys:[{api_key:"fixture-key"}]});env.run('applyOverviewData(initial)');
+    env.run(editor === "key" ? 'openKeyModalByKey("fixture-key")' : 'openPriceModal("old-model")');
+    const task=env.run(editor === "key" ? 'submitKeyModal()' : 'submitPriceModal()');
+    env.run(editor === "key" ? 'closeKeyModal();openKeyModal({api_key:"new-key"})' : 'closePriceModal();openPriceModal("new-model")');
+    pending.resolve(status === 200 ? response({ok:true,overview:overview()}) : response({error:"old conflict"},409));await task;
+    assert.equal(env.element(editor === "key" ? "keyModal" : "priceModal").open,true);
+    assert.equal(env.element(editor === "key" ? "keyModalMessage" : "priceModalMessage").textContent,"");
+  }
+});
+
 test("API validates status, JSON, content type, schemas and optimistic revision", async () => {
   let options;
   const client = Client.createClient({ getKey: () => "secret", getRevision: () => 42, fetchImpl: async (_, opts) => { options = opts; return response({ ok: true, overview: overview() }); } });
@@ -597,8 +723,8 @@ test("unrelated key edits preserve invalid binding restrictions in submitted pay
   const calls = [];
   const env = environment(async (url, opts = {}) => { calls.push({url,opts}); return response({ok:true,overview:overview()}); });
   env.context.data = overview();
-  env.run('applyOverviewData(data); loadSelectorFromRule("km", ["*"], ["deleted"])');
-  env.element("kmApiKey").value = "test-key"; env.element("kmOriginalApiKey").value = "test-key";
+  env.run('applyOverviewData(data); openKeyModal({api_key:"test-key", upstream_binding:{credentials:["deleted"]}})');
+  env.element("kmName").value = "changed name";
   await env.run('submitKeyModal()');
   const request = calls.find(call => call.opts.method === "POST");
   assert.deepEqual(JSON.parse(request.opts.body).upstream_binding.credentials, ["deleted"]);

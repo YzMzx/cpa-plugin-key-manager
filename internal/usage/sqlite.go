@@ -160,6 +160,7 @@ func loadSnapshotFromDB(db *sqlitestore.DB) (PersistedSnapshot, error) {
 // the database transaction runs without the lock.
 type flushBatch struct {
 	keys          []KeyStats
+	quota         map[string]int64
 	accounts      map[string]AccountStats
 	ledger        []LedgerEntry
 	deletedLedger []ledgerRef
@@ -174,7 +175,7 @@ type flushBatch struct {
 }
 
 func (b *flushBatch) empty() bool {
-	return !b.resetAll && len(b.keys) == 0 && len(b.accounts) == 0 && len(b.ledger) == 0 &&
+	return len(b.quota) == 0 && !b.resetAll && len(b.keys) == 0 && len(b.accounts) == 0 && len(b.ledger) == 0 &&
 		len(b.deletedLedger) == 0 && len(b.deletedKeys) == 0 && b.pruneBefore == 0
 }
 
@@ -200,6 +201,11 @@ func (s *Store) takeFlushBatchLocked() *flushBatch {
 		pruneBefore: s.ledgerPruneBefore,
 		resetAll:    s.resetAll,
 	}
+	b.quota = make(map[string]int64, len(s.dirtyQuota))
+	for key := range s.dirtyQuota {
+		b.quota[key] = s.quotaCosts[key]
+	}
+	s.dirtyQuota = make(map[string]struct{})
 	for apiKey := range s.dirtyKeys {
 		b.dirtyKeyIDs = append(b.dirtyKeyIDs, apiKey)
 		if ks := s.keys[apiKey]; ks != nil {
@@ -244,6 +250,9 @@ func (s *Store) takeFlushBatchLocked() *flushBatch {
 // restoreFlushBatchLocked re-queues a batch whose transaction failed, so the next
 // flush retries it. Newer markers set in the meantime are preserved.
 func (s *Store) restoreFlushBatchLocked(b *flushBatch) {
+	for key := range b.quota {
+		s.dirtyQuota[key] = struct{}{}
+	}
 	for _, id := range b.dirtyKeyIDs {
 		s.dirtyKeys[id] = struct{}{}
 	}
@@ -359,6 +368,11 @@ func writeFlushBatch(conn *sql.DB, b *flushBatch) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	for key, cost := range b.quota {
+		if _, err := tx.Exec(`INSERT INTO quota_usage(api_key,total_cost_nano_usd) VALUES(?,?) ON CONFLICT(api_key) DO UPDATE SET total_cost_nano_usd=excluded.total_cost_nano_usd`, key, cost); err != nil {
+			return fmt.Errorf("sqlite: persist quota: %w", err)
+		}
+	}
 	if b.resetAll {
 		for _, table := range []string{"key_model_usage", "key_usage", "account_model_usage", "account_usage", "usage_ledger"} {
 			if _, err := tx.Exec("DELETE FROM " + table); err != nil {
@@ -484,6 +498,11 @@ func (s *Store) EnableSQLite(dbPath string) error {
 // published. Holding mu during this uncommon switch prevents overwriting usage
 // arriving between the final old-database flush and snapshot adoption.
 func (s *Store) configureSQLiteSerialized(dbPath string) error {
+	canonical, err := sqlitestore.CanonicalPath(dbPath)
+	if err != nil {
+		return err
+	}
+	dbPath = canonical
 	s.mu.Lock()
 	previous := s.db
 	if previous != nil && filepath.Clean(previous.Path()) == filepath.Clean(dbPath) {
@@ -519,9 +538,16 @@ func (s *Store) configureSQLiteSerialized(dbPath string) error {
 	if err != nil {
 		return fail(err)
 	}
-	hasExisting := len(snap.Keys) > 0 || len(snap.Accounts) > 0 || len(snap.Ledger) > 0
+	quota, err := loadQuotaFromDB(candidate.Conn())
+	if err != nil {
+		return fail(err)
+	}
+	hasExisting := len(quota) > 0 || len(snap.Keys) > 0 || len(snap.Accounts) > 0 || len(snap.Ledger) > 0
 	if !hasExisting {
 		// Seed a new database without clearing live dirty markers until it commits.
+		for key := range s.quotaCosts {
+			s.dirtyQuota[key] = struct{}{}
+		}
 		for key := range s.keys {
 			s.dirtyKeys[key] = struct{}{}
 		}
@@ -540,6 +566,7 @@ func (s *Store) configureSQLiteSerialized(dbPath string) error {
 		}
 	} else {
 		s.keys, s.accounts = snap.Keys, snap.Accounts
+		s.quotaCosts = quota
 		s.ledgerResetLocked()
 		for _, entry := range snap.Ledger {
 			if entry != nil {

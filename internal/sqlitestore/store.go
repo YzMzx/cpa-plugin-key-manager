@@ -2,8 +2,8 @@
 //
 // The design follows yuluo688/credit-manager: a pure-Go SQLite driver, WAL mode,
 // a single connection, transactional versioned migrations, and a host-owned
-// cross-process writer lock so two plugin instances can never write the same
-// database concurrently.
+// cross-process writer lock keyed by the canonical database path. Arbitrary
+// hard-link aliases and concurrent filesystem namespace changes are not supported.
 package sqlitestore
 
 import (
@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -41,18 +42,18 @@ type DB struct {
 	closeErr error
 }
 
-// LockPath returns the lock file that guards the database.
+// LockPath returns the lock filename for a database path. Pass CanonicalPath
+// when resolving a caller-supplied path, or use DB.LockFilePath after Open.
 func LockPath(databasePath string) string {
 	return filepath.Clean(strings.TrimSpace(databasePath)) + ".lock"
 }
 
 // Open resolves the path, takes the writer lock, opens SQLite and applies migrations.
 func Open(databasePath string, options Options) (*DB, error) {
-	clean := strings.TrimSpace(databasePath)
-	if clean == "" {
-		return nil, fmt.Errorf("sqlitestore: database path is required")
+	clean, err := CanonicalPath(databasePath)
+	if err != nil {
+		return nil, err
 	}
-	clean = filepath.Clean(clean)
 	if dir := filepath.Dir(clean); dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, fmt.Errorf("sqlitestore: create directory: %w", err)
@@ -103,13 +104,21 @@ func dsn(path string, busy time.Duration) string {
 	query.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", busy.Milliseconds()))
 	query.Add("_pragma", "foreign_keys(ON)")
 	query.Add("_pragma", "synchronous(NORMAL)")
-	return "file:" + filepath.ToSlash(path) + "?" + query.Encode()
+	filePath := filepath.ToSlash(path)
+	if runtime.GOOS == "windows" && !strings.HasPrefix(filePath, "/") {
+		// A drive path must be hierarchical, not the opaque URI file:C:/... .
+		filePath = "/" + filePath
+	}
+	// Keep UNC paths in Path (file:////server/share/...), not Host: SQLite
+	// rejects non-local URI authorities. URL.String escapes %, #, ? and UTF-8
+	// without escaping directory separators or interpreting filename parameters.
+	return (&url.URL{Scheme: "file", Path: filePath, RawQuery: query.Encode()}).String()
 }
 
 // Conn exposes the underlying connection for package-level queries.
 func (d *DB) Conn() *sql.DB { return d.db }
 
-// Path reports the database file.
+// Path reports the absolute, symlink-resolved database file used by SQLite.
 func (d *DB) Path() string {
 	if d == nil {
 		return ""

@@ -95,7 +95,10 @@
           if (!contentType.toLowerCase().includes("application/json")) throw new APIError("服务器响应类型不是 JSON，未更新当前数据", response.status);
           return validateResponse(path, method, data);
         })();
-        return await Promise.race([task, interruption]);
+        const result = await Promise.race([task, interruption]);
+        // A sibling 401/logout may cancel after task settled but before this continuation.
+        if (generation !== epoch || controller.signal.aborted) throw aborted();
+        return result;
       } finally {
         clearTimeout(timer); controllers.delete(controller);
         controller.signal.removeEventListener("abort", onAbort);

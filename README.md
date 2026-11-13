@@ -9,13 +9,14 @@ CLIProxyAPI 的 API Key 管控与用量统计插件：多 Key 治理、模型白
 ## 功能
 
 ### API Key 管理
-- 与 CPA 全局 `api-keys` 双向同步：插件里增删改 Key 会自动回写 `config.yaml` 的 `api-keys`。
+- 与 CPA 全局客户端 Key 同步：插件里增删改 Key 会通过 CPA 原生管理接口回写配置。读取兼容旧版 `api-keys` 数组及 v8 `access.api-keys`；后者存在时优先，包括显式空列表，顶层上游 `api-keys` 分组不会当作客户端 Key。
 - 每个 Key 可独立设置：启用状态、最大并发、模型白名单、上游凭证绑定、费用额度。
 - 列表支持拖动调整显示顺序，顺序随库保存。
 - 额度按费用（USD）计，`0` 表示不限额；超额请求直接返回 `429 insufficient_quota`（OpenAI / Anthropic SDK 兼容格式）。
-- `重置额度` 只重置计量基线，不清历史用量与费用。
+- `重置额度` 只重置计量基线，不清历史用量与费用。`清空用量统计` 只清展示统计，不释放额度；配额费用使用独立持久累计，改名来源与迟到费用仍计入。升级时从现存累计费用初始化，已在旧版本清除的历史无法自动恢复。
 
 ### 访问控制
+- **身份一致性**：准入与调度优先使用 CPA 已认证的 caller scope/身份。原始请求头不能覆盖它；无法解析的权威身份或互相矛盾的身份会拒绝执行。前端鉴权遇到多个不同的 Key 值会拒绝；同一 Key 重复出现在多个来源仍允许。
 - **模型白名单**：支持精确名、`*` / `?` 通配符、`!` 排除，命中失败返回 `403`（OpenAI / Anthropic 兼容 JSON），不触发上游请求。
 - **模型列表过滤**：用受限 Key 请求 `/v1/models` 时只返回白名单内的模型；面板请求不加过滤，`X-Key-Guard-Catalog: all` 可显式取全量。
 - **上游凭证绑定**：支持 `round-robin` / `fill-first` 调度与 `strict` 严格隔离；轮询只在最高可用匹配优先级内进行，绑定仅命中低优先级时仍可选择。
@@ -26,7 +27,7 @@ CLIProxyAPI 的 API Key 管控与用量统计插件：多 Key 治理、模型白
 - 支持 OpenAI Chat Completions、OpenAI Responses、Anthropic Claude、Google Gemini 四种 usage 格式，流式分片按字段增量合并。
 - 按「请求模型 + 服务端模型」二元组记账：上游替换只在明细里标注，不会拆成重复行。
 - 执行去重：`request.complete` 与 `usage.handle` 协同，同一个上游执行 UUID 只统计一次；重试产生的不同执行实例分别累计费用、Token 和对应账号，不把它们按 TraceID 合并。执行次数可能大于入站 HTTP 请求数。
-- 全部 Token 数值自动按 K / M / B 显示（如 `12.3 M`、`1.02 B`）。
+- 全部 Token 数值自动按 K / M / B 显示（如 `12.3 M`、`1.02 B`）。迟到缓存明细会重新划分同一执行的非缓存/缓存输入，不再分别取最大值重复收费；服务模型补齐后可升级临时兜底报价，已确定报价保持快照。超界 Token 字面量拒绝记账；报表聚合溢出显式报错，页面不将饱和计数展示为精确统计。
 
 ### 统一设置（管理员）
 - 新增「统一设置」页面，集中调整审计启用/保留天数/最大条数/单正文上限/逻辑总容量（最高 10 GiB，默认仍为 64 MiB）、用量刷盘间隔、账本保留天数、统计时区、价格同步 URL/周期/超时、自动请求 usage 及价格缓存文件路径。容量单位在页面中按 MiB 显示，保存为字节整数。
@@ -42,7 +43,7 @@ CLIProxyAPI 的 API Key 管控与用量统计插件：多 Key 治理、模型白
 - 正文状态统一简显：已保存为「已保存 JSON 明文」；未保存按超限、格式不支持、格式异常、关闭、繁忙等合并。详细大小及旧版脱敏/部分留存信息在详情单独显示，内部状态和过滤规则不变。
 - **明文留存模式：保存 JSON 请求正文，不对普通文字脱敏；入库前过滤图片、音频、视频等文件载荷，新记录按两空格缩进换行，仅改变字符串外的空白，不重排字段、不合并重复键、不转换数字精度。正文中自行携带的密码、token、API Key、对话及个人信息会原样保留。请严格限制管理员、数据库及备份的访问权限。**请求鉴权头、响应正文和 URL 查询参数仍不记录。
 - 默认启用，保留 7 天，最多 10,000 条，单正文 10 MiB（10,485,760 字节），审计逻辑总量 64 MiB；容量满时淘汰旧记录，接近 10 MiB 的正文通常只能保留约 6 条。
-- JSON 正文不再走脱敏器，不受旧版元素 4096、嵌套 16 或大正文脱敏繁忙限制。媒体文件载荷按新规则过滤为 `[OMITTED:media]`，保留同请求正常文字、数值和工具定义。保留合法 UTF-8 JSON 对象/数组和 10 MiB 上限；格式无效、非 JSON、压缩内容、超限仍整段略过，不留半截原文。底层 JSON 解析器本身也有防异常极深嵌套保护。
+- JSON 正文不再走脱敏器，不恢复旧版 4096 元素或嵌套 16 限制。正文准备另有非阻塞并发/加权输入预算及合作式扫描时间/工作量预算；拥堵或超预算只略过审计正文，不改变上游请求。媒体文件载荷按新规则过滤为 `[OMITTED:media]`，保留同请求正常文字、数值和工具定义。保留合法 UTF-8 JSON 对象/数组和 10 MiB 上限；格式无效、非 JSON、压缩内容、超限仍整段略过，不留半截原文。底层 JSON 解析器本身也有防异常极深嵌套保护。
 - 审计保存前，从根请求的 `messages` / `input` / `contents` 数组（或根消息数组）移除 `role: "system"`、`role: "developer"` 和 `role: "tool"` 的整条消息及其正文；保留 `user` / `assistant` 等其它角色及助手工具调用定义。仅处理审计副本，不修改实际发给上游的请求，不解释工具 Schema 或嵌套业务 JSON 中的同名字段。
 - 无过滤的新记录状态为 `stored_raw`，媒体已过滤为 `stored_raw_media_filtered`，角色已过滤为 `stored_raw_system_filtered`，两者均过滤为 `stored_raw_system_media_filtered`；默认格式化保存，哈希对应过滤后实际保存内容。若缩进使内容超过单条上限，则完整保留原始表示，绝不因格式化膨胀而丢弃正文。SHA-256 对实际保存内容计算，不是防篡改证明。详情默认以两空格格式化显示，也可切换「保存原文」核对字节对应内容；历史记录仅格式化展示，不改写数据库和旧哈希。重复键、大整数、数值字面量和 Unicode 转义均保留。旧版已脱敏/略过的正文无法恢复原始内容。
 - **IP 监控已移除：**不解析网络地址/代理头，不采集或显示客户端/Peer IP，不再提供 IP 筛选。数据库迁移清空旧的独立 IP 字段并移除索引；不修改用户正文自行包含的 IP 文本。旧备份/WAL/空闲页不保证安全擦除。
@@ -82,11 +83,11 @@ v0.9.0 起 **SQLite 是唯一存储后端**，规则、用量、账本全部存�
 | 覆盖方式 | 配置 `storage.usage_db_file`，或环境变量 `CPA_KEY_MANAGER_USAGE_DB` |
 | 引擎 | `modernc.org/sqlite`（纯 Go、无需 CGO） |
 | 模式 | WAL、`busy_timeout=5000`、单连接 |
-| 写锁 | `<db>.lock`（`flock` / `LockFileEx`），同一数据库只允许一个写入者 |
+| 写锁 | 绝对路径与已存在符号链接解析后统一生成 `<db>.lock`（`flock` / `LockFileEx`）；SQLite URI 编码保留 `#`、`%` 等文件名字面值。不要用硬链接或运行中改换目录链接来别名访问数据库 |
 | 迁移 | `schema_migrations` 表，按版本事务执行，重复启动幂等 |
 | 写入 | 增量 upsert，只写自上次落盘以来变动的行 |
 
-主要表：`rules_state`（Key 规则 / 排序 / 默认策略 / 价格覆盖）、`key_usage`、`key_model_usage`、`account_usage`、`account_model_usage`、`usage_ledger`（概览账本，默认保留 90 天）。
+主要表：`rules_state`（Key 规则 / 排序 / 默认策略 / 价格覆盖）、`key_usage`、`key_model_usage`、`account_usage`、`account_model_usage`、`usage_ledger`（概览账本，默认保留 90 天）、`quota_usage`（独立配额费用累计，不随展示统计清空）。
 
 ### ⚠️ Docker 必须挂载数据目录
 
@@ -121,14 +122,14 @@ curl -fsSL https://raw.githubusercontent.com/YzMzx/cpa-plugin-key-manager/main/i
 irm https://raw.githubusercontent.com/YzMzx/cpa-plugin-key-manager/main/install.ps1 | iex
 ```
 
-脚本会识别架构、下载对应 Release、校验 SHA256、安装到 `./plugins/`，并补齐 `config.yaml` 中的插件配置。
+脚本会下载对应 Release、严格校验唯一匹配的 SHA256 清单项并安装到 `./plugins/`。仅当 `config.yaml` 不存在时创建初始插件配置；**任何已有配置均保持原始字节不变**，请按脚本输出的片段手动合并/核对，勿追加第二个 `plugins` 节。安装二进制成功不表示已有配置已启用插件。
 
 ### 常用参数
 
 ```bash
 ./install.sh --dir /opt/CLIProxyAPI --version v0.9.7   # 指定根目录与版本
 ./install.sh --local ./cpa-plugin-key-manager-linux-amd64.tar.gz   # 本地包安装
-./install.sh --init-only                                # 只补配置，不下载二进制
+./install.sh --init-only                                # 初始化目录；已有配置只提示手动合并，不下载二进制
 # 安装器不再自动重置数据库；--reset-data / -ResetData 会在任何写入前报错退出。
 # 如确需重置：先停止 CPA，核对实际 usage_db_file/环境变量并完整备份，再手动操作。
 ```
@@ -179,11 +180,13 @@ http://127.0.0.1:8317/v0/resource/plugins/cpa-plugin-key-manager/ui
 - 备份完整数据目录，并在停止写入或使用一致性快照后备份数据库；现有 SQLite 数据不会因清理旧配置功能而被删除。
 - 当前保留的 JSON 文件仅为模型价格缓存 `models_dev.json`，不是规则或用量后端。相对数据库/缓存路径固定以 CPA 根目录解析，不再拾取工作目录、用户目录等位置的同名历史文件；显式绝对路径仍支持。
 
+本轮审计修复、数据迁移与验证边界见 [审计修复记录](<AUDIT_FIXES.md>)。
+
 ## 源码编译
 
 ```bash
 go test ./...
-node --test web/settings.test.cjs web/runtime.test.cjs web/audit.test.cjs
+node --test web/*.test.cjs
 
 # Linux
 CGO_ENABLED=1 go build -buildmode=c-shared -o cpa-plugin-key-manager.so .
@@ -197,7 +200,7 @@ go build -buildmode=c-shared -o cpa-plugin-key-manager.dll .
 
 管理页源码位于 `web/`，按 API 客户端、认证桥、异步状态、日期格式化、事件委托与页面渲染拆分；构建时仍由 `web/embed.go` 拼装成单个 HTML 内嵌进动态库，无需 npm 安装或外部静态资源。具体契约和前端测试见 `web/README.md`。
 
-规则变更先提交 SQLite，再通过 CPA 原生逐 Key 操作同步宿主；部分失败会显示“同步待重试”，刷新后重试，不再静默提示全部成功。界面使用 `X-Key-Guard-Revision` 防止旧页面覆盖新规则；未传此头的旧 API 客户端保留无条件写入的兼容模式。删除标记会立即阻止旧 Key 继续请求；改名需等待在途请求结束，历史用量保留，已用额度与晚到费用延续到新 Key。
+规则变更先提交 SQLite，再通过 CPA 原生逐 Key 操作同步宿主；部分失败会显示“同步待重试”，刷新后重试，不再静默提示全部成功。界面使用 `X-Key-Guard-Revision` 防止旧页面覆盖新规则；Key/价格编辑器固定打开时的版本，不借用后来刷新的版本。编辑保留未展示的提供商/属性/严格绑定、默认额度和模型排除规则；解除模型或具体凭证限制需确认。锁定会话会清理敏感状态并阻止旧请求回填；未传此头的旧 API 客户端保留无条件写入的兼容模式。删除标记会立即阻止旧 Key 继续请求；改名需等待在途请求结束，历史用量保留，已用额度与晚到费用延续到新 Key。
 
 v0.10.4 起，宿主同步同时支持新版 `server.host` / `server.port` / `server.tls` 和旧版顶层字段；混合配置以新版字段为准。同步失败会显示不含密钥的中文原因，`host_sync.error_code` 可区分配置、连接、超时、证书、鉴权及接口问题。升级后刷新可重试既有待同步状态，无需修改正常的 CPA 配置或清理数据库。
 

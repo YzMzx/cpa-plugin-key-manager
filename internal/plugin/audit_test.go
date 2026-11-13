@@ -298,6 +298,10 @@ func TestAuditCaptureFailureRemainsVisibleAfterSuccessfulWrite(t *testing.T) {
 
 func TestAuditLongPromptFlowsThroughCaptureSchemaAndDetail(t *testing.T) {
 	m := transactionManager(t)
+	// Functional size/lexical coverage uses a deterministic per-instance clock.
+	// Elapsed-time omission is covered separately, without scheduler timing.
+	fixed := time.Now()
+	m.auditBodies = audit.NewBodyCaptureBudgetWithClock(func() time.Time { return fixed })
 	if _, err := m.UpsertKeyRuleFromJSON([]byte(`{"api_key":"client-audit-secret"}`)); err != nil {
 		t.Fatal(err)
 	}
@@ -327,6 +331,10 @@ func TestAuditLongPromptFlowsThroughCaptureSchemaAndDetail(t *testing.T) {
 
 func TestAuditConcurrentLargeRawBodiesAreNotSkippedAsBusy(t *testing.T) {
 	m := transactionManager(t)
+	// Functional size/lexical coverage uses a deterministic per-instance clock.
+	// Elapsed-time omission is covered separately, without scheduler timing.
+	fixed := time.Now()
+	m.auditBodies = audit.NewBodyCaptureBudgetWithClock(func() time.Time { return fixed })
 	body, _ := json.Marshal(map[string]any{"messages": []any{map[string]string{"role": "user", "content": strings.Repeat("长文本 ", 60000)}}, "api_key": "body-secret"})
 	var group sync.WaitGroup
 	for i := 0; i < 4; i++ {

@@ -385,6 +385,7 @@ type LedgerKeyRow struct {
 
 // LedgerResult is the full payload returned to the overview tab.
 type LedgerResult struct {
+	AccountingError  string           `json:"accounting_error,omitempty"`
 	From             string           `json:"from"`
 	To               string           `json:"to"`
 	Timezone         string           `json:"timezone"`
@@ -518,6 +519,11 @@ func (s *Store) QueryLedger(q LedgerQuery) LedgerResult {
 		Status:        status,
 	}
 
+	add := func(dst *int64, value int64) {
+		if !SaturatingAdd(dst, value) {
+			result.AccountingError = "ledger aggregate exceeds supported range; affected counters are saturated"
+		}
+	}
 	buckets := make(map[string]*LedgerBucket)
 	modelAgg := make(map[string]*LedgerModelRow)
 	keyAgg := make(map[string]*LedgerKeyRow)
@@ -532,13 +538,13 @@ func (s *Store) QueryLedger(q LedgerQuery) LedgerResult {
 			continue
 		}
 
-		result.Requests += entry.Requests
-		result.InputTokens += entry.InputTokens
-		result.OutputTokens += entry.OutputTokens
-		result.CacheReadTokens += entry.CacheReadTokens
-		result.CacheWriteTokens += entry.CacheWriteTokens
-		result.TotalTokens += entry.TotalTokens
-		result.CostNanoUSD += entry.CostNanoUSD
+		add(&result.Requests, entry.Requests)
+		add(&result.InputTokens, entry.InputTokens)
+		add(&result.OutputTokens, entry.OutputTokens)
+		add(&result.CacheReadTokens, entry.CacheReadTokens)
+		add(&result.CacheWriteTokens, entry.CacheWriteTokens)
+		add(&result.TotalTokens, entry.TotalTokens)
+		add(&result.CostNanoUSD, entry.CostNanoUSD)
 		if entry.Model != "" {
 			usedModels[entry.Model] = struct{}{}
 		}
@@ -553,26 +559,26 @@ func (s *Store) QueryLedger(q LedgerQuery) LedgerResult {
 			bucket = &LedgerBucket{Label: label, Start: start}
 			buckets[label] = bucket
 		}
-		bucket.Requests += entry.Requests
-		bucket.InputTokens += entry.InputTokens
-		bucket.OutputTokens += entry.OutputTokens
-		bucket.CacheReadTokens += entry.CacheReadTokens
-		bucket.CacheWriteTokens += entry.CacheWriteTokens
-		bucket.TotalTokens += entry.TotalTokens
-		bucket.CostNanoUSD += entry.CostNanoUSD
+		add(&bucket.Requests, entry.Requests)
+		add(&bucket.InputTokens, entry.InputTokens)
+		add(&bucket.OutputTokens, entry.OutputTokens)
+		add(&bucket.CacheReadTokens, entry.CacheReadTokens)
+		add(&bucket.CacheWriteTokens, entry.CacheWriteTokens)
+		add(&bucket.TotalTokens, entry.TotalTokens)
+		add(&bucket.CostNanoUSD, entry.CostNanoUSD)
 
 		row := modelAgg[entry.Model]
 		if row == nil {
 			row = &LedgerModelRow{Model: entry.Model}
 			modelAgg[entry.Model] = row
 		}
-		row.Requests += entry.Requests
-		row.InputTokens += entry.InputTokens
-		row.OutputTokens += entry.OutputTokens
-		row.CacheReadTokens += entry.CacheReadTokens
-		row.CacheWriteTokens += entry.CacheWriteTokens
-		row.TotalTokens += entry.TotalTokens
-		row.CostNanoUSD += entry.CostNanoUSD
+		add(&row.Requests, entry.Requests)
+		add(&row.InputTokens, entry.InputTokens)
+		add(&row.OutputTokens, entry.OutputTokens)
+		add(&row.CacheReadTokens, entry.CacheReadTokens)
+		add(&row.CacheWriteTokens, entry.CacheWriteTokens)
+		add(&row.TotalTokens, entry.TotalTokens)
+		add(&row.CostNanoUSD, entry.CostNanoUSD)
 
 		// Per-key aggregation with its own per-model breakdown.
 		keyRow := keyAgg[entry.APIKey]
@@ -583,13 +589,13 @@ func (s *Store) QueryLedger(q LedgerQuery) LedgerResult {
 		if keyRow.KeyName == "" && entry.KeyName != "" {
 			keyRow.KeyName = entry.KeyName
 		}
-		keyRow.Requests += entry.Requests
-		keyRow.InputTokens += entry.InputTokens
-		keyRow.OutputTokens += entry.OutputTokens
-		keyRow.CacheReadTokens += entry.CacheReadTokens
-		keyRow.CacheWriteTokens += entry.CacheWriteTokens
-		keyRow.TotalTokens += entry.TotalTokens
-		keyRow.CostNanoUSD += entry.CostNanoUSD
+		add(&keyRow.Requests, entry.Requests)
+		add(&keyRow.InputTokens, entry.InputTokens)
+		add(&keyRow.OutputTokens, entry.OutputTokens)
+		add(&keyRow.CacheReadTokens, entry.CacheReadTokens)
+		add(&keyRow.CacheWriteTokens, entry.CacheWriteTokens)
+		add(&keyRow.TotalTokens, entry.TotalTokens)
+		add(&keyRow.CostNanoUSD, entry.CostNanoUSD)
 
 		perModel := keyModelAgg[entry.APIKey]
 		if perModel == nil {
@@ -601,13 +607,13 @@ func (s *Store) QueryLedger(q LedgerQuery) LedgerResult {
 			km = &LedgerModelRow{Model: entry.Model}
 			perModel[entry.Model] = km
 		}
-		km.Requests += entry.Requests
-		km.InputTokens += entry.InputTokens
-		km.OutputTokens += entry.OutputTokens
-		km.CacheReadTokens += entry.CacheReadTokens
-		km.CacheWriteTokens += entry.CacheWriteTokens
-		km.TotalTokens += entry.TotalTokens
-		km.CostNanoUSD += entry.CostNanoUSD
+		add(&km.Requests, entry.Requests)
+		add(&km.InputTokens, entry.InputTokens)
+		add(&km.OutputTokens, entry.OutputTokens)
+		add(&km.CacheReadTokens, entry.CacheReadTokens)
+		add(&km.CacheWriteTokens, entry.CacheWriteTokens)
+		add(&km.TotalTokens, entry.TotalTokens)
+		add(&km.CostNanoUSD, entry.CostNanoUSD)
 	}
 
 	labels := make([]string, 0, len(buckets))
@@ -617,9 +623,9 @@ func (s *Store) QueryLedger(q LedgerQuery) LedgerResult {
 	sort.Strings(labels)
 	for _, label := range labels {
 		bucket := buckets[label]
-		denominator := bucket.InputTokens + bucket.CacheReadTokens
+		denominator := float64(bucket.InputTokens) + float64(bucket.CacheReadTokens)
 		if denominator > 0 {
-			bucket.CacheHitRate = float64(bucket.CacheReadTokens) / float64(denominator) * 100
+			bucket.CacheHitRate = float64(bucket.CacheReadTokens) / denominator * 100
 		}
 		result.Series = append(result.Series, *bucket)
 	}

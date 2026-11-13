@@ -317,4 +317,12 @@ test("omitted body codes merge into actionable categories and never reveal accid
  assert.equal(Audit.bodyStatus(contradictory),"未保存正文");assert.doesNotMatch(Audit.bodyView(contradictory).json,/must-not-render/);
 });
 
+test("processing budget omission is explicit and never displays an accidental body",()=>{
+ for(const body_truncated of [false,true])for(const mode of ["formatted","original"]){
+  const value=record("processing-limit",{body_state:"omitted_processing_limit",body_truncated,request_body:'{"secret":"must-not-show"}'});
+  assert.equal(Audit.bodyStatus(value),"未保存（处理超限）");const view=Audit.bodyView(value,mode);assert.match(view.json,/处理工作量或时间超限.*整段/);assert.equal(view.retainedBytes,0);assert.doesNotMatch(view.json,/must-not-show/);
+ }
+ assert.equal(Audit.bodyStatus(record("busy",{body_state:"omitted_busy"})),"未保存（采集繁忙）");
+});
+
 test("locally rejected request metadata never displays a request body",()=>{const value=Audit.bodyView(record("rejected-body",{body_state:"omitted_rejected",request_body:'{"private":"must-not-show"}'}));assert.equal(value.state,"未保存（请求已拒绝）");assert.equal(value.retainedBytes,0);assert.doesNotMatch(value.json,/must-not-show/);});
