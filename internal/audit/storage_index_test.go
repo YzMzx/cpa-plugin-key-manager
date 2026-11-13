@@ -96,6 +96,7 @@ func TestAuditStorageQueriesNeverReadBodyPayloads(t *testing.T) {
 		args        []any
 	}{
 		{"storage", auditStorageQuery, []any{0, 0}},
+		{"cleanup_metadata", auditCleanupMetadataQuery, nil},
 		{"preview_all", auditCleanupPreviewQuery + "1=1 ORDER BY started_at,id LIMIT ?", []any{100001}},
 		{"preview_before", auditCleanupPreviewQuery + "started_at<? ORDER BY started_at,id LIMIT ?", []any{1, 100001}},
 	} {

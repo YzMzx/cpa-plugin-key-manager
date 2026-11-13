@@ -289,15 +289,16 @@
         if (!ticket.current() || !active || !isAuthenticated()) return;
         const value = payload.preview;
         if (!object(value) || typeof value.token !== "string" || !value.token || !integer(value.records) || !integer(value.logical_bytes)) throw new Error("清理预览响应无效");
+        if ((own(value, "limited") && typeof value.limited !== "boolean") || (value.limited && (!integer(value.remaining_records) || value.remaining_records === 0))) throw new Error("分批清理预览响应无效");
         cleanupPreview = value; if (payload.storage) renderStorage(payload.storage);
-        set("auditCleanupMessage", "将永久删除 " + value.records + " 条审计记录 · 逻辑占用 " + bytes(value.logical_bytes) + " · 正文 " + bytes(value.request_body_bytes) + (value.before ? " · 截止 " + timestamp(value.before, getTimezone()) : "") + "。预览后新增记录不在此次清理范围。");
+        set("auditCleanupMessage", "将永久删除 " + value.records + " 条审计记录 · 逻辑占用 " + bytes(value.logical_bytes) + " · 正文 " + bytes(value.request_body_bytes) + (value.before ? " · 截止 " + timestamp(value.before, getTimezone()) : "") + "。预览后新增记录不在此次清理范围。" + (value.limited ? " 本次仅选择最早的一批（最多 1000 条 / 32 MiB），范围内另有 " + value.remaining_records + " 条未纳入；完成后须重新预览并确认，不会自动继续。" : ""));
         if (value.records > 0) element("auditCleanupConfirmation").classList.remove("hidden");
       } catch (error) { if (ticket.current() && active && isAuthenticated() && error.name !== "AbortError") resetCleanupPreview("清理预览失败：" + error.message); }
       finally { if (!cleanupBusy) element("auditCleanupPreview").disabled = false; ticket.finish(); }
     }
     async function confirmCleanup() {
       if (!active || !isAuthenticated() || cleanupBusy || !cleanupPreview || !element("auditCleanupAcknowledge").checked) return;
-      const token = cleanupPreview.token; cleanupPreview = null; cleanupBusy = true;
+      const token = cleanupPreview.token, limited = cleanupPreview.limited === true; cleanupPreview = null; cleanupBusy = true;
       element("auditCleanupConfirm").disabled = true; element("auditCleanupPreview").disabled = true;
       set("auditCleanupMessage", "正在清理已确认的审计记录…");
       const ticket = gate.begin("audit-cleanup");
@@ -305,7 +306,7 @@
         const payload = await request(BASE + "/cleanup", { method: "POST", body: JSON.stringify({ token, confirm: true }), signal: ticket.signal });
         if (!ticket.current() || !active || !isAuthenticated()) return;
         if (payload.ok !== true || !object(payload.deleted) || !integer(payload.deleted.records)) throw new Error("服务器未确认清理结果");
-        const message = "已清理 " + payload.deleted.records + " 条审计记录 · 释放逻辑占用 " + bytes(payload.deleted.logical_bytes) + "；规则和用量账本保持不变。";
+        const message = "已清理 " + payload.deleted.records + " 条审计记录 · 释放逻辑占用 " + bytes(payload.deleted.logical_bytes) + "；规则和用量账本保持不变。" + (limited ? " 本批已完成；剩余范围请重新计算占用并预览确认，不会自动继续。" : "");
         resetCleanupPreview(message); clearDetail(); if (payload.storage) renderStorage(payload.storage);
         await loadList();
       } catch (error) { if (ticket.current() && active && isAuthenticated() && error.name !== "AbortError") resetCleanupPreview("清理结果未确认：" + error.message + "。请重新计算占用并预览，不要直接重复提交。"); }

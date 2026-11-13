@@ -12,6 +12,14 @@ var ErrInvalidCleanup = errors.New("invalid audit cleanup scope or time")
 
 const maxCleanupRecords = 100000
 
+// Bound each explicitly confirmed transaction, including the physical DELETE.
+const maxCleanupBatchRecords = 1000
+const maxCleanupBatchBytes int64 = 32 << 20
+
+// CleanupApplyTimeout allows bounded physical deletion of retained payloads, not
+// just metadata reads. Keep it below the management client's 15-second timeout.
+const CleanupApplyTimeout = 10 * time.Second
+
 // StorageUsage separates audit logical payload from the shared SQLite file size.
 type StorageUsage struct {
 	Records            int64   `json:"records"`
@@ -30,12 +38,14 @@ type StorageUsage struct {
 }
 
 type CleanupPlan struct {
-	IDs             []string `json:"-"`
-	Scope           string   `json:"scope"`
-	BeforeUnixMilli int64    `json:"before_unix_milli,omitempty"`
-	Records         int64    `json:"records"`
-	LogicalBytes    int64    `json:"logical_bytes"`
-	BodyBytes       int64    `json:"request_body_bytes"`
+	IDs              []string `json:"-"`
+	Scope            string   `json:"scope"`
+	BeforeUnixMilli  int64    `json:"before_unix_milli,omitempty"`
+	Records          int64    `json:"records"`
+	LogicalBytes     int64    `json:"logical_bytes"`
+	BodyBytes        int64    `json:"request_body_bytes"`
+	Limited          bool     `json:"limited"`
+	RemainingRecords int64    `json:"remaining_records"`
 }
 type CleanupResult struct {
 	Records      int64 `json:"records"`
@@ -50,7 +60,8 @@ func safeExpireNow() time.Time { return time.Now().UTC() }
 // expression must match the migration exactly, including the BLOB cast for UTF-8.
 const auditStorageMetadata = "client_request_audit INDEXED BY client_request_audit_storage_idx"
 const auditStorageQuery = `SELECT COUNT(*),COALESCE(SUM(CASE WHEN started_at>=? THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN started_at<? THEN 1 ELSE 0 END),0),COALESCE(SUM(logical_bytes),0),COALESCE(SUM(length(CAST(request_body AS BLOB))),0) FROM ` + auditStorageMetadata
-const auditCleanupPreviewQuery = "SELECT id,logical_bytes,length(CAST(request_body AS BLOB)) FROM " + auditStorageMetadata + " WHERE "
+const auditCleanupMetadataQuery = "SELECT id,logical_bytes,length(CAST(request_body AS BLOB)) FROM " + auditStorageMetadata
+const auditCleanupPreviewQuery = auditCleanupMetadataQuery + " WHERE "
 
 func (s *Store) Storage(ctx context.Context) (StorageUsage, error) {
 	usage := StorageUsage{CapacityMode: "logical_payload_not_physical_file", PhysicalSizeScope: "shared_sqlite_database_and_wal", Warning: "Audit logical deletion may not shrink the shared SQLite/WAL files and does not guarantee secure erasure."}
@@ -123,15 +134,28 @@ func (s *Store) PreviewCleanup(ctx context.Context, scope string, before time.Ti
 		return CleanupPlan{}, s.fail(ErrUnavailable)
 	}
 	defer rows.Close()
+	var scanned int
+	var batchBytes int64
 	for rows.Next() {
 		var id string
 		var logical, body int64
 		if err := rows.Scan(&id, &logical, &body); err != nil {
 			return CleanupPlan{}, s.fail(ErrUnavailable)
 		}
-		if !validID(id) || logical < 0 || body < 0 || len(plan.IDs) >= maxCleanupRecords {
+		if !validID(id) || logical < 0 || body < 0 || scanned >= maxCleanupRecords {
 			return CleanupPlan{}, s.fail(ErrUnavailable)
 		}
+		scanned++
+		cost := max(logical, body)
+		if plan.Limited || len(plan.IDs) >= maxCleanupBatchRecords || cost > maxCleanupBatchBytes-batchBytes {
+			if len(plan.IDs) == 0 {
+				return CleanupPlan{}, s.fail(ErrUnavailable)
+			}
+			plan.Limited = true
+			plan.RemainingRecords++
+			continue
+		}
+		batchBytes += cost
 		plan.IDs = append(plan.IDs, id)
 		plan.Records++
 		plan.LogicalBytes += logical
@@ -144,13 +168,13 @@ func (s *Store) PreviewCleanup(ctx context.Context, scope string, before time.Ti
 }
 
 // ApplyCleanup only uses a server-owned preview snapshot, never a client WHERE.
-// Re-read metadata in each batch so counts reflect rows still present at apply.
+// Read current metadata in the same transaction so counts reflect rows still present at apply.
 func (s *Store) ApplyCleanup(ctx context.Context, plan CleanupPlan) (CleanupResult, error) {
 	var result CleanupResult
 	if err := s.ready(); err != nil {
 		return result, err
 	}
-	if (plan.Scope != "all" && plan.Scope != "before" && plan.Scope != "expired") || len(plan.IDs) > maxCleanupRecords {
+	if (plan.Scope != "all" && plan.Scope != "before" && plan.Scope != "expired") || len(plan.IDs) > maxCleanupBatchRecords {
 		return result, ErrInvalidCleanup
 	}
 	seen := make(map[string]struct{}, len(plan.IDs))
@@ -163,13 +187,56 @@ func (s *Store) ApplyCleanup(ctx context.Context, plan CleanupPlan) (CleanupResu
 		}
 		seen[id] = struct{}{}
 	}
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, CleanupApplyTimeout)
 	defer cancel()
-	tx, err := s.db.Conn().BeginTx(ctx, nil)
+	// Keep a connection lease until automatic rollback has finished on cancellation.
+	connection, err := s.db.Conn().Conn(ctx)
+	if err != nil {
+		return result, s.fail(ErrUnavailable)
+	}
+	defer connection.Close()
+	tx, err := connection.BeginTx(ctx, nil)
 	if err != nil {
 		return result, s.fail(ErrUnavailable)
 	}
 	defer tx.Rollback()
+	// Read current metadata once from the covering index. Primary-key lookups of
+	// body lengths materialize the payload; forcing this index per delete batch
+	// would instead rescan all metadata up to 500 times. Filter the snapshot in Go.
+	var batchBytes int64
+	rows, err := tx.QueryContext(ctx, auditCleanupMetadataQuery)
+	if err != nil {
+		return CleanupResult{}, s.fail(ErrUnavailable)
+	}
+	for rows.Next() {
+		var id string
+		var logical, body int64
+		if err := rows.Scan(&id, &logical, &body); err != nil {
+			rows.Close()
+			return CleanupResult{}, s.fail(ErrUnavailable)
+		}
+		if _, selected := seen[id]; selected {
+			if logical < 0 || body < 0 {
+				rows.Close()
+				return CleanupResult{}, s.fail(ErrUnavailable)
+			}
+			cost := max(logical, body)
+			if cost > maxCleanupBatchBytes-batchBytes {
+				rows.Close()
+				return CleanupResult{}, s.fail(ErrUnavailable)
+			}
+			batchBytes += cost
+			result.Records++
+			result.LogicalBytes += logical
+			result.BodyBytes += body
+		}
+	}
+	err = rows.Err()
+	rows.Close() // Release rows before another statement on the sole connection.
+	if err != nil {
+		return CleanupResult{}, s.fail(ErrUnavailable)
+	}
+	var deletedRecords int64
 	for start := 0; start < len(plan.IDs); start += 200 {
 		end := min(start+200, len(plan.IDs))
 		args := make([]any, end-start)
@@ -177,22 +244,18 @@ func (s *Store) ApplyCleanup(ctx context.Context, plan CleanupPlan) (CleanupResu
 			args[i] = id
 		}
 		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(args)), ",")
-		var count, logical, body int64
-		err = tx.QueryRowContext(ctx, "SELECT COUNT(*),COALESCE(SUM(logical_bytes),0),COALESCE(SUM(length(CAST(request_body AS BLOB))),0) FROM client_request_audit WHERE id IN ("+placeholders+")", args...).Scan(&count, &logical, &body)
-		if err != nil {
-			return CleanupResult{}, s.fail(ErrUnavailable)
-		}
 		deleted, err := tx.ExecContext(ctx, "DELETE FROM client_request_audit WHERE id IN ("+placeholders+")", args...)
 		if err != nil {
 			return CleanupResult{}, s.fail(ErrUnavailable)
 		}
 		actual, err := deleted.RowsAffected()
-		if err != nil || actual != count {
+		if err != nil {
 			return CleanupResult{}, s.fail(ErrUnavailable)
 		}
-		result.Records += count
-		result.LogicalBytes += logical
-		result.BodyBytes += body
+		deletedRecords += actual
+	}
+	if deletedRecords != result.Records {
+		return CleanupResult{}, s.fail(ErrUnavailable)
 	}
 	if err := tx.Commit(); err != nil {
 		return CleanupResult{}, s.fail(ErrUnavailable)

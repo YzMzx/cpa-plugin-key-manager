@@ -186,6 +186,21 @@ test("cleanup previews count/bytes and requires explicit confirmation before sin
  await f.view.confirmCleanup();await f.view.confirmCleanup();assert.equal(apply,1);const body=JSON.parse(f.calls.find(call=>call.url.endsWith("/cleanup")).options.body);assert.deepEqual(body,{token:"safe-token",confirm:true});assert.match(f.node("auditCleanupMessage").textContent,/已清理 2 条/);
 });
 
+test("bounded cleanup announces remaining scope and never automatically continues",async()=>{
+ let apply=0;const f=fixture(async(url)=>{
+  if(url.endsWith("/cleanup/preview"))return{preview:{token:"batch",records:3,logical_bytes:30*1024*1024,request_body_bytes:30*1024*1024,limited:true,remaining_records:93}};
+  if(url.endsWith("/cleanup")){apply++;return{ok:true,deleted:{records:3,logical_bytes:30*1024*1024}};}
+  return list([]);
+ });await f.view.enter();await f.view.previewCleanup();assert.match(f.node("auditCleanupMessage").textContent,/最早的一批/);assert.match(f.node("auditCleanupMessage").textContent,/93 条未纳入/);
+ f.node("auditCleanupAcknowledge").checked=true;await f.view.confirmCleanup();await f.view.confirmCleanup();assert.equal(apply,1);assert.match(f.node("auditCleanupMessage").textContent,/本批已完成/);assert.match(f.node("auditCleanupMessage").textContent,/不会自动继续/);assert.equal(f.node("auditCleanupAcknowledge").checked,false);
+ const html=fs.readFileSync(path.join(__dirname,"index.html"),"utf8");assert.match(html,/id="auditCleanupAcknowledge"[^>]+aria-describedby="auditCleanupMessage"/);assert.match(html,/id="auditCleanupConfirm"[^>]+aria-describedby="auditCleanupMessage"/);
+});
+
+test("failed cleanup consumes local confirmation and never retries the write",async()=>{
+ let apply=0;const f=fixture(async url=>{if(url.endsWith("/cleanup/preview"))return{preview:{token:"one-use",records:1,logical_bytes:10}};if(url.endsWith("/cleanup")){apply++;throw new Error("HTTP 503");}return list([]);});
+ await f.view.enter();await f.view.previewCleanup();f.node("auditCleanupAcknowledge").checked=true;await f.view.confirmCleanup();await f.view.confirmCleanup();assert.equal(apply,1);assert.match(f.node("auditCleanupMessage").textContent,/不要直接重复提交/);assert.equal(f.node("auditCleanupConfirmation").classList.contains("hidden"),true);
+});
+
 test("cleanup date validation and range change invalidate the old preview",async()=>{
  const f=fixture(async url=>url.endsWith("/cleanup/preview")?{preview:{token:"t",records:1,logical_bytes:10,request_body_bytes:5},storage:{records:1,logical_bytes:10,request_body_bytes:5,max_total_bytes:1024}}:list([]));await f.view.enter();
  f.node("auditCleanupScope").value="custom";f.node("auditCleanupBefore").value="invalid";const before=f.calls.length;await f.view.previewCleanup();assert.equal(f.calls.length,before);assert.match(f.node("auditCleanupMessage").textContent,/RFC3339/);

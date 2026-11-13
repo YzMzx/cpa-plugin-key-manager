@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -105,6 +106,97 @@ func TestPreviewAndApplyCleanupAreSnapshotBoundAndAuditOnly(t *testing.T) {
 	again, err := s.ApplyCleanup(context.Background(), plan)
 	if err != nil || again.Records != 0 {
 		t.Fatal("missing actual count on repeated store plan")
+	}
+}
+
+func TestCleanupCountsCurrentMetadataNotStalePreview(t *testing.T) {
+	db, _ := openAuditDB(t)
+	s := NewStore(db, Config{Enabled: true})
+	for _, id := range []string{"changed", "gone"} {
+		mustBegin(t, s, auditRecord(id))
+	}
+	plan, err := s.PreviewCleanup(context.Background(), "all", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"message":"你好 🌍"}`
+	if _, err := db.Conn().Exec("UPDATE client_request_audit SET request_body=?,logical_bytes=1234 WHERE request_id='changed'", body); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Conn().Exec("DELETE FROM client_request_audit WHERE request_id='gone'"); err != nil {
+		t.Fatal(err)
+	}
+	mustBegin(t, s, auditRecord("after-preview"))
+	result, err := s.ApplyCleanup(context.Background(), plan)
+	if err != nil || result.Records != 1 || result.LogicalBytes != 1234 || result.BodyBytes != int64(len(body)) {
+		t.Fatalf("stale cleanup counts: %+v %v", result, err)
+	}
+	remaining := oneRecord(t, s, "after-preview")
+	if remaining.RequestID != "after-preview" {
+		t.Fatal("deleted new record")
+	}
+}
+
+func TestCleanupFailureRollsBackEarlierBatchesAndReleasesConnection(t *testing.T) {
+	db, _ := openAuditDB(t)
+	s := NewStore(db, Config{Enabled: true})
+	tx, err := db.Conn().Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	for i := 0; i < 201; i++ {
+		if _, err := tx.Exec("INSERT INTO client_request_audit(id,request_id,started_at,logical_bytes) VALUES(?,?,0,256)", fmt.Sprintf("%064x", i), fmt.Sprint(i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := s.PreviewCleanup(context.Background(), "all", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Fail only after the first 200-ID batch would have been deleted.
+	if _, err := db.Conn().Exec(`CREATE TRIGGER fail_cleanup BEFORE DELETE ON client_request_audit WHEN OLD.request_id='200' BEGIN SELECT RAISE(ABORT,'test failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.ApplyCleanup(context.Background(), plan)
+	if !errors.Is(err, ErrUnavailable) || result != (CleanupResult{}) {
+		t.Fatalf("partial result on failure: %+v %v", result, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	usage, err := s.Storage(ctx)
+	if err != nil || usage.Records != 201 {
+		t.Fatalf("partial deletion or leaked connection: %+v %v", usage, err)
+	}
+	if _, err := db.Conn().Exec("DROP TRIGGER fail_cleanup"); err != nil {
+		t.Fatal(err)
+	}
+	// Hold a later batch in SQLite until its caller cancels. The leased connection
+	// must finish automatic rollback before a fresh storage read can reuse it.
+	if _, err := db.Conn().Exec(`CREATE TRIGGER cancel_cleanup BEFORE DELETE ON client_request_audit WHEN OLD.request_id='200' BEGIN SELECT sum(x) FROM (WITH RECURSIVE slow(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM slow WHERE x<100000000) SELECT x FROM slow); END`); err != nil {
+		t.Fatal(err)
+	}
+	cancelCtx, stop := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer stop()
+	result, err = s.ApplyCleanup(cancelCtx, plan)
+	if !errors.Is(err, ErrUnavailable) || cancelCtx.Err() == nil || result != (CleanupResult{}) {
+		t.Fatalf("wrong canceled result: %+v %v", result, err)
+	}
+	readCtx, stopRead := context.WithTimeout(context.Background(), time.Second)
+	defer stopRead()
+	usage, err = s.Storage(readCtx)
+	if err != nil || usage.Records != 201 {
+		t.Fatalf("cancellation rollback incomplete: %+v %v", usage, err)
+	}
+	if _, err := db.Conn().Exec("DROP TRIGGER cancel_cleanup"); err != nil {
+		t.Fatal(err)
+	}
+	result, err = s.ApplyCleanup(context.Background(), plan)
+	if err != nil || result.Records != 201 {
+		t.Fatalf("cleanup after rollback failed: %+v %v", result, err)
 	}
 }
 

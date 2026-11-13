@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/YzMzx/cpa-plugin-key-manager/internal/audit"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
@@ -17,19 +18,23 @@ type cleanupProviderFixture struct {
 	scope             string
 	before            time.Time
 	err               error
+	deadline          time.Time
 }
 
-func (f *cleanupProviderFixture) AuditStorage(context.Context) (map[string]any, error) {
+func (f *cleanupProviderFixture) AuditStorage(ctx context.Context) (map[string]any, error) {
+	f.deadline, _ = ctx.Deadline()
 	return map[string]any{"storage": map[string]any{"records": 2}}, f.err
 }
-func (f *cleanupProviderFixture) PreviewAuditCleanup(_ context.Context, scope string, before time.Time, principal string) (map[string]any, error) {
+func (f *cleanupProviderFixture) PreviewAuditCleanup(ctx context.Context, scope string, before time.Time, principal string) (map[string]any, error) {
+	f.deadline, _ = ctx.Deadline()
 	f.previews++
 	f.principal = principal
 	f.scope = scope
 	f.before = before
 	return map[string]any{"preview": map[string]any{"token": "opaque"}}, f.err
 }
-func (f *cleanupProviderFixture) CleanupAudit(_ context.Context, token, principal string) (map[string]any, error) {
+func (f *cleanupProviderFixture) CleanupAudit(ctx context.Context, token, principal string) (map[string]any, error) {
+	f.deadline, _ = ctx.Deadline()
 	f.applies++
 	f.principal = principal
 	return map[string]any{"ok": true}, f.err
@@ -66,6 +71,34 @@ func TestAuditCleanupHandlerRequiresNativeManagementAndPostConfirm(t *testing.T)
 		t.Fatal("valid confirm failed")
 	}
 }
+func TestAuditCleanupBudgetsOnlyExtendConfirmedApply(t *testing.T) {
+	for _, tc := range []struct {
+		name, method, path, body string
+		budget                   time.Duration
+	}{
+		{"storage", "GET", RouteManagementAuditStorage, "", 2 * time.Second},
+		{"preview", "POST", RouteManagementAuditCleanupPreview, `{"scope":"all"}`, 2 * time.Second},
+		{"apply", "POST", RouteManagementAuditCleanup, `{"token":"opaque","confirm":true}`, audit.CleanupApplyTimeout},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &cleanupProviderFixture{}
+			started := time.Now()
+			response := HandleAuditCleanupRequest(context.Background(), f, cleanupReq(tc.method, tc.path, tc.body, true))
+			finished := time.Now()
+			if response.StatusCode != 200 || f.deadline.Before(started.Add(tc.budget)) || f.deadline.After(finished.Add(tc.budget)) {
+				t.Fatalf("wrong budget: status=%d deadline=%v", response.StatusCode, f.deadline)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			expected, _ := ctx.Deadline()
+			HandleAuditCleanupRequest(ctx, f, cleanupReq(tc.method, tc.path, tc.body, true))
+			if !f.deadline.Equal(expected) {
+				t.Fatal("extended caller deadline")
+			}
+		})
+	}
+}
+
 func TestAuditCleanupPreviewScopeAndTimestampValidation(t *testing.T) {
 	f := &cleanupProviderFixture{}
 	for _, body := range []string{`{}`, `{"scope":"bad"}`, `{"scope":"all","before":"2026-01-01T00:00:00Z"}`, `{"scope":"before","before":"2026-01-01"}`, `{"scope":"before","before":"2999-01-01T00:00:00Z"}`, `{"scope":"all","ids":["x"]}`} {

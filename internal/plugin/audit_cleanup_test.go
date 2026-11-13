@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +19,32 @@ func cleanupPreviewToken(t *testing.T, m *Manager, scope, principal string) stri
 	}
 	return value["preview"].(map[string]any)["token"].(string)
 }
+func TestAuditCleanupPreviewExposesBatchLimits(t *testing.T) {
+	m := transactionManager(t)
+	db := m.usageStore.DB().Conn()
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	for i := 0; i < 4; i++ {
+		if _, err := tx.Exec("INSERT INTO client_request_audit(id,request_id,started_at,logical_bytes) VALUES(?,?,?,?)", fmt.Sprintf("%064x", i), fmt.Sprint(i), time.Now().UnixMilli(), 10<<20); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	value, err := m.PreviewAuditCleanup(context.Background(), "all", time.Time{}, "manager")
+	if err != nil {
+		t.Fatal(err)
+	}
+	preview := value["preview"].(map[string]any)
+	if preview["limited"] != true || preview["remaining_records"] != int64(1) || preview["records"] != int64(3) {
+		t.Fatalf("missing batch limits: %v", preview)
+	}
+}
+
 func TestAuditCleanupTokenIdentitySingleUseAndSnapshot(t *testing.T) {
 	m := transactionManager(t)
 	auditRequest(t, m, "cleanup-one")

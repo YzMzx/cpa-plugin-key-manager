@@ -40,7 +40,11 @@ func HandleAuditCleanupRequest(ctx context.Context, provider any, req pluginapi.
 	if !ok {
 		return jsonError(http.StatusServiceUnavailable, "audit maintenance unavailable")
 	}
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	timeout := 2 * time.Second
+	if path == "/v0/management"+RouteManagementAuditCleanup {
+		timeout = audit.CleanupApplyTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	method := strings.ToUpper(strings.TrimSpace(req.Method))
 	if path == "/v0/management"+RouteManagementAuditStorage {

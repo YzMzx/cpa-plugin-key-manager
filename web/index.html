@@ -588,7 +588,7 @@
         <summary>手动清理审计记录</summary>
         <div class="audit-cleanup-controls"><label>清理范围<select id="auditCleanupScope"><option value="expired">仅过期记录</option><option value="1d">1 天前</option><option value="3d">3 天前</option><option value="7d">7 天前</option><option value="custom">自定义日期前</option><option value="all">全部审计记录</option></select></label><label id="auditCleanupBeforeLabel" class="hidden">指定日期前<input id="auditCleanupBefore" class="input mono" type="text" placeholder="2026-11-09T00:00:00+08:00" autocomplete="off"></label><button type="button" class="btn" id="auditCleanupPreview">预览清理</button></div>
         <div id="auditCleanupMessage" class="card-hint" role="status">先预览影响范围，再确认执行；只清理审计，不影响密钥规则和用量账本。</div>
-        <div id="auditCleanupConfirmation" class="audit-cleanup-confirm hidden"><label><input id="auditCleanupAcknowledge" type="checkbox">我确认永久删除预览中的审计记录</label><button type="button" class="btn btn-sm btn-danger" id="auditCleanupConfirm" disabled>确认清理</button><button type="button" class="btn btn-sm" id="auditCleanupCancel">取消</button></div>
+        <div id="auditCleanupConfirmation" class="audit-cleanup-confirm hidden"><label><input id="auditCleanupAcknowledge" type="checkbox" aria-describedby="auditCleanupMessage">我确认永久删除预览中的审计记录</label><button type="button" class="btn btn-sm btn-danger" id="auditCleanupConfirm" aria-describedby="auditCleanupMessage" disabled>确认清理</button><button type="button" class="btn btn-sm" id="auditCleanupCancel">取消</button></div>
       </details>
       <form id="auditFilterForm" class="audit-filters">
         <label>API Key<select id="auditKey" aria-label="按 API Key 筛选"><option value="">全部 API Key</option></select></label>

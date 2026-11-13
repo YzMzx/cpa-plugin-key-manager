@@ -126,7 +126,7 @@ func (m *Manager) PreviewAuditCleanup(ctx context.Context, scope string, before 
 	}
 	expires := now.Add(auditCleanupTTL)
 	runtime.plans[token] = auditCleanupPending{plan: plan, principal: identity, expires: expires, store: store}
-	return map[string]any{"ok": true, "preview": map[string]any{"token": token, "scope": plan.Scope, "before": auditTime(plan.BeforeUnixMilli), "records": plan.Records, "logical_bytes": plan.LogicalBytes, "request_body_bytes": plan.BodyBytes, "expires_at": expires.Format(time.RFC3339Nano)}, "storage": storageMap(storage)}, nil
+	return map[string]any{"ok": true, "preview": map[string]any{"token": token, "scope": plan.Scope, "before": auditTime(plan.BeforeUnixMilli), "records": plan.Records, "logical_bytes": plan.LogicalBytes, "request_body_bytes": plan.BodyBytes, "limited": plan.Limited, "remaining_records": plan.RemainingRecords, "expires_at": expires.Format(time.RFC3339Nano)}, "storage": storageMap(storage)}, nil
 }
 func (m *Manager) CleanupAudit(ctx context.Context, token, principal string) (map[string]any, error) {
 	identity, err := cleanupPrincipal(principal)
@@ -162,7 +162,7 @@ func (m *Manager) CleanupAudit(ctx context.Context, token, principal string) (ma
 	if store == nil || store != pending.store {
 		return nil, ErrAuditCleanupToken
 	}
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, audit.CleanupApplyTimeout)
 	defer cancel()
 	deleted, err := store.ApplyCleanup(ctx, pending.plan)
 	if err != nil {
