@@ -204,13 +204,13 @@ jobs:
           rm -f "dist/out/cpa-plugin-key-manager-${{ matrix.target }}.h"
 
           cp "dist/out/${RAW_LIB}" "dist/stage/${STD_LIB}"
-          cp config.example.yaml README.md AUDIT_FIXES.md CLEANUP_JOBS.md install.sh install.ps1 dist/stage/
+          cp config.example.yaml README.md AUDIT_FIXES.md CLEANUP_JOBS.md CONTENT_INTERCEPT.md install.sh install.ps1 dist/stage/
           cp -R integrations dist/stage/
 
           if [ "${{ matrix.archive }}" = "zip" ]; then
-            (cd dist/stage && 7z a -tzip "../out/cpa-plugin-key-manager-${{ matrix.target }}.zip" "${STD_LIB}" config.example.yaml README.md AUDIT_FIXES.md CLEANUP_JOBS.md install.sh install.ps1 integrations)
+            (cd dist/stage && 7z a -tzip "../out/cpa-plugin-key-manager-${{ matrix.target }}.zip" "${STD_LIB}" config.example.yaml README.md AUDIT_FIXES.md CLEANUP_JOBS.md CONTENT_INTERCEPT.md install.sh install.ps1 integrations)
           else
-            tar -C dist/stage -czvf "dist/out/cpa-plugin-key-manager-${{ matrix.target }}.tar.gz" "${STD_LIB}" config.example.yaml README.md AUDIT_FIXES.md CLEANUP_JOBS.md install.sh install.ps1 integrations
+            tar -C dist/stage -czvf "dist/out/cpa-plugin-key-manager-${{ matrix.target }}.tar.gz" "${STD_LIB}" config.example.yaml README.md AUDIT_FIXES.md CLEANUP_JOBS.md CONTENT_INTERCEPT.md install.sh install.ps1 integrations
           fi
 
           ls -lh dist/out/
@@ -248,6 +248,7 @@ jobs:
           name: "Release ${{ needs.resolve.outputs.tag }}"
           generate_release_notes: true
           prerelease: ${{ contains(needs.resolve.outputs.tag, '-') }}
+          make_latest: ${{ contains(needs.resolve.outputs.tag, '-') && 'false' || 'true' }}
           files: |
             artifacts/cpa-plugin-key-manager-*
             artifacts/SHA256SUMS.txt

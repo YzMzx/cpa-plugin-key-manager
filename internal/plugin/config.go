@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/YzMzx/cpa-plugin-key-manager/internal/authz"
+	"github.com/YzMzx/cpa-plugin-key-manager/internal/contentguard"
 	"github.com/YzMzx/cpa-plugin-key-manager/internal/pricing"
 	"github.com/YzMzx/cpa-plugin-key-manager/internal/usage"
 	"gopkg.in/yaml.v3"
@@ -86,6 +87,7 @@ type KeyRuleConfig struct {
 // DynamicRulesState is persisted atomically in SQLite rules_state.
 // whenever rules, keys, or custom prices are modified via the Web UI / Management API.
 type DynamicRulesState struct {
+	Intercept         *contentguard.State  `json:"intercept,omitempty"`
 	Version           int                  `json:"version"`
 	UpdatedAt         string               `json:"updated_at"`
 	Revision          uint64               `json:"revision,omitempty"`

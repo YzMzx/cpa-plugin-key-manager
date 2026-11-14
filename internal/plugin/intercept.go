@@ -87,6 +87,12 @@ func (m *Manager) handleRequestInterceptBefore(raw []byte) ([]byte, error) {
 		return okEnvelope(authz.NewForbiddenModelResponse(displayModel))
 	}
 
+	// Content policy runs before acquiring slots or registering billable work.
+	if m.inspectContent(req, apiKey, rule.Name) {
+		m.beginRejectedAudit(req, apiKey, rule.Name, http.StatusForbidden)
+		return okEnvelope(newContentBlockedResponse())
+	}
+
 	// 3. Check per-API-Key cumulative USD quota limit (if quota_limit_usd > 0).
 	//    The quota counts usage since the last "重置额度", not the lifetime total.
 	if rule.QuotaLimitUSD > 0 {
@@ -283,7 +289,7 @@ func (m *Manager) handleManagement(raw []byte) ([]byte, error) {
 	m.managementMu.Lock()
 	defer m.managementMu.Unlock()
 	method := strings.ToUpper(req.Method)
-	if method != http.MethodGet && method != http.MethodHead && req.Path != "/v0/management/key-guard/settings/bootstrap" && !isAuditCleanupJobPath(req.Path) {
+	if method != http.MethodGet && method != http.MethodHead && req.Path != "/v0/management/key-guard/settings/bootstrap" && !isAuditCleanupJobPath(req.Path) && !isInterceptUnversionedPath(req.Path) {
 		if value := req.Headers.Get("X-Key-Guard-Revision"); value != "" {
 			revision, err := strconv.ParseUint(value, 10, 64)
 			if err != nil || revision != m.RulesRevision() {
@@ -292,7 +298,7 @@ func (m *Manager) handleManagement(raw []byte) ([]byte, error) {
 		}
 	}
 	resp := handler.HandleManagementRequest(context.Background(), m, req.ManagementRequest, req.HostCallbackID)
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 && strings.HasPrefix(req.Path, "/v0/management/key-guard/") && !isAuditCleanupJobPath(req.Path) {
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 && strings.HasPrefix(req.Path, "/v0/management/key-guard/") && !isAuditCleanupJobPath(req.Path) && !isInterceptUnversionedPath(req.Path) {
 		credential := strings.TrimSpace(req.Headers.Get("Authorization"))
 		if strings.HasPrefix(strings.ToLower(credential), "bearer ") {
 			credential = strings.TrimSpace(credential[7:])
@@ -304,7 +310,9 @@ func (m *Manager) handleManagement(raw []byte) ([]byte, error) {
 		var payload map[string]any
 		if json.Unmarshal(resp.Body, &payload) == nil && payload != nil {
 			payload["host_sync"] = m.HostSyncStatus()
-			payload["rules_revision"] = m.RulesRevision()
+			if _, exists := payload["rules_revision"]; !exists {
+				payload["rules_revision"] = m.RulesRevision()
+			}
 			if nested, ok := payload["overview"].(map[string]any); ok {
 				nested["host_sync"] = payload["host_sync"]
 				nested["rules_revision"] = payload["rules_revision"]

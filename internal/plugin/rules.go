@@ -135,7 +135,7 @@ func (m *Manager) UpsertKeyRuleFromJSON(rawBody []byte) (any, error) {
 	if len(rule.AllowedModels) == 0 {
 		rule.AllowedModels = []string{"*"}
 	}
-	nowStr := time.Now().UTC().Format(time.RFC3339)
+	nowStr := time.Now().UTC().Format(time.RFC3339Nano)
 	rule.UpdatedAt = nowStr
 
 	var request struct {

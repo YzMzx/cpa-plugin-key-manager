@@ -58,6 +58,11 @@
     navigate: tab => switchAdminTab(tab),
     onSaved: async payload => { if (payload.overview) { applyOverviewData(payload.overview); await loadOverviewLedger(false); } else { await loadAdminOverview(); } }
   });
+  const interceptView = KeyGuardIntercept.create({
+    document, request: (...args) => callManagementAPI(...args), gate: requestGate,
+    isAuthenticated: () => !!activeManagementKey, getTimezone: () => currentTimezone()
+  });
+  document.getElementById("settingsJumpIntercept").addEventListener("click", () => switchAdminTab("tab-intercept"));
   const apiClient = KeyGuardClient.createClient({
     fetchImpl: (...args) => fetch(...args),
     getKey: () => activeManagementKey,
@@ -198,6 +203,7 @@
     dragSrcKey = null; dragOverKey = null; usageGroupsCache = new WeakMap();
     auditView.lock();
     settingsView.lock();
+    interceptView.lock();
     requestGate.cancelAll(); apiClient.cancelAll();
     overviewState.loading = false;
     clearTimeout(modelsDevSearchTimer); modelsDevSearchTimer = null;
@@ -306,6 +312,8 @@
     else auditView.leave();
     if (tabId === "tab-settings") { if (activeManagementKey) settingsView.enter(); }
     else settingsView.leave();
+    if (tabId === "tab-intercept") { if (activeManagementKey) interceptView.enter(); }
+    else interceptView.leave();
     document.querySelectorAll(".admin-tab").forEach(s => s.classList.add("hidden"));
     const section = document.getElementById(tabId);
     if (section) section.classList.remove("hidden");
@@ -359,6 +367,7 @@
       if (!sessionCurrent(epoch)) return;
       if (currentAdminTab === "tab-audit" && activeManagementKey) await auditView.refresh();
       if (currentAdminTab === "tab-settings" && activeManagementKey) await settingsView.refresh();
+      if (currentAdminTab === "tab-intercept" && activeManagementKey) await interceptView.refresh();
       if (!sessionCurrent(epoch)) return;
       // Belt and braces: make sure the key/quota/leaderboard tables are painted even
       // if a late ledger refresh replaced them with placeholders.
@@ -396,6 +405,7 @@
       applyOverviewData(data);
       if (!wasAuthenticated && currentAdminTab === "tab-audit") await auditView.enter();
       if (!wasAuthenticated && currentAdminTab === "tab-settings") await settingsView.enter();
+      if (!wasAuthenticated && currentAdminTab === "tab-intercept") await interceptView.enter();
       if (!ticket.current()) return;
       const sync = data.host_sync;
       const healthMessage = overviewHealthMessage(data);
@@ -2924,7 +2934,7 @@
   window.addEventListener("storage", event => {
     if (!parentBridgeAvailable && event.key === "cli-proxy-auth" && activeManagementKey && !readStoredManagementKeyFromStorage(window.localStorage)) lockAdminWorkspace("管理中心会话已退出，请重新验证");
   });
-  window.addEventListener("pagehide", () => { requestGate.cancelAll(); apiClient.cancelAll(); });
+  window.addEventListener("pagehide", () => { interceptView.lock(); requestGate.cancelAll(); apiClient.cancelAll(); });
 
   restoreAdminTabFromUrl();
   loadAdminOverview().catch(() => {});

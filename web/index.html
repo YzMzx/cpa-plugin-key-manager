@@ -50,6 +50,7 @@
       <button type="button" class="tab-btn" data-tab="tab-routing" onclick="switchAdminTab('tab-routing')">全局默认策略与凭证池</button>
       <button type="button" class="tab-btn" data-tab="tab-pricing" onclick="switchAdminTab('tab-pricing')">模型与价格</button>
       <button type="button" class="tab-btn" data-tab="tab-audit" onclick="switchAdminTab('tab-audit')">请求审计</button>
+      <button type="button" class="tab-btn" data-tab="tab-intercept" onclick="switchAdminTab('tab-intercept')">内容拦截</button>
       <button type="button" class="tab-btn" data-tab="tab-settings" onclick="switchAdminTab('tab-settings')">统一配置</button>
       <span class="tabs-divider" aria-hidden="true"></span>
       <button type="button" class="tabs-refresh" id="tabsRefreshBtn" onclick="refreshAllData()" title="刷新数据" aria-label="刷新数据">
@@ -657,6 +658,55 @@
         </div>
     </dialog>
   </section>
+  <!-- Independent content interception; never included in unified settings PUT. -->
+  <section id="tab-intercept" class="admin-tab hidden">
+    <div class="card"><div class="card-header"><div><h2 class="card-title">内容拦截</h2><p class="card-subtitle">观察先行 · 按规则留证 · 明确复核</p></div><button id="interceptReload" type="button" class="btn">刷新状态与配置</button></div>
+      <p class="card-hint">默认关闭且无预置规则。观察模式只记录，不封禁；执行模式才会按 block 规则拦截。仅支持后端已实现的大小写、全角 ASCII、零宽字符和空白归一化。</p>
+      <div id="interceptStatus" class="intercept-status" role="status">进入此页后读取状态。</div>
+    </div>
+    <div class="card"><h2 id="interceptEventsTitle" class="card-title">拦截事件</h2>
+      <search><form id="interceptFilters" aria-labelledby="interceptEventsTitle" action="/v0/management/key-guard/intercept/events" method="get"><div class="intercept-grid">
+        <div><label for="interceptFilterKey">API Key（仅发送指纹）</label><select id="interceptFilterKey" name="key_fingerprint" class="input"></select></div>
+        <div><label for="interceptFilterAction">动作</label><select id="interceptFilterAction" name="action" class="input"></select></div>
+        <div><label for="interceptFilterSeverity">严重度</label><select id="interceptFilterSeverity" name="severity" class="input"></select></div>
+        <div><label for="interceptFilterReview">复核状态</label><select id="interceptFilterReview" name="review" class="input"></select></div>
+        <div><label for="interceptFilterRule">规则 ID / 名称</label><input id="interceptFilterRule" name="rule" class="input" maxlength="256"></div>
+        <div><label for="interceptFilterModel">模型</label><input id="interceptFilterModel" name="model" class="input" maxlength="256"></div>
+        <div><label for="interceptFilterRequest">Request ID</label><input id="interceptFilterRequest" name="request_id" class="input" maxlength="256"></div>
+        <div><label for="interceptFilterFrom">从（含时区 ISO）</label><input id="interceptFilterFrom" name="from" class="input" placeholder="2026-11-14T00:00:00+08:00" aria-describedby="interceptTimeHint"></div>
+        <div><label for="interceptFilterTo">至（含时区 ISO）</label><input id="interceptFilterTo" name="to" class="input" placeholder="2026-11-15T00:00:00+08:00" aria-describedby="interceptTimeHint"></div>
+      </div><p id="interceptTimeHint" class="card-hint">时间筛选需明确时区偏移或 Z；展示沿用插件配置时区，不采用浏览器本地时区。</p><button type="submit" class="btn btn-primary">应用筛选</button></form></search>
+      <p id="interceptListMessage" class="modal-message" role="status"></p>
+      <div class="intercept-table" tabindex="0" role="region" aria-label="内容拦截事件表"><table><thead><tr><th scope="col">选择</th><th scope="col">时间</th><th scope="col">Key</th><th scope="col">模型</th><th scope="col">动作 / 严重度</th><th scope="col">规则</th><th scope="col">复核</th><th scope="col">Key 状态</th><th scope="col">详情</th></tr></thead><tbody id="interceptList"></tbody></table></div>
+      <div class="intercept-actions"><span id="interceptPageInfo" class="card-hint"></span><button id="interceptPrev" type="button" class="btn">上一页</button><button id="interceptNext" type="button" class="btn">下一页</button></div>
+      <div class="settings-prune"><input id="interceptAckExport" name="ack_export" type="checkbox"><label for="interceptAckExport">我确认所选事件的 JSON 导出包含敏感正文、匹配片段与分类理由，将妥善保存。</label></div>
+      <div class="intercept-actions"><button id="interceptExport" type="button" class="btn" disabled>导出所选 JSON（当前页，最多 50 条；服务端证据预算 8 MiB）</button><a id="interceptDownload" class="btn" hidden>下载已生成的 JSON</a></div>
+    </div>
+    <div class="card"><div class="card-header"><h2 class="card-title">独立拦截配置</h2><button id="interceptDiscard" type="button" class="btn">放弃两组草稿并重新加载</button></div><p id="interceptDirty" class="card-hint"></p><p id="interceptConfigMessage" class="modal-message" role="status" tabindex="-1"></p>
+      <details><summary>拦截设置（独立保存）</summary>
+        <form id="interceptSettingsForm" aria-labelledby="interceptSettingsTitle" action="/v0/management/key-guard/intercept/config" method="post">
+          <fieldset class="settings-section"><legend id="interceptSettingsTitle">采集与保留</legend><div id="interceptGeneralFields" class="intercept-grid"></div><p class="card-hint">正文与匹配证据为明文，可能含凭据、对话或个人信息；媒体载荷不保留。关闭正文采集不等同于停止规则扫描。</p></fieldset>
+          <fieldset class="settings-section"><legend>自动停用</legend><div id="interceptAutoFields" class="intercept-grid"></div><p class="card-hint">仅执行模式下，达到最低严重度的合格 block 规则命中参与计数；扫描超限、审核服务错误、观察模式和单纯 flag 不会触发自动停用。先本地停用，宿主同步可能待完成。</p></fieldset>
+          <fieldset class="settings-section"><legend>外部分类服务</legend><p class="settings-prune">警告：启用后会将请求文字发送到所配置地址；这不是本地处理。地址由管理员配置，请确认接收方可信、授权与隐私要求。页面不会自动试调用。</p><div id="interceptClassifierFields" class="intercept-grid"></div>
+            <div class="intercept-secret"><label for="interceptAPIKey">分类 API Key（只写；留空保留）</label><input id="interceptAPIKey" name="classifier_api_key" class="input" type="password" autocomplete="new-password" maxlength="4096" aria-describedby="interceptSecretStatus"><span id="interceptSecretStatus" class="card-hint"></span><div><input id="interceptClearAPIKey" name="clear_classifier_api_key" type="checkbox"><label for="interceptClearAPIKey">明确清除已保存的分类凭据（不自动停用分类服务）</label></div></div>
+            <div class="settings-prune"><input id="interceptAckExternal" name="ack_external" type="checkbox"><label for="interceptAckExternal">我理解并授权将文字发送至配置的外部分类地址（保存启用状态时必须确认）</label></div>
+          </fieldset>
+          <div class="settings-prune"><input id="interceptAckPrune" name="ack_prune" type="checkbox"><label for="interceptAckPrune">我确认降低保留天数、记录数或容量可能删除历史证据</label></div><button id="interceptSaveSettings" type="submit" class="btn btn-primary">仅保存拦截设置</button>
+        </form>
+      </details>
+      <details open><summary>规则编辑（独立保存）</summary><form id="interceptRulesForm" aria-labelledby="interceptRulesTitle" action="/v0/management/key-guard/intercept/config" method="post"><h3 id="interceptRulesTitle">匹配规则</h3><p class="card-hint">角色全部不选表示 all；Key 范围必须显式 all / include / exclude。正则以服务端 Go RE2 编译结果为准；不会在浏览器执行用户正则。</p><details><summary>当前 Key 指纹参考（已掩码）</summary><div id="interceptKeyReference" class="intercept-key-reference"></div></details><div id="interceptRules"></div><div class="intercept-actions"><button id="interceptAddRule" type="button" class="btn">添加规则</button><button id="interceptSaveRules" type="submit" class="btn btn-primary">仅保存规则</button></div></form></details>
+    </div>
+    <div class="card"><h2 id="interceptTestTitle" class="card-title">试跑</h2><p class="card-hint">不发送业务请求、不写事件、不自动停用 Key。默认只运行本地匹配；外部分类必须单独选择并确认。would_block 根据当前已保存模式预览（观察模式为 false），不依赖总开关是否启用。</p>
+      <form id="interceptTestForm" aria-labelledby="interceptTestTitle" action="/v0/management/key-guard/intercept/test" method="post"><label for="interceptTestText">文本或请求 JSON（最多 2 MiB）</label><textarea id="interceptTestText" name="text" class="input" rows="7" required spellcheck="false"></textarea><label for="interceptTestKey">用于 Key 范围匹配的指纹</label><select id="interceptTestKey" name="key_fingerprint" class="input"></select>
+        <div class="intercept-check"><input id="interceptTestDraft" name="draft_rules" type="checkbox"><label for="interceptTestDraft">使用当前规则草稿（不保存；设置仍使用已保存值）</label></div><div class="intercept-check"><input id="interceptTestClassifier" name="classifier" type="checkbox"><label for="interceptTestClassifier">本次显式调用外部分类</label></div><div class="settings-prune"><input id="interceptTestAckExternal" name="ack_external" type="checkbox"><label for="interceptTestAckExternal">我确认本次试跑文本会发送到已保存的分类地址</label></div><button id="interceptTestSubmit" type="submit" class="btn btn-primary">运行一次试跑</button>
+      </form><p id="interceptTestMessage" class="modal-message" role="status"></p><pre id="interceptTestResult" class="intercept-json" tabindex="0" aria-label="试跑结果"></pre>
+    </div>
+    <dialog id="interceptDetail" class="app-dialog modal intercept-detail" aria-labelledby="interceptDetailTitle" closedby="any">
+      <div class="modal-header"><h2 id="interceptDetailTitle" class="card-title">拦截事件详情</h2><button id="interceptDetailClose" type="button" class="btn" autofocus>关闭详情</button></div><div class="modal-body"><p id="interceptDetailMessage" class="modal-message" role="status"></p><details><summary>事件元数据与哈希</summary><pre id="interceptDetailMeta" class="intercept-json" tabindex="0"></pre></details><h3>保存的证据正文</h3><pre id="interceptDetailBody" class="intercept-json" tabindex="0"></pre><h3>命中规则与片段</h3><pre id="interceptDetailMatches" class="intercept-json" tabindex="0"></pre><h3>外部分类结果</h3><pre id="interceptDetailClassifier" class="intercept-json" tabindex="0"></pre>
+        <form id="interceptReviewForm" aria-labelledby="interceptReviewTitle" action="/v0/management/key-guard/intercept/events/review" method="post"><h3 id="interceptReviewTitle">人工复核</h3><label for="interceptReviewStatus">复核结论</label><select id="interceptReviewStatus" name="status" class="input"></select><label for="interceptReviewNote">备注（最多 2000 UTF-8 字节）</label><textarea id="interceptReviewNote" name="note" class="input" rows="3" maxlength="2000"></textarea><button id="interceptReviewSubmit" type="submit" class="btn btn-primary">保存复核</button></form>
+      </div>
+    </dialog>
+  </section>
   <!-- Unified runtime settings and separately staged startup configuration. -->
   <section id="tab-settings" class="admin-tab hidden">
     <div class="card">
@@ -697,6 +747,7 @@
     <div class="settings-jump-grid">
       <button type="button" class="card settings-jump" id="settingsJumpKeys"><strong>API Key 与规则</strong><span>管理密钥、并发、额度和单 Key 路由</span></button>
       <button type="button" class="card settings-jump" id="settingsJumpPolicy"><strong>全局默认策略与凭证池</strong><span>编辑未列出 Key 的策略及上游绑定</span></button>
+      <button type="button" class="card settings-jump" id="settingsJumpIntercept"><strong>内容拦截</strong><span>独立管理拦截规则、证据、分类与自动停用</span></button>
       <button type="button" class="card settings-jump" id="settingsJumpPricing"><strong>模型价格覆盖</strong><span>编辑模型、通配符与默认价格</span></button>
     </div>
     <div class="card"><div class="card-header"><div><h2 class="card-title">高级启动配置</h2><div class="card-subtitle">单独写入宿主配置文件；可能触发宿主重载，数据库路径需重启且不会自动迁移数据</div></div></div><dl id="settingsBootstrap" class="settings-bootstrap"></dl>

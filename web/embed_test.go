@@ -30,11 +30,27 @@ func TestDashboardHTMLIsSelfContained(t *testing.T) {
 	}
 }
 
+func TestInterceptWorkspaceIsEmbeddedIndependently(t *testing.T) {
+	html := DashboardHTML()
+	for _, token := range []string{
+		"KeyGuardIntercept", `id="tab-intercept"`, `id="interceptSettingsForm"`, `id="interceptRulesForm"`,
+		`id="interceptTestForm"`, `id="interceptReviewForm"`, `id="settingsJumpIntercept"`,
+		`id="interceptDetail"`, `aria-labelledby="interceptDetailTitle"`,
+	} {
+		if !strings.Contains(html, token) {
+			t.Fatalf("missing interception UI: %s", token)
+		}
+	}
+	if strings.Contains(shellHTML, `src="intercept.js"`) {
+		t.Fatal("interception must stay single-document")
+	}
+}
+
 func TestRuntimeModulesPrecedePageAndHaveNoExternalAssets(t *testing.T) {
 	html := DashboardHTML()
 	page := strings.Index(html, appJS)
 	previous := -1
-	for _, name := range []string{"client.js", "state.js", "formatters.js", "auth.js", "events.js", "dialogs.js", "cleanup-jobs.js", "audit.js", "settings.js"} {
+	for _, name := range []string{"client.js", "state.js", "formatters.js", "auth.js", "events.js", "dialogs.js", "cleanup-jobs.js", "audit.js", "settings.js", "intercept.js"} {
 		raw, err := runtimeFiles.ReadFile(name)
 		if err != nil {
 			t.Fatal(err)

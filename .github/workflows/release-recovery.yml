@@ -117,9 +117,9 @@ jobs:
           go build -trimpath -ldflags="-s -w" -buildmode=c-shared -o dist/out/cpa-plugin-key-manager-darwin-amd64.dylib .
           rm -f dist/out/cpa-plugin-key-manager-darwin-amd64.h
           cp dist/out/cpa-plugin-key-manager-darwin-amd64.dylib dist/stage/cpa-plugin-key-manager.dylib
-          cp config.example.yaml README.md AUDIT_FIXES.md CLEANUP_JOBS.md install.sh install.ps1 dist/stage/
+          cp config.example.yaml README.md AUDIT_FIXES.md CLEANUP_JOBS.md CONTENT_INTERCEPT.md install.sh install.ps1 dist/stage/
           cp -R integrations dist/stage/
-          tar -C dist/stage -czf dist/out/cpa-plugin-key-manager-darwin-amd64.tar.gz cpa-plugin-key-manager.dylib config.example.yaml README.md AUDIT_FIXES.md CLEANUP_JOBS.md install.sh install.ps1 integrations
+          tar -C dist/stage -czf dist/out/cpa-plugin-key-manager-darwin-amd64.tar.gz cpa-plugin-key-manager.dylib config.example.yaml README.md AUDIT_FIXES.md CLEANUP_JOBS.md CONTENT_INTERCEPT.md install.sh install.ps1 integrations
       - uses: actions/upload-artifact@v4
         with:
           name: recovered-darwin-amd64
@@ -160,7 +160,7 @@ jobs:
           assert {p.name for p in root.iterdir()}==expected,'Unexpected release asset set'
           for p,e in platforms.items():
             lib=f'cpa-plugin-key-manager.{e}'; archive=root/(f'cpa-plugin-key-manager-{p}.'+('zip' if e=='dll' else 'tar.gz'))
-            required={lib,'config.example.yaml','README.md','AUDIT_FIXES.md','CLEANUP_JOBS.md','install.sh','install.ps1','integrations/README.md','integrations/cpa-management-auth-bridge.patch'}
+            required={lib,'config.example.yaml','README.md','AUDIT_FIXES.md','CLEANUP_JOBS.md','CONTENT_INTERCEPT.md','install.sh','install.ps1','integrations/README.md','integrations/cpa-management-auth-bridge.patch'}
             if e=='dll':
               with zipfile.ZipFile(archive) as z: names=set(z.namelist()); blobs={n:z.read(n) for n in required}
             else:
