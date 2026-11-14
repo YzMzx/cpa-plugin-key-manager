@@ -8,12 +8,10 @@ import (
 	"os"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/YzMzx/cpa-plugin-key-manager/internal/audit"
 	"github.com/YzMzx/cpa-plugin-key-manager/internal/authz"
-	"github.com/YzMzx/cpa-plugin-key-manager/internal/contentguard"
 	"github.com/YzMzx/cpa-plugin-key-manager/internal/handler"
 	"github.com/YzMzx/cpa-plugin-key-manager/internal/limiter"
 	"github.com/YzMzx/cpa-plugin-key-manager/internal/pricing"
@@ -25,7 +23,7 @@ import (
 
 const (
 	PluginID      = "cpa-plugin-key-manager"
-	PluginVersion = "0.11.5-pre.1"
+	PluginVersion = "0.11.4"
 	PluginAuthor  = "YzMzx"
 	PluginRepo    = "https://github.com/YzMzx/cpa-plugin-key-manager"
 	PluginLogoSVG = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%238b8680'/><path d='M24 22a10 10 0 1 0 9.5 13H42v5h6v-5h4v-6H33.5A10 10 0 0 0 24 22zm0 6a4 4 0 1 1 0 8 4 4 0 0 1 0-8z' fill='%23fff'/></svg>"
@@ -64,22 +62,6 @@ type managementRegistrationResponse struct {
 // It is safe for concurrent use and preserves in-flight concurrency slots,
 // dynamic Web UI rules, and accumulated usage across `plugin.reconfigure` hot-reloads.
 type Manager struct {
-	// mutationMu -> guardMu -> mu; never hold guardMu across mutateRules.
-	guardMu            sync.RWMutex
-	guardRuntime       *interceptRuntime
-	guardQueue         chan interceptWork
-	guardWake          chan struct{}
-	guardStop          chan struct{}
-	guardDone          chan struct{}
-	guardScanSlots     chan struct{}
-	classifier         *contentguard.Classifier
-	interceptFailures  atomic.Uint64
-	classifierFailures atomic.Uint64
-	disableMu          sync.Mutex
-	disableWindows     map[string]*disableWindow
-	disablePending     map[string]disableTask
-	disableSeen        map[string]time.Time
-	disableSeenSweep   time.Time
 	// mutationMu orders configuration changes and durable rule commits.
 	mutationMu         sync.Mutex
 	managementMu       sync.Mutex
@@ -119,8 +101,6 @@ func NewManager(invoker HostInvoker) *Manager {
 
 	return &Manager{
 		rejectedAuditSlots: make(chan struct{}, 16),
-		guardScanSlots:     make(chan struct{}, 4),
-		classifier:         contentguard.NewClassifier(4),
 		seedCfg:            defCfg,
 		dynamicState:       &DynamicRulesState{Version: 1, CustomPrices: make(map[string]pricing.ModelPrice)},
 		cfg:                defCfg,
@@ -287,10 +267,6 @@ func (m *Manager) Configure(raw []byte) error {
 		}
 		dynState.Settings = &validated
 	}
-	guard, err := m.prepareIntercept(dynState.Intercept)
-	if err != nil {
-		return err
-	}
 	cfg := MergeDynamicState(seedCfg, dynState, hostKeys...)
 	if dynState.Settings != nil && settingsCacheConflicts(*dynState.Settings, cfg) {
 		return ErrSettingsInvalid
@@ -327,7 +303,6 @@ func (m *Manager) Configure(raw []byte) error {
 		cfg.Pricing.HTTPTimeoutSeconds,
 	)
 
-	m.guardMu.Lock()
 	m.mu.Lock()
 	prevSyncKey := m.lastSyncKey
 	m.rulesRepo = repo
@@ -337,10 +312,7 @@ func (m *Manager) Configure(raw []byte) error {
 	m.cfg = cfg
 	m.lastSyncKey = syncKey
 	m.settingsApplyError = ""
-	m.guardRuntime = guard
 	m.mu.Unlock()
-	m.startInterceptWorkerLocked()
-	m.guardMu.Unlock()
 
 	m.configureAudit(cfg.Audit)
 	if prevSyncKey != syncKey {
@@ -357,9 +329,6 @@ func (m *Manager) Configure(raw []byte) error {
 
 // Shutdown stops background tasks and flushes usage statistics to disk.
 func (m *Manager) Shutdown() {
-	m.managementMu.Lock()
-	defer m.managementMu.Unlock()
-	m.stopInterceptWorker()
 	m.mutationMu.Lock()
 	defer m.mutationMu.Unlock()
 	m.stopAudit()

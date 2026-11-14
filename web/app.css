@@ -1402,30 +1402,3 @@
   @media(max-width:520px) { .settings-audit .settings-grid { grid-template-columns:minmax(0,1fr); }.settings-audit .settings-grid input:not([type="checkbox"]) { font-size:1rem; min-block-size:48px; } }
   @media(max-width:800px) { .settings-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }.settings-jump-grid { grid-template-columns:1fr; } }
   @media(max-width:520px) { .settings-grid,.settings-bootstrap { grid-template-columns:1fr; }.settings-grid .settings-wide { grid-column:auto; } }
-  /* Independent intercept workspace, sharing the theme and native dialog lifecycle. */
-  #tab-intercept .card { margin-block-end:16px; }
-  #tab-intercept summary { cursor:pointer; padding-block:14px; font-weight:600; }
-  .intercept-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px; margin-block:16px; }
-  .intercept-grid > *, .intercept-secret { min-inline-size:0; }
-  #tab-intercept label, .intercept-detail label { font-size:13px; line-height:1.65; }
-  .intercept-grid label:not(.intercept-check label), .intercept-secret > label { display:block; margin-block-end:6px; }
-  #tab-intercept .input, .intercept-detail .input { box-sizing:border-box; inline-size:100%; min-inline-size:0; font:inherit; font-size:1rem; min-block-size:44px; }
-  #tab-intercept input[type="checkbox"] { inline-size:auto; min-block-size:0; accent-color:var(--primary-color); }
-  #tab-intercept textarea, .intercept-detail textarea { resize:vertical; }
-  .intercept-check { display:flex; align-items:center; gap:8px; padding-block:8px; }
-  .intercept-grid fieldset { border:1px solid var(--border-color); border-radius:var(--radius-md); padding:12px; }
-  .intercept-grid fieldset label { margin-inline:4px 12px; }
-  .intercept-actions { display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-block:16px; }
-  .intercept-actions > .card-hint { margin-inline-end:auto; }
-  .intercept-status { padding:16px; background:var(--bg-quinary); border:1px solid var(--border-color); border-radius:var(--radius-md); white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.8; }
-  .intercept-table { overflow-x:auto; margin-block:16px; }
-  .intercept-table table { min-inline-size:900px; }
-  .intercept-table td { max-inline-size:240px; white-space:normal; overflow-wrap:anywhere; }
-  .intercept-json { margin-block:12px 20px; max-block-size:55dvh; overflow:auto; padding:14px; background:var(--bg-quinary); border:1px solid var(--border-color); border-radius:var(--radius-md); white-space:pre-wrap; overflow-wrap:anywhere; font-size:13px; line-height:1.7; tab-size:2; }
-  .intercept-detail { max-inline-size:1000px; }
-  .intercept-key-reference { max-block-size:240px; overflow:auto; overflow-wrap:anywhere; }
-  #tab-intercept :is(button,input,textarea,select,summary,a):focus-visible, .intercept-detail :is(button,input,textarea,select,summary):focus-visible { outline:2px solid var(--primary-color); outline-offset:3px; }
-  #tab-intercept :is(input,textarea,select):user-invalid { border-color:var(--error-color); }
-  #interceptDownload[hidden] { display:none; }
-  @media(max-width:900px) { .intercept-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
-  @media(max-width:560px) { .intercept-grid { grid-template-columns:minmax(0,1fr); } #tab-intercept .btn, .intercept-detail .btn { min-block-size:48px; white-space:normal; } .intercept-actions { align-items:stretch; } }

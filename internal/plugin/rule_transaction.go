@@ -78,14 +78,6 @@ func (m *Manager) mutateRules(opts ruleMutation, fn func(*DynamicRulesState) err
 			return ErrSettingsPersistence
 		}
 	}
-	guardChanged := previousSettings == nil || !reflect.DeepEqual(previousSettings.Intercept, next.Intercept)
-	var guard *interceptRuntime
-	if guardChanged {
-		guard, err = m.prepareIntercept(next.Intercept)
-		if err != nil {
-			return err
-		}
-	}
 	next.ConfigFingerprint = configFingerprint(nextCfg)
 	raw, err := json.Marshal(next)
 	if err != nil {
@@ -94,15 +86,10 @@ func (m *Manager) mutateRules(opts ruleMutation, fn func(*DynamicRulesState) err
 	if err := repo.Save(raw); err != nil {
 		return fmt.Errorf("persist rules: %w", err)
 	}
-	m.guardMu.Lock()
 	m.mu.Lock()
-	if guardChanged {
-		m.guardRuntime = guard
-	}
 	m.dynamicState, m.cfg = next, nextCfg
 	m.hostAPIKeys = configuredKeyList(nextCfg.Keys)
 	m.mu.Unlock()
-	m.guardMu.Unlock()
 	if settingsChanged {
 		if err := m.applyRuntimeSettings(nextCfg); err != nil {
 			return err

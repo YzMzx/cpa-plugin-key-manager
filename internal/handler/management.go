@@ -38,14 +38,6 @@ const (
 // self-service/dashboard resource routes (`/v0/resource/plugins/cpa-plugin-key-manager/...`).
 func RegisterManagementEndpoints() ([]pluginapi.ManagementRoute, []pluginapi.ResourceRoute) {
 	routes := []pluginapi.ManagementRoute{
-		{Method: http.MethodGet, Path: RouteManagementInterceptConfig, Description: "Read content interception settings and rules."},
-		{Method: http.MethodPut, Path: RouteManagementInterceptConfig, Description: "Save content interception settings and rules with revision validation."},
-		{Method: http.MethodGet, Path: RouteManagementInterceptEvents, Description: "Query content interception event metadata."},
-		{Method: http.MethodGet, Path: RouteManagementInterceptDetail, Description: "Read one content interception event."},
-		{Method: http.MethodPost, Path: RouteManagementInterceptReview, Description: "Review one content interception event."},
-		{Method: http.MethodPost, Path: RouteManagementInterceptExport, Description: "Export selected content interception events."},
-		{Method: http.MethodPost, Path: RouteManagementInterceptTest, Description: "Preview content interception rules; external classification requires explicit opt-in."},
-		{Method: http.MethodGet, Path: RouteManagementInterceptStatus, Description: "Read content interception status and recent statistics."},
 		{Method: http.MethodGet, Path: RouteManagementSettings, Description: "Read unified runtime settings, limits and restart-only configuration."},
 		{Method: http.MethodPut, Path: RouteManagementSettings, Description: "Persist and apply runtime settings with revision and pruning confirmation."},
 		{Method: http.MethodGet, Path: RouteManagementSettingsBootstrap, Description: "Read current and pending restart-only configuration."},
@@ -187,10 +179,6 @@ type SnapshotProvider interface {
 func HandleManagementRequest(ctx context.Context, provider SnapshotProvider, req pluginapi.ManagementRequest, hostCallbackID string) pluginapi.ManagementResponse {
 	path := strings.TrimSpace(req.Path)
 	method := strings.ToUpper(strings.TrimSpace(req.Method))
-
-	if strings.Contains(path, RouteManagementIntercept) {
-		return handleInterceptRequest(ctx, provider, req)
-	}
 
 	if strings.HasSuffix(path, ResourcePathUI) {
 		if method != http.MethodGet && method != http.MethodHead {

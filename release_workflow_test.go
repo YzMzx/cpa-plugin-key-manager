@@ -97,9 +97,6 @@ func TestReleaseWorkflowUsesImmutableVersionMatchedInputs(t *testing.T) {
 	if publish.With["tag_name"] != "${{ needs.resolve.outputs.tag }}" || publish.With["prerelease"] != "${{ contains(needs.resolve.outputs.tag, '-') }}" {
 		t.Fatal("publication must use the resolved tag")
 	}
-	if publish.With["make_latest"] != "${{ contains(needs.resolve.outputs.tag, '-') && 'false' || 'true' }}" {
-		t.Fatal("prerelease must never replace latest stable")
-	}
 	tests := workflow.Jobs["test"]
 	node, vet, frontend := false, false, false
 	for _, step := range tests.Steps {
@@ -228,9 +225,6 @@ func TestReleaseArchivesIncludeBackgroundCleanupGuide(t *testing.T) {
 		if strings.Contains(step.Run, "go build -trimpath") {
 			build = step.Run
 		}
-	}
-	if strings.Count(build, "CONTENT_INTERCEPT.md") != 3 {
-		t.Fatal("content interception guide must be copied and included in zip/tar archives")
 	}
 	if strings.Count(build, "CLEANUP_JOBS.md") != 3 {
 		t.Fatal("cleanup task guide must be copied and included in zip/tar archives")

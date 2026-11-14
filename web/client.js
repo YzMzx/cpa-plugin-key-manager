@@ -43,31 +43,6 @@
     if (data.overview !== undefined && !isOverview(data.overview)) throw new APIError("变更响应的概览格式无效，请刷新确认状态");
     return data;
   }
-  // Optional endpoint budgets include the full response, before JSON parsing. Stream when available.
-  async function readBoundedResponse(response, maxBytes, signal) {
-    if (maxBytes === undefined) return response.text();
-    if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new APIError("响应预算无效");
-    const length = response.headers.get("Content-Length");
-    if (length && Number(length) > maxBytes) throw new APIError("服务器响应超过安全读取预算");
-    if (!response.body || typeof response.body.getReader !== "function") {
-      const value = await response.text();
-      if (new TextEncoder().encode(value).length > maxBytes) throw new APIError("服务器响应超过安全读取预算");
-      return value;
-    }
-    const reader = response.body.getReader(), decoder = new TextDecoder();
-    const chunks = []; let size = 0;
-    const cancelRead = () => { reader.cancel().catch(() => {}); };
-    if (signal) signal.addEventListener("abort", cancelRead, { once: true });
-    try {
-      while (true) {
-        const chunk = await reader.read(); if (chunk.done) break;
-        size += chunk.value.byteLength;
-        if (size > maxBytes) { await reader.cancel(); throw new APIError("服务器响应超过安全读取预算"); }
-        chunks.push(decoder.decode(chunk.value, { stream: true }));
-      }
-      chunks.push(decoder.decode()); return chunks.join("");
-    } finally { if (signal) signal.removeEventListener("abort", cancelRead); reader.releaseLock(); }
-  }
   function createClient({ fetchImpl = globalThis.fetch.bind(globalThis), getKey, getRevision = () => undefined,
       onUnauthorized = () => {}, timeoutMs = 15000 } = {}) {
     const controllers = new Set();
@@ -100,14 +75,13 @@
       });
       try {
         const task = (async () => {
-          const { responseMaxBytes, ...fetchOptions } = options;
-          const response = await fetchImpl(path, { ...fetchOptions, method, headers, signal: controller.signal });
+          const response = await fetchImpl(path, { ...options, method, headers, signal: controller.signal });
           if (generation !== epoch || controller.signal.aborted) throw aborted();
           if (response.status === 401 || response.status === 403) {
             onUnauthorized("Management Key 已失效或未授权，请重新验证");
             throw new APIError("Management Key 已失效或未授权", response.status);
           }
-          const text = await readBoundedResponse(response, responseMaxBytes, controller.signal);
+          const text = await response.text();
           if (generation !== epoch || controller.signal.aborted) throw aborted();
           let data;
           try { data = JSON.parse(text); } catch (_) {

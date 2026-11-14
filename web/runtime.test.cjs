@@ -10,7 +10,6 @@ const Auth = require("./auth.js");
 const Events = require("./events.js");
 const Audit = require("./audit.js");
 const Settings = require("./settings.js");
-const Intercept = require("./intercept.js");
 const Dialogs = require("./dialogs.js");
 const CleanupJobs = require("./cleanup-jobs.js");
 const response = (body, status = 200, type = "application/json") => new Response(typeof body === "string" ? body : JSON.stringify(body), { status, headers: { "Content-Type": type } });
@@ -31,7 +30,7 @@ function environment(fetchImpl = async () => response(overview())) {
     return elements.get(id);
   };
   const doc = { body: { classList: classes() }, getElementById: element,
-    createElement: () => ({ className: "", style: {}, dataset: {}, textContent: "", children: [], classList: classes(), addEventListener(type, handler) { (this.listeners ||= {})[type] = handler; }, setAttribute() {}, focus() {}, appendChild(child) { this.children.push(child); return child; }, replaceChildren() { this.children = []; this.textContent = ""; }, remove() {} }),
+    createElement: () => ({ className: "", style: {}, dataset: {}, textContent: "", children: [], classList: classes(), setAttribute() {}, focus() {}, appendChild(child) { this.children.push(child); return child; }, replaceChildren() { this.children = []; this.textContent = ""; }, remove() {} }),
     querySelectorAll: selector => {
       if (selector.includes("dialog.modal input")) return [element("kmApiKey"), element("kmOriginalApiKey"), element("pmModelInput")];
       if (selector.includes("#adminWorkspace tbody")) return [element("crudKeysTableBody"), element("dashKeyTableBody"), element("dashAccountTableBody"), element("modelPopover")];
@@ -46,7 +45,7 @@ function environment(fetchImpl = async () => response(overview())) {
   const win = { location: { href: "http://localhost/ui", origin: "http://localhost", host: "localhost" }, history: { replaceState() {} }, addEventListener(type, handler) { if (!windowListeners.has(type)) windowListeners.set(type, []); windowListeners.get(type).push(handler); }, localStorage: storage };
   win.parent = win;
   const context = vm.createContext({ window: win, document: doc, location: win.location, navigator: { userAgent: "test", clipboard: { writeText: async () => {} } }, sessionStorage: storage,
-    KeyGuardClient: Client, KeyGuardState: State, KeyGuardFormat: Format, KeyGuardAuth: Auth, KeyGuardEvents: Events, KeyGuardAudit: Audit, KeyGuardCleanupJobs: CleanupJobs, KeyGuardSettings: Settings, KeyGuardIntercept: Intercept, KeyGuardDialogs: Dialogs,
+    KeyGuardClient: Client, KeyGuardState: State, KeyGuardFormat: Format, KeyGuardAuth: Auth, KeyGuardEvents: Events, KeyGuardAudit: Audit, KeyGuardCleanupJobs: CleanupJobs, KeyGuardSettings: Settings, KeyGuardDialogs: Dialogs,
     fetch: fetchImpl, Headers, Response, AbortController, URL, URLSearchParams, TextEncoder, TextDecoder, atob, console, confirm: () => true,
     setTimeout: (fn, ms) => { const timer = setTimeout(fn, ms); timer.unref(); return timer; }, clearTimeout });
   // Skip only automatic page boot. All production functions and delegated bindings execute unchanged.
@@ -644,18 +643,6 @@ test("settings tab retains dirty unit draft on global refresh, saves with fresh 
  const readCount=calls.filter(call=>call.url.endsWith("/settings")&&call.options.method==="GET").length;await env.run("refreshAllData()");assert.equal(env.element("settingAuditTotalMiB").value,"512");assert.equal(calls.filter(call=>call.url.endsWith("/settings")&&call.options.method==="GET").length,readCount);
  await env.run("settingsView.save()");assert.equal(env.run("settingsView.isDirty()"),false);assert.ok(calls.some(call=>call.url.endsWith("/settings")&&call.options.method==="PUT"));
  env.element("settingBootstrapDB").value="unsaved-path";env.run('lockAdminWorkspace("expired")');assert.equal(env.element("settingBootstrapDB").value,"");assert.equal(env.element("settingTimezone").value,"");assert.equal(env.element("settingsSave").disabled,true);
-});
-
-test("intercept production client uses tab lifecycle, auth headers, bounded detail and 403 cleanup",async()=>{
- const settings={auto_disable:{},classifier:{api_key_configured:false}};
- for(const [key,,kind,min]of Intercept.FIELDS){const value=kind==="bool"?false:kind==="select"?min[0]:kind==="int"||kind==="number"?min:"";const parts=key.split(".");if(parts.length===1)settings[key]=value;else settings[parts[0]][parts[1]]=value;}
- const event={id:"e1",created_at:"2026-11-14T00:00:00Z",action:"blocked",mode:"enforce",severity:"high",review_status:"pending",rule_names:[],body_state:"stored_json_filtered",key_name:"fixture",key_masked:"***"};
- const stats={total:1,blocked:1,flagged:0,pending_review:1,auto_disabled:0,top_keys:[],top_rules:[]};const calls=[];let deny=false;
- const env=environment(async(url,options)=>{calls.push({url,options});if(url.endsWith("/intercept/config"))return response({settings,rules:[],rules_revision:7,limits:{},key_options:[]});if(url.endsWith("/intercept/status"))return response({status:{enabled:false,mode:"observe",rules:0},today:stats,last_7_days:stats,host_sync:{pending:true}});if(url.includes("/intercept/events?"))return response({items:[event],total:1,limit:50,offset:0});if(url.includes("/intercept/events/detail?"))return deny?response("expired",403,"text/plain"):response({event:{...event,body:"private conversation"}});if(url.includes("/ledger"))return response(ledger());return response(overview());});
- env.run('switchAdminTab("tab-intercept")');await tick();await tick();assert.ok(calls.some(c=>c.url.endsWith("/intercept/config")));assert.match(env.element("interceptStatus").textContent,/宿主同步待完成/);
- await env.run('interceptView.showDetail("e1")');assert.equal(env.element("interceptDetailBody").textContent,"private conversation");assert.equal(calls.find(c=>c.url.includes("/intercept/events/detail?")).options.headers.get("Authorization"),"Bearer test-admin");
- env.run('switchAdminTab("tab-overview")');assert.equal(env.element("interceptDetailBody").textContent,"");assert.equal(env.element("interceptDetail").open,false);
- env.run('switchAdminTab("tab-intercept")');await tick();await tick();env.element("interceptAPIKey").value="secret";env.element("interceptFilterModel").value="private-model";deny=true;await env.run('interceptView.showDetail("e1")');assert.equal(env.run("activeManagementKey"),"");assert.equal(env.element("interceptAPIKey").value,"");assert.equal(env.element("interceptFilterModel").value,"");assert.equal(env.element("interceptDetailBody").textContent,"");
 });
 
 test("deleting a key never places its plaintext in the management URL",async()=>{

@@ -217,37 +217,6 @@ var migrations = []migration{
 			`CREATE INDEX client_request_audit_cleanup_metadata_idx ON client_request_audit(id,logical_bytes,length(CAST(request_body AS BLOB)))`,
 		},
 	},
-	{
-		version: 7,
-		name:    "content intercept forensic events",
-		stmts: []string{
-			// Key identity is stored only as name, masked form and fingerprint.
-			// Optional evidence is filtered plaintext, not general secret redaction.
-			`CREATE TABLE key_guard_intercept_events (
-			 id TEXT PRIMARY KEY, created_at INTEGER NOT NULL,
-			 request_id TEXT NOT NULL DEFAULT '', trace_id TEXT NOT NULL DEFAULT '',
-			 path TEXT NOT NULL DEFAULT '', protocol TEXT NOT NULL DEFAULT '',
-			 requested_model TEXT NOT NULL DEFAULT '', served_model TEXT NOT NULL DEFAULT '',
-			 stream INTEGER NOT NULL DEFAULT 0,
-			 key_name TEXT NOT NULL DEFAULT '', key_masked TEXT NOT NULL DEFAULT '', key_fingerprint TEXT NOT NULL DEFAULT '',
-			 action TEXT NOT NULL, mode TEXT NOT NULL DEFAULT '', severity TEXT NOT NULL DEFAULT '',
-			 rule_names TEXT NOT NULL DEFAULT '', matches_json TEXT NOT NULL DEFAULT '', classifier_json TEXT NOT NULL DEFAULT '',
-			 body TEXT NOT NULL DEFAULT '', body_state TEXT NOT NULL DEFAULT '', body_truncated INTEGER NOT NULL DEFAULT 0,
-			 body_bytes INTEGER NOT NULL DEFAULT 0, body_sha256 TEXT NOT NULL DEFAULT '', scan_truncated INTEGER NOT NULL DEFAULT 0,
-			 auto_disabled TEXT NOT NULL DEFAULT '',
-			 review_status TEXT NOT NULL DEFAULT 'pending', review_note TEXT NOT NULL DEFAULT '', reviewed_at INTEGER NOT NULL DEFAULT 0,
-			 logical_bytes INTEGER NOT NULL DEFAULT 0 CHECK(logical_bytes >= 0)
-			)`,
-			`CREATE INDEX key_guard_intercept_created_idx ON key_guard_intercept_events(created_at, id)`,
-			`CREATE INDEX key_guard_intercept_key_idx ON key_guard_intercept_events(key_fingerprint, created_at)`,
-			`CREATE INDEX key_guard_intercept_action_idx ON key_guard_intercept_events(action, created_at)`,
-		},
-	},
-	{
-		version: 8,
-		name:    "content intercept original body digest",
-		stmts:   []string{`ALTER TABLE key_guard_intercept_events ADD COLUMN original_sha256 TEXT NOT NULL DEFAULT ''`, `ALTER TABLE key_guard_intercept_events ADD COLUMN original_bytes INTEGER NOT NULL DEFAULT 0 CHECK(original_bytes >= 0)`},
-	},
 }
 
 // Migrate applies every pending migration inside its own transaction.
